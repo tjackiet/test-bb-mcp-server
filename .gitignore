@@ -1,0 +1,8 @@
+# Node.js
+node_modules
+
+# 環境変数ファイル（もし作ったら）
+.env
+
+# Mac の余計なファイル
+.DS_Store

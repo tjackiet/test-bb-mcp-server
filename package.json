@@ -1,0 +1,12 @@
+{
+  "name": "bb-mcp-sandbox",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node src/server.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "zod": "^3.25.76"
+  }
+}
