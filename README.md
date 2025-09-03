@@ -1,2 +1,2 @@
 # test-bb-mcp-server
-bitbank API を MCP Server で叩ける
+本サーバーは MCP 対応のクライアント（例: Claude）から直接呼び出すことで、bitbank API のデータ取得を行えます。
