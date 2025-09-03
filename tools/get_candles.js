@@ -3,7 +3,7 @@
 // date: typeにより YYYYMMDD または YYYY（1month）
 
 import { fetchJson } from '../lib/http.js';
-import { ensurePair } from '../lib/validate.js';
+import { ensurePair, validateLimit, validateDate, createMeta } from '../lib/validate.js';
 
 const TYPES = new Set([
   '1min',
@@ -19,28 +19,16 @@ const TYPES = new Set([
   '1month',
 ]);
 
-const TYPES_REQUIRE_YYYYMMDD = new Set([
-  '1min',
-  '5min',
-  '15min',
-  '30min',
-  '1hour',
-  '4hour',
-  '8hour',
-  '12hour',
-]);
-
 function todayYyyymmdd() {
   const d = new Date();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}${m}${day}`;
 }
-// ...TYPES 定義などはそのまま...
 
 const toIso = (ms) => {
   const d = new Date(Number(ms));
-  return isNaN(d) ? null : d.toISOString();
+  return Number.isNaN(d.valueOf()) ? null : d.toISOString();
 };
 
 export default async function getCandles(
@@ -58,50 +46,20 @@ export default async function getCandles(
       ok: false,
       error: {
         type: 'user',
-        message: `type は ${[...TYPES].join(', ')} から選択（指定: ${type}）`,
+        message: `type は ${[...TYPES].join(', ')} から選択してください（指定値: ${type}）`,
       },
     };
   }
 
-  // APIに渡す日付文字列を決定
-  let dateForApi;
-  if (TYPES_REQUIRE_YYYYMMDD.has(type)) {
-    if (!/^\d{8}$/.test(date)) {
-      return {
-        ok: false,
-        error: {
-          type: 'user',
-          message: `${type} の場合、date は YYYYMMDD 形式で指定（指定: ${date}）`,
-        },
-      };
-    }
-    dateForApi = date;
-  } else {
-    // YYYYMMDD形式が与えられてもYYYYに変換
-    if (!/^\d{4,8}$/.test(date)) {
-      return {
-        ok: false,
-        error: {
-          type: 'user',
-          message: `date は YYYY または YYYYMMDD 形式で指定（指定: ${date}）`,
-        },
-      };
-    }
-    dateForApi = String(date).substring(0, 4);
-  }
+  // 日付バリデーション
+  const dateCheck = validateDate(date, type);
+  if (!dateCheck.ok) return dateCheck;
 
-  const lim = Number(limit);
-  if (!Number.isInteger(lim) || lim <= 0 || lim > 1000) {
-    return {
-      ok: false,
-      error: {
-        type: 'user',
-        message: `limit は 1〜1000 の整数（指定: ${limit}）`,
-      },
-    };
-  }
+  // limitバリデーション
+  const limitCheck = validateLimit(limit, 1, 1000);
+  if (!limitCheck.ok) return limitCheck;
 
-  const url = `https://public.bitbank.cc/${chk.pair}/candlestick/${type}/${dateForApi}`;
+  const url = `https://public.bitbank.cc/${chk.pair}/candlestick/${type}/${dateCheck.value}`;
 
   try {
     const json = await fetchJson(url, { timeoutMs: 3000, retries: 2 });
@@ -111,7 +69,7 @@ export default async function getCandles(
     const ohlcvs = cs?.ohlcv ?? [];
 
     // 最新に近い側を limit 件抽出（配列末尾側が新しい想定）
-    const rows = ohlcvs.slice(-lim);
+    const rows = ohlcvs.slice(-limitCheck.value);
 
     const normalized = rows.map(([o, h, l, c, v, ts]) => ({
       open: Number(o),
@@ -129,7 +87,7 @@ export default async function getCandles(
       ok: true,
       summary,
       data: { raw: json, normalized },
-      meta: {},
+      meta: createMeta(chk.pair, { type, count: normalized.length }),
     };
   } catch (e) {
     return {

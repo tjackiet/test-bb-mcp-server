@@ -1,54 +1,19 @@
 // get_ticker.js
 // 使い方: node get_ticker.js btc_jpy
 
-const ALLOWED = new Set([
-  // よく使う例。必要に応じて増やしてください
-  'btc_jpy',
-  'eth_jpy',
-  'xrp_jpy',
-  'ltc_jpy',
-  'bcc_jpy',
-]);
-
-function normalizePair(raw) {
-  if (!raw) return null;
-  const s = String(raw)
-    .trim()
-    .toLowerCase()
-    .replace('/', '_')
-    .replace('-', '_');
-  return s;
-}
+import { ensurePair, createMeta } from '../lib/validate.js';
 
 function ms(ts) {
   const d = new Date(Number(ts));
-  return isNaN(d) ? null : d.toISOString();
+  return Number.isNaN(d.valueOf()) ? null : d.toISOString();
 }
 
 async function getTicker(pair, { timeoutMs = 2500 } = {}) {
-  const normalized = normalizePair(pair);
-  if (!normalized || !/^[a-z0-9]+_[a-z0-9]+$/.test(normalized)) {
-    return {
-      ok: false,
-      error: {
-        type: 'user',
-        message: `pair '${pair}' が不正です（例: btc_jpy）`,
-      },
-    };
-  }
-  if (!ALLOWED.has(normalized)) {
-    return {
-      ok: false,
-      error: {
-        type: 'user',
-        message: `未対応のpairです: '${normalized}'（対応例: ${[
-          ...ALLOWED,
-        ].join(', ')})`,
-      },
-    };
-  }
+  // ペアバリデーション
+  const chk = ensurePair(pair);
+  if (!chk.ok) return chk;
 
-  const url = `https://public.bitbank.cc/${normalized}/ticker`;
+  const url = `https://public.bitbank.cc/${chk.pair}/ticker`;
 
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -70,7 +35,7 @@ async function getTicker(pair, { timeoutMs = 2500 } = {}) {
 
     // 想定レスポンス: { success: 1, data: { buy, sell, last, vol, timestamp, ... } }
     const d = json?.data ?? {};
-    const summary = `pair=${normalized} last=${d.last ?? 'N/A'} buy=${
+    const summary = `pair=${chk.pair} last=${d.last ?? 'N/A'} buy=${
       d.buy ?? 'N/A'
     } sell=${d.sell ?? 'N/A'} ts=${ms(d.timestamp) ?? 'N/A'}`;
 
@@ -80,7 +45,7 @@ async function getTicker(pair, { timeoutMs = 2500 } = {}) {
       data: {
         raw: json,
         normalized: {
-          pair: normalized,
+          pair: chk.pair,
           last: d.last ? Number(d.last) : null,
           buy: d.buy ? Number(d.buy) : null,
           sell: d.sell ? Number(d.sell) : null,
@@ -89,7 +54,7 @@ async function getTicker(pair, { timeoutMs = 2500 } = {}) {
           isoTime: ms(d.timestamp),
         },
       },
-      meta: { pair: normalized, ts: new Date().toISOString() },
+      meta: createMeta(chk.pair),
     };
   } catch (err) {
     clearTimeout(t);

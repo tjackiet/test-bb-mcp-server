@@ -1,21 +1,11 @@
 // get_orderbook.js
 // 使い方: node get_orderbook.js btc_jpy 5   ← topN=5（省略可）
 
-const ALLOWED = new Set([
-  'btc_jpy',
-  'eth_jpy',
-  'xrp_jpy',
-  'ltc_jpy',
-  'bcc_jpy',
-]);
+import { ensurePair, validateLimit, createMeta } from '../lib/validate.js';
 
-function normalizePair(raw) {
-  if (!raw) return null;
-  return String(raw).trim().toLowerCase().replace(/[\/-]/g, '_');
-}
 function ms(ts) {
   const d = new Date(Number(ts));
-  return isNaN(d) ? null : d.toISOString();
+  return Number.isNaN(d.valueOf()) ? null : d.toISOString();
 }
 
 function toLevels(arr, n) {
@@ -27,46 +17,22 @@ function toLevels(arr, n) {
   // 累積数量も付与（見やすさ用）
   let cum = 0;
   for (const lvl of out) {
-    cum += isFinite(lvl.size) ? lvl.size : 0;
+    cum += Number.isFinite(lvl.size) ? lvl.size : 0;
     lvl.cumSize = Number(cum.toFixed(8));
   }
   return out;
 }
 
 async function getOrderbook(pair, topN = 5, { timeoutMs = 2500 } = {}) {
-  const normalized = normalizePair(pair);
-  if (!normalized || !/^[a-z0-9]+_[a-z0-9]+$/.test(normalized)) {
-    return {
-      ok: false,
-      error: {
-        type: 'user',
-        message: `pair '${pair}' が不正です（例: btc_jpy）`,
-      },
-    };
-  }
-  if (!ALLOWED.has(normalized)) {
-    return {
-      ok: false,
-      error: {
-        type: 'user',
-        message: `未対応のpairです: '${normalized}'（対応例: ${[
-          ...ALLOWED,
-        ].join(', ')})`,
-      },
-    };
-  }
-  const n = Number(topN);
-  if (!Number.isInteger(n) || n <= 0 || n > 50) {
-    return {
-      ok: false,
-      error: {
-        type: 'user',
-        message: `topN は 1〜50 の整数で指定してください（指定値: ${topN}）`,
-      },
-    };
-  }
+  // ペアバリデーション
+  const chk = ensurePair(pair);
+  if (!chk.ok) return chk;
 
-  const url = `https://public.bitbank.cc/${normalized}/depth`;
+  // topNバリデーション
+  const limitCheck = validateLimit(topN, 1, 50, 'topN');
+  if (!limitCheck.ok) return limitCheck;
+
+  const url = `https://public.bitbank.cc/${chk.pair}/depth`;
 
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -87,8 +53,8 @@ async function getOrderbook(pair, topN = 5, { timeoutMs = 2500 } = {}) {
     const json = await res.json();
     // 期待形: { success: 1, data: { asks: [["p","s"],...], bids:[...], timestamp } }
     const d = json?.data ?? {};
-    const asks = toLevels(d.asks, n); // 売り板（安い→高い 順に来る想定）
-    const bids = toLevels(d.bids, n); // 買い板（高い→安い 順に来る想定）
+    const asks = toLevels(d.asks, limitCheck.value); // 売り板（安い→高い 順に来る想定）
+    const bids = toLevels(d.bids, limitCheck.value); // 買い板（高い→安い 順に来る想定）
 
     const bestAsk = asks[0]?.price ?? null;
     const bestBid = bids[0]?.price ?? null;
@@ -102,8 +68,8 @@ async function getOrderbook(pair, topN = 5, { timeoutMs = 2500 } = {}) {
         : null;
 
     const summary =
-      `pair=${normalized} bid=${bestBid ?? 'N/A'} ask=${bestAsk ?? 'N/A'} ` +
-      `spread=${spread ?? 'N/A'} levels=${n} ts=${ms(d.timestamp) ?? 'N/A'}`;
+      `pair=${chk.pair} bid=${bestBid ?? 'N/A'} ask=${bestAsk ?? 'N/A'} ` +
+      `spread=${spread ?? 'N/A'} levels=${limitCheck.value} ts=${ms(d.timestamp) ?? 'N/A'}`;
 
     return {
       ok: true,
@@ -111,7 +77,7 @@ async function getOrderbook(pair, topN = 5, { timeoutMs = 2500 } = {}) {
       data: {
         raw: json,
         normalized: {
-          pair: normalized,
+          pair: chk.pair,
           bestBid,
           bestAsk,
           spread,
@@ -122,7 +88,7 @@ async function getOrderbook(pair, topN = 5, { timeoutMs = 2500 } = {}) {
           isoTime: ms(d.timestamp),
         },
       },
-      meta: { pair: normalized, ts: new Date().toISOString() },
+      meta: createMeta(chk.pair, { topN: limitCheck.value, count: asks.length + bids.length }),
     };
   } catch (err) {
     clearTimeout(t);
