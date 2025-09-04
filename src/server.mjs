@@ -3,9 +3,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 
-import getTicker from "../tools/get_ticker.js";
-import getOrderbook from "../tools/get_orderbook.js";
-import getCandles from "../tools/get_candles.js";
+import {
+  getTicker,
+  getOrderbook,
+  getCandles,
+  getIndicators,
+} from '../tools/index.js';
 
 const server = new McpServer({ name: "bitbank-mcp", version: "0.1.0" });
 
@@ -70,6 +73,42 @@ server.registerTool(
     }
     return respond(result);
   }
+);
+
+// ---- get_indicators ----
+server.registerTool(
+  'get_indicators',
+  {
+    description: 'Get technical indicators for a pair.',
+    inputSchema: {
+      pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
+      type: z
+        .enum([
+          '1min',
+          '5min',
+          '15min',
+          '30min',
+          '1hour',
+          '4hour',
+          '8hour',
+          '12hour',
+          '1day',
+          '1week',
+          '1month',
+        ])
+        .optional()
+        .default('1day'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(1000)
+        .optional()
+        .describe('Number of candles to use for calculation'),
+    },
+  },
+  async ({ pair, type, limit }) =>
+    respond(await getIndicators(pair, type, limit))
 );
 
 // ---- Prompt: chart_with_lightweight ----
