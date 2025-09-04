@@ -72,6 +72,36 @@ server.registerTool(
   }
 );
 
+// ---- Prompt: chart_with_lightweight ----
+server.registerPrompt(
+  "chart_with_lightweight",
+  {
+    description: "ローソク足とインジケーターを描画する際に、TradingView Lightweight Charts を利用する推奨プロンプト",
+    inputSchema: {
+      pair: z.string().default("btc_jpy").describe("通貨ペア (例: btc_jpy)"),
+      type: z.enum(["1day", "1week"]).default("1day").describe("時間足"),
+      period: z.number().int().min(5).max(365).default(30).describe("表示本数"),
+    },
+  },
+  async ({ pair, type, period }) => {
+    return {
+      messages: [
+        {
+          role: "user",
+          content: {
+            type: "text",
+            text: `BTC/JPY のチャートを生成してください。
+
+- データ: ${pair}, 足種別: ${type}, 本数: ${period}
+- チャート描画には TradingView の Lightweight Charts を使ってください
+- ローソク足（candles）を表示し、SMA_25, SMA_75, SMA_200 を重ねてください`,
+          },
+        },
+      ],
+    };
+  }
+);
+
 // === stdio ===
 const transport = new StdioServerTransport();
 await server.connect(transport);
