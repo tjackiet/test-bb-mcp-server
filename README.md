@@ -31,15 +31,11 @@ npx @modelcontextprotocol/inspector docker build -t bitbank-mcp . '&&' docker ru
     npm install
     ```
 
-2.  **サーバーの起動**
+2.  **Inspector に接続してサーバーを起動**
     ```bash
-    npm run dev
+    npx @modelcontextprotocol/inspector node src/server.mjs
     ```
-    サーバーが `mcp://localhost:1337` で起動します。
-
-3.  **MCP Inspector で接続**
-    -   [MCP Inspector](https://inspector.mcp.dev/) を開きます。
-    -   Endpointに `mcp://localhost:1337` を入力して接続します。
+    このコマンドを実行すると、サーバーが起動し、自動的にMCP Inspectorが開いて接続されます。
 
 ## CLIツールとしての使用方法
 
