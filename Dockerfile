@@ -9,6 +9,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --only=production
 
+# Copy lightweight-charts standalone js to assets folder
+RUN mkdir -p assets && \
+    cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js
+
 # Copy the rest of the application's source code
 COPY src ./src
 COPY tools ./tools

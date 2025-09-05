@@ -10,6 +10,8 @@ import {
   getOrderbook,
   getCandles,
   getIndicators,
+  renderChartHtml,
+  renderChartSvg,
 } from '../tools/index.js';
 import { logToolRun, logError } from '../lib/logger.js';
 
@@ -156,29 +158,189 @@ registerToolWithLog(
   async ({ pair, type, limit }) => getIndicators(pair, type, limit)
 );
 
-// ---- Prompt: chart_with_lightweight ----
-server.registerPrompt(
-  "chart_with_lightweight",
+// ---- render_chart_html ----
+registerToolWithLog(
+  'render_chart_html',
   {
-    description: "ローソク足とインジケーターを描画する際に、TradingView Lightweight Charts を利用する推奨プロンプト",
+    description:
+      '[実験的] Renders a candlestick chart as a self-contained HTML file. For Artifact environments, it is recommended to set `embedLib` to `true`. NOTE: May not be viewable due to CSP restrictions in some environments like Artifacts.',
     inputSchema: {
-      pair: z.string().default("btc_jpy").describe("通貨ペア (例: btc_jpy)"),
-      type: z.enum(["1day", "1week"]).default("1day").describe("時間足"),
-      period: z.number().int().min(5).max(365).default(30).describe("表示本数"),
+      pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
+      type: z
+        .enum([
+          '1min',
+          '5min',
+          '15min',
+          '30min',
+          '1hour',
+          '4hour',
+          '8hour',
+          '12hour',
+          '1day',
+          '1week',
+          '1month',
+        ])
+        .optional()
+        .default('1day'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(1000)
+        .optional()
+        .default(90)
+        .describe('Number of candles to render'),
+      embedLib: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe('Embed library in HTML to avoid CSP issues'),
     },
   },
-  async ({ pair, type, period }) => {
+  async ({ pair, type, limit, embedLib }) =>
+    renderChartHtml(pair, type, limit, embedLib)
+);
+
+// ---- render_chart_svg ----
+registerToolWithLog(
+  'render_chart_svg',
+  {
+    description:
+      'Generates a stable SVG candlestick chart. Ideal for environments with CSP restrictions. Automatically draws SMA lines. Recommended `limit` values are 30, 90, or 365.',
+    inputSchema: {
+      pair: z.string().optional().default('btc_jpy'),
+      type: z
+        .enum(['1day', '1week', '1month', '1hour', '4hour'])
+        .optional()
+        .default('1day'),
+      limit: z.number().int().min(5).max(365).optional().default(60),
+      withSMA: z
+        .array(z.number().int().min(2).max(300))
+        .optional()
+        .default([25, 75]),
+    },
+  },
+  async (args) => renderChartSvg(args)
+);
+
+// ---- Prompt: visualize_svg_chart ----
+server.registerPrompt(
+  'visualize_svg_chart',
+  {
+    description: 'Generates and displays a candlestick chart as an SVG image.',
+    inputSchema: {
+      pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
+      type: z
+        .enum(['1day', '1week', '1month', '1hour', '4hour'])
+        .optional()
+        .default('1day'),
+      limit: z.number().int().min(5).max(365).optional().default(60),
+    },
+  },
+  async ({ pair, type, limit }) => {
     return {
       messages: [
         {
-          role: "user",
+          role: 'user',
           content: {
-            type: "text",
-            text: `BTC/JPY のチャートを生成してください。
+            type: 'text',
+            text: `${pair.toUpperCase()} の ${type} のチャートを、直近 ${limit} 本のデータでSVG画像として生成・表示してください。`,
+          },
+        },
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_code',
+              tool_name: 'render_chart_svg',
+              tool_input: { pair, type, limit },
+            },
+          ],
+        },
+      ],
+    };
+  }
+);
 
-- データ: ${pair}, 足種別: ${type}, 本数: ${period}
-- チャート描画には TradingView の Lightweight Charts を使ってください
-- ローソク足（candles）を表示し、SMA_25, SMA_75, SMA_200 を重ねてください`,
+// ---- Prompt: market_overview ----
+server.registerPrompt(
+  'market_overview',
+  {
+    description:
+      'Get a market overview by combining ticker, orderbook, and indicators.',
+    inputSchema: {
+      pair: z.string().describe('e.g., btc_jpy'),
+    },
+  },
+  async ({ pair }) => {
+    const safePair = pair || 'btc_jpy'; // フォールバックは念のため残す
+    return {
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `${safePair.toUpperCase()}の現在の市場概況を報告してください。
+
+1. \`get_ticker\`で最新価格を取得。
+2. \`get_orderbook\`で現在のスプレッドを確認。
+3. \`get_indicators\`（日足）でRSIとトレンドを取得。
+
+上記3つの情報をまとめて、簡潔に状況を説明してください。`,
+          },
+        },
+      ],
+    };
+  }
+);
+
+// ---- Prompt: visualize_chart ----
+server.registerPrompt(
+  'visualize_chart',
+  {
+    description:
+      'Visualizes candle data as a chart by using the `render_chart_html` tool.',
+    inputSchema: {
+      pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
+      type: z
+        .enum([
+          '1min',
+          '5min',
+          '15min',
+          '30min',
+          '1hour',
+          '4hour',
+          '8hour',
+          '12hour',
+          '1day',
+          '1week',
+          '1month',
+        ])
+        .optional()
+        .default('1day'),
+      limit: z
+        .number()
+        .int()
+        .min(1)
+        .max(1000)
+        .optional()
+        .default(90)
+        .describe('Number of candles to render'),
+    },
+  },
+  async ({ pair, type, limit }) => {
+    const safePair = pair || 'btc_jpy';
+    return {
+      messages: [
+        {
+          role: 'user',
+          content: {
+            type: 'text',
+            text: `${safePair.toUpperCase()}の${type}チャートをHTMLとして描画してください。
+
+\`render_chart_html\`ツールを使い、直近${limit}本分のデータを描画したHTMLを生成してください（ライブラリを埋め込むために \`embedLib: true\` を指定してください）。
+
+実行後、返された\`data.html\`の内容をそのまま提示してください。`,
           },
         },
       ],
