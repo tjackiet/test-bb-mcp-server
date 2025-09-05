@@ -10,6 +10,7 @@ import {
   createMeta,
 } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
+import { formatSummary } from '../lib/formatter.js';
 
 const TYPES = new Set([
   '1min',
@@ -83,8 +84,11 @@ export default async function getCandles(
       isoTime: toIso(ts),
     }));
 
-    const latestClose = normalized.at(-1)?.close ?? 'N/A';
-    const summary = `${chk.pair} ${type} candles (latest close=${latestClose})`;
+    const summary = formatSummary({
+      pair: chk.pair,
+      timeframe: type,
+      latest: normalized.at(-1)?.close,
+    });
 
     return ok(
       summary,

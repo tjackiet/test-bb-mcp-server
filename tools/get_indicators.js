@@ -5,6 +5,7 @@
 import getCandles from './get_candles.js';
 import { ensurePair, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
+import { formatSummary } from '../lib/formatter.js';
 
 // 移動平均 (SMA)
 function sma(values, period) {
@@ -150,7 +151,12 @@ export default async function getIndicators(
   // チャート描画用データ
   const chartData = createChartData(candlesResult.data.normalized, indicators);
 
-  const summary = `${chk.pair} ${type} indicators (close=${latestClose}, RSI=${indicators.RSI_14}, trend=${trend})`;
+  const summary = formatSummary({
+    pair: chk.pair,
+    timeframe: type,
+    latest: latestClose,
+    extra: `RSI=${indicators.RSI_14} trend=${trend} (count=${closes.length})`,
+  });
 
   const data = {
     raw: candlesResult.data.raw,

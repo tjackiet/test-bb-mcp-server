@@ -3,6 +3,7 @@
 
 import { ensurePair, validateLimit, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
+import { formatSummary } from '../lib/formatter.js';
 
 function ms(ts) {
   const d = new Date(Number(ts));
@@ -62,11 +63,13 @@ async function getOrderbook(pair, topN = 5, { timeoutMs = 2500 } = {}) {
         ? Number(((bestAsk + bestBid) / 2).toFixed(2))
         : null;
 
-    const summary =
-      `pair=${chk.pair} bid=${bestBid ?? 'N/A'} ask=${bestAsk ?? 'N/A'} ` +
-      `spread=${spread ?? 'N/A'} levels=${limitCheck.value} ts=${
-        ms(d.timestamp) ?? 'N/A'
-      }`;
+    const summary = formatSummary({
+      pair: chk.pair,
+      latest: mid,
+      extra: `bid=${bestBid ?? 'N/A'} ask=${bestAsk ?? 'N/A'} spread=${
+        spread ?? 'N/A'
+      }`,
+    });
 
     const data = {
       raw: json,

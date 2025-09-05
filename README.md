@@ -16,16 +16,18 @@
 ## Setup
 
 1.  **環境変数を設定してください**  
-    `.env.example` をコピーして `.env` ファイルを作成します。必要に応じて `PORT` などの値を調整してください。
+    `.env.example` をコピーして `.env` ファイルを作成します。
     ```bash
     cp .env.example .env
     ```
+    必要に応じて `.env` ファイル内の値を調整してください。
+    - `PORT`: サーバーのポート番号（注: 現在の実装では `stdio` 通信のため使用されません）
+    - `LOG_DIR`: ログファイルを保存するディレクトリ
+    - `LOG_LEVEL`: ログの出力レベル（`info`, `debug` など）
 
 ## サーバーの起動方法
 
 ### Docker を利用する場合（推奨）
-
-Docker環境があれば、以下の手順でサーバーの起動とMCP Inspectorでの動作確認を行えます。
 
 1.  **Dockerイメージをビルド**
     ```bash
@@ -35,6 +37,27 @@ Docker環境があれば、以下の手順でサーバーの起動とMCP Inspect
 2.  **コンテナを起動し、Inspectorに接続**
     ```bash
     npx @modelcontextprotocol/inspector docker run -i --rm bitbank-mcp
+    ```
+    上記コマンドを実行すると、コンテナが起動し、自動的にブラウザでMCP Inspectorが開きサーバーに接続されます。
+
+    **Note: 実行ログの保存**
+    
+    コンテナ内で実行されたツールのログを、ホストマシン（あなたのPC）の`./logs`ディレクトリに保存したい場合は、`-v`オプション（ボリュームマウント）を追加してコンテナを起動してください。
+
+    ```bash
+    npx @modelcontextprotocol/inspector docker run -i --rm -v "$(pwd)/logs:/app/logs" bitbank-mcp
+    ```
+
+3.  **ログの確認手順**
+    
+    `-v`オプション付きでコンテナを起動し、Inspectorからツールをいくつか実行した後、**別のターミナル**から以下のコマンドでログを確認できます。
+
+    ```bash
+    # ログファイルが作成されているか確認
+    ls logs/
+
+    # ログファイルの中身を確認
+    cat logs/$(date +%F).jsonl
     ```
 
 ### ローカル環境で直接実行する場合
@@ -48,7 +71,7 @@ Docker環境があれば、以下の手順でサーバーの起動とMCP Inspect
     ```bash
     npx @modelcontextprotocol/inspector node src/server.mjs
     ```
-    このコマンドを実行すると、サーバーが起動し、自動的にMCP Inspectorが開いて接続されます。
+    このコマンドを実行すると、サーバーが起動し、自動的にMCP Inspectorが開いて接続されます。実行ログは`.env`で指定された`LOG_DIR`（デフォルト: `./logs`）に保存されます。
 
 ## CLIツールとしての使用方法
 

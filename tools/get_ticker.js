@@ -3,6 +3,7 @@
 
 import { ensurePair, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
+import { formatSummary } from '../lib/formatter.js';
 
 function ms(ts) {
   const d = new Date(Number(ts));
@@ -30,9 +31,11 @@ async function getTicker(pair, { timeoutMs = 2500 } = {}) {
 
     // 想定レスポンス: { success: 1, data: { buy, sell, last, vol, timestamp, ... } }
     const d = json?.data ?? {};
-    const summary = `pair=${chk.pair} last=${d.last ?? 'N/A'} buy=${
-      d.buy ?? 'N/A'
-    } sell=${d.sell ?? 'N/A'} ts=${ms(d.timestamp) ?? 'N/A'}`;
+    const summary = formatSummary({
+      pair: chk.pair,
+      latest: d.last ? Number(d.last) : null,
+      extra: `buy=${d.buy ?? 'N/A'} sell=${d.sell ?? 'N/A'}`,
+    });
 
     const data = {
       raw: json,

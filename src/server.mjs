@@ -11,77 +11,121 @@ import {
   getCandles,
   getIndicators,
 } from '../tools/index.js';
+import { logToolRun, logError } from '../lib/logger.js';
 
-const server = new McpServer({ name: "bitbank-mcp", version: "0.1.0" });
+const server = new McpServer({ name: 'bitbank-mcp', version: '0.1.0' });
 
 const respond = (result) => ({
-  content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+  content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
   structuredContent: result,
 });
 
+// 共通ラッパ：実行時間計測＋JSONLログ
+function registerToolWithLog(name, schema, handler) {
+  server.registerTool(name, { description: schema.description, inputSchema: schema.inputSchema }, async (input) => {
+    const t0 = Date.now();
+    try {
+      const result = await handler(input);
+      const ms = Date.now() - t0;
+      logToolRun({ tool: name, input, result, ms });
+      return respond(result); // `respond`でラップするのを忘れない
+    } catch (err) {
+      const ms = Date.now() - t0;
+      logError(name, err, input);
+      return {
+        // `respond`を使わず直接エラーオブジェクトを返す
+        content: [{ type: 'text', text: `internal error: ${err?.message || 'unknown error'}` }],
+        structuredContent: {
+          ok: false,
+          summary: `internal error: ${err?.message || 'unknown error'}`,
+          meta: { ms, errorType: 'internal' },
+        }
+      };
+    }
+  });
+}
+
 // ---- get_ticker ----
-server.registerTool(
-  "get_ticker",
+registerToolWithLog(
+  'get_ticker',
   {
-    description: "Get ticker for a pair (e.g., btc_jpy)",
+    description: 'Get ticker for a pair (e.g., btc_jpy)',
     inputSchema: {
-      pair: z.string().optional().default("btc_jpy").describe("e.g., btc_jpy"),
+      pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
     },
   },
-  async ({ pair }) => respond(await getTicker(pair))
+  async ({ pair }) => getTicker(pair)
 );
 
 // ---- get_orderbook ----
-server.registerTool(
-  "get_orderbook",
+registerToolWithLog(
+  'get_orderbook',
   {
-    description: "Get orderbook topN for a pair",
+    description: 'Get orderbook topN for a pair',
     inputSchema: {
-      pair: z.string().describe("e.g., btc_jpy"),
-      topN: z.number().int().min(1).max(1000).optional().default(10)
-            .describe("Top levels to return"),
+      pair: z.string().describe('e.g., btc_jpy'),
+      topN: z
+        .number()
+        .int()
+        .min(1)
+        .max(1000)
+        .optional()
+        .default(10)
+        .describe('Top levels to return'),
     },
   },
-  async ({ pair, topN }) => respond(await getOrderbook(pair, topN))
+  async ({ pair, topN }) => getOrderbook(pair, topN)
 );
 
 // ---- get_candles ---- (view対応)
-server.registerTool(
-  "get_candles",
+registerToolWithLog(
+  'get_candles',
   {
-    description:
-      "Get candles. date: 1month → YYYY, others → YYYYMMDD",
+    description: 'Get candles. date: 1month → YYYY, others → YYYYMMDD',
     inputSchema: {
-      pair: z.string().describe("e.g., btc_jpy"),
+      pair: z.string().describe('e.g., btc_jpy'),
       type: z.enum([
-        "1min","5min","15min","30min",
-        "1hour","4hour","8hour","12hour",
-        "1day","1week","1month",
+        '1min',
+        '5min',
+        '15min',
+        '30min',
+        '1hour',
+        '4hour',
+        '8hour',
+        '12hour',
+        '1day',
+        '1week',
+        '1month',
       ]),
-      date: z.string().describe("YYYY (1month) or YYYYMMDD (others)"),
+      date: z.string().describe('YYYY (1month) or YYYYMMDD (others)'),
       limit: z.number().int().min(1).max(1000).optional().default(200),
-      view: z.enum(["full", "items"]).optional().default("full")
-            .describe('full: all fields / items: ".data.normalized.items" only'),
+      view: z
+        .enum(['full', 'items'])
+        .optional()
+        .default('full')
+        .describe('full: all fields / items: ".data.normalized.items" only'),
     },
   },
   async ({ pair, type, date, limit, view }) => {
     const result = await getCandles(pair, type, date, limit);
-    if (view === "items") {
+    // view=items の特殊処理だけここで行う
+    if (view === 'items') {
       const items = result?.data?.normalized?.items ?? [];
       return {
-        content: [{ type: "text", text: JSON.stringify(items, null, 2) }],
+        content: [{ type: 'text', text: JSON.stringify(items, null, 2) }],
         structuredContent: items,
       };
     }
-    return respond(result);
+    return result;
   }
 );
 
 // ---- get_indicators ----
-server.registerTool(
+registerToolWithLog(
   'get_indicators',
   {
-    description: 'Get technical indicators for a pair.',
+    description:
+      'Get technical indicators for a pair. For meaningful results, use a sufficient `limit` (e.g., 200 for daily candles). If `limit` is omitted, an appropriate default value will be used.',
     inputSchema: {
       pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
       type: z
@@ -109,8 +153,7 @@ server.registerTool(
         .describe('Number of candles to use for calculation'),
     },
   },
-  async ({ pair, type, limit }) =>
-    respond(await getIndicators(pair, type, limit))
+  async ({ pair, type, limit }) => getIndicators(pair, type, limit)
 );
 
 // ---- Prompt: chart_with_lightweight ----
