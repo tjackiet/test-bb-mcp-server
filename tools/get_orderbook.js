@@ -2,6 +2,7 @@
 // 使い方: node get_orderbook.js btc_jpy 5   ← topN=5（省略可）
 
 import { ensurePair, validateLimit, createMeta } from '../lib/validate.js';
+import { ok, fail } from '../lib/result.js';
 
 function ms(ts) {
   const d = new Date(Number(ts));
@@ -26,11 +27,11 @@ function toLevels(arr, n) {
 async function getOrderbook(pair, topN = 5, { timeoutMs = 2500 } = {}) {
   // ペアバリデーション
   const chk = ensurePair(pair);
-  if (!chk.ok) return chk;
+  if (!chk.ok) return fail(chk.error.message, chk.error.type);
 
   // topNバリデーション
   const limitCheck = validateLimit(topN, 1, 50, 'topN');
-  if (!limitCheck.ok) return limitCheck;
+  if (!limitCheck.ok) return fail(limitCheck.error.message, limitCheck.error.type);
 
   const url = `https://public.bitbank.cc/${chk.pair}/depth`;
 
@@ -42,13 +43,7 @@ async function getOrderbook(pair, topN = 5, { timeoutMs = 2500 } = {}) {
     clearTimeout(t);
 
     if (!res.ok) {
-      return {
-        ok: false,
-        error: {
-          type: 'service',
-          message: `HTTP ${res.status} ${res.statusText}`,
-        },
-      };
+      return fail(`HTTP ${res.status} ${res.statusText}`, 'service');
     }
     const json = await res.json();
     // 期待形: { success: 1, data: { asks: [["p","s"],...], bids:[...], timestamp } }
@@ -69,39 +64,37 @@ async function getOrderbook(pair, topN = 5, { timeoutMs = 2500 } = {}) {
 
     const summary =
       `pair=${chk.pair} bid=${bestBid ?? 'N/A'} ask=${bestAsk ?? 'N/A'} ` +
-      `spread=${spread ?? 'N/A'} levels=${limitCheck.value} ts=${ms(d.timestamp) ?? 'N/A'}`;
+      `spread=${spread ?? 'N/A'} levels=${limitCheck.value} ts=${
+        ms(d.timestamp) ?? 'N/A'
+      }`;
 
-    return {
-      ok: true,
-      summary,
-      data: {
-        raw: json,
-        normalized: {
-          pair: chk.pair,
-          bestBid,
-          bestAsk,
-          spread,
-          mid,
-          bids,
-          asks,
-          timestamp: d.timestamp ?? null,
-          isoTime: ms(d.timestamp),
-        },
+    const data = {
+      raw: json,
+      normalized: {
+        pair: chk.pair,
+        bestBid,
+        bestAsk,
+        spread,
+        mid,
+        bids,
+        asks,
+        timestamp: d.timestamp ?? null,
+        isoTime: ms(d.timestamp),
       },
-      meta: createMeta(chk.pair, { topN: limitCheck.value, count: asks.length + bids.length }),
     };
+    const meta = createMeta(chk.pair, {
+      topN: limitCheck.value,
+      count: asks.length + bids.length,
+    });
+
+    return ok(summary, data, meta);
   } catch (err) {
     clearTimeout(t);
     const isAbort = err?.name === 'AbortError';
-    return {
-      ok: false,
-      error: {
-        type: isAbort ? 'timeout' : 'network',
-        message: isAbort
-          ? `タイムアウト (${timeoutMs}ms)`
-          : err?.message || 'ネットワークエラー',
-      },
-    };
+    const message = isAbort
+      ? `タイムアウト (${timeoutMs}ms)`
+      : err?.message || 'ネットワークエラー';
+    return fail(message, isAbort ? 'timeout' : 'network');
   }
 }
 

@@ -17,12 +17,17 @@
 
 ### Docker を利用する場合（推奨）
 
-Docker環境があれば、以下のコマンド一つで環境構築からサーバーの起動、MCP Inspectorでの動作確認までを行えます。
+Docker環境があれば、以下の手順でサーバーの起動とMCP Inspectorでの動作確認を行えます。
 
-```bash
-# Dockerイメージをビルドし、コンテナを起動、Inspectorに接続
-npx @modelcontextprotocol/inspector docker build -t bitbank-mcp . '&&' docker run -i --rm bitbank-mcp
-```
+1.  **Dockerイメージをビルド**
+    ```bash
+    docker build -t bitbank-mcp .
+    ```
+
+2.  **コンテナを起動し、Inspectorに接続**
+    ```bash
+    npx @modelcontextprotocol/inspector docker run -i --rm bitbank-mcp
+    ```
 
 ### ローカル環境で直接実行する場合
 

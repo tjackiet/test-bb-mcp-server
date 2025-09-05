@@ -3,7 +3,13 @@
 // date: typeにより YYYYMMDD または YYYY（1month）
 
 import { fetchJson } from '../lib/http.js';
-import { ensurePair, validateLimit, validateDate, createMeta } from '../lib/validate.js';
+import {
+  ensurePair,
+  validateLimit,
+  validateDate,
+  createMeta,
+} from '../lib/validate.js';
+import { ok, fail } from '../lib/result.js';
 
 const TYPES = new Set([
   '1min',
@@ -39,25 +45,22 @@ export default async function getCandles(
 ) {
   // 入力バリデーション
   const chk = ensurePair(pair);
-  if (!chk.ok) return chk;
+  if (!chk.ok) return fail(chk.error.message, chk.error.type);
 
   if (!TYPES.has(type)) {
-    return {
-      ok: false,
-      error: {
-        type: 'user',
-        message: `type は ${[...TYPES].join(', ')} から選択してください（指定値: ${type}）`,
-      },
-    };
+    return fail(
+      `type は ${[...TYPES].join(', ')} から選択してください（指定値: ${type}）`,
+      'user'
+    );
   }
 
   // 日付バリデーション
   const dateCheck = validateDate(date, type);
-  if (!dateCheck.ok) return dateCheck;
+  if (!dateCheck.ok) return fail(dateCheck.error.message, dateCheck.error.type);
 
   // limitバリデーション
   const limitCheck = validateLimit(limit, 1, 1000);
-  if (!limitCheck.ok) return limitCheck;
+  if (!limitCheck.ok) return fail(limitCheck.error.message, limitCheck.error.type);
 
   const url = `https://public.bitbank.cc/${chk.pair}/candlestick/${type}/${dateCheck.value}`;
 
@@ -83,16 +86,12 @@ export default async function getCandles(
     const latestClose = normalized.at(-1)?.close ?? 'N/A';
     const summary = `${chk.pair} ${type} candles (latest close=${latestClose})`;
 
-    return {
-      ok: true,
+    return ok(
       summary,
-      data: { raw: json, normalized },
-      meta: createMeta(chk.pair, { type, count: normalized.length }),
-    };
+      { raw: json, normalized },
+      createMeta(chk.pair, { type, count: normalized.length })
+    );
   } catch (e) {
-    return {
-      ok: false,
-      error: { type: 'network', message: e?.message || 'ネットワークエラー' },
-    };
+    return fail(e?.message || 'ネットワークエラー', 'network');
   }
 }

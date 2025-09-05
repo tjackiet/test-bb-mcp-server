@@ -4,6 +4,7 @@
 
 import getCandles from './get_candles.js';
 import { ensurePair, createMeta } from '../lib/validate.js';
+import { ok, fail } from '../lib/result.js';
 
 // 移動平均 (SMA)
 function sma(values, period) {
@@ -93,7 +94,7 @@ export default async function getIndicators(
 ) {
   // ペアバリデーション
   const chk = ensurePair(pair);
-  if (!chk.ok) return chk;
+  if (!chk.ok) return fail(chk.error.message, chk.error.type);
 
   // 必要なデータ数を決定
   const requiredCount = getRequiredDataCount(type);
@@ -101,9 +102,9 @@ export default async function getIndicators(
 
   // ローソク足データを取得
   const candlesResult = await getCandles(chk.pair, type, undefined, actualLimit);
-  if (!candlesResult.ok) return candlesResult;
+  if (!candlesResult.ok) return candlesResult; // failをそのまま返す
 
-  const closes = candlesResult.data.normalized.map(c => c.close);
+  const closes = candlesResult.data.normalized.map((c) => c.close);
   const latestClose = closes.at(-1);
 
   // インジケーター計算
@@ -151,23 +152,21 @@ export default async function getIndicators(
 
   const summary = `${chk.pair} ${type} indicators (close=${latestClose}, RSI=${indicators.RSI_14}, trend=${trend})`;
 
-  return {
-    ok: true,
-    summary,
-    data: {
-      raw: candlesResult.data.raw,
-      normalized: candlesResult.data.normalized,
-      indicators,
-      trend,
-      chart: chartData, // チャート描画用の軽量データ
-    },
-    meta: createMeta(chk.pair, { 
-      type, 
-      count: closes.length,
-      requiredCount,
-      warnings: warnings.length > 0 ? warnings : undefined
-    }),
+  const data = {
+    raw: candlesResult.data.raw,
+    normalized: candlesResult.data.normalized,
+    indicators,
+    trend,
+    chart: chartData, // チャート描画用の軽量データ
   };
+  const meta = createMeta(chk.pair, {
+    type,
+    count: closes.length,
+    requiredCount,
+    warnings: warnings.length > 0 ? warnings : undefined,
+  });
+
+  return ok(summary, data, meta);
 }
 
 // トレンド分析

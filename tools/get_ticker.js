@@ -2,6 +2,7 @@
 // 使い方: node get_ticker.js btc_jpy
 
 import { ensurePair, createMeta } from '../lib/validate.js';
+import { ok, fail } from '../lib/result.js';
 
 function ms(ts) {
   const d = new Date(Number(ts));
@@ -11,7 +12,7 @@ function ms(ts) {
 async function getTicker(pair, { timeoutMs = 2500 } = {}) {
   // ペアバリデーション
   const chk = ensurePair(pair);
-  if (!chk.ok) return chk;
+  if (!chk.ok) return fail(chk.error.message, chk.error.type);
 
   const url = `https://public.bitbank.cc/${chk.pair}/ticker`;
 
@@ -23,13 +24,7 @@ async function getTicker(pair, { timeoutMs = 2500 } = {}) {
     clearTimeout(t);
 
     if (!res.ok) {
-      return {
-        ok: false,
-        error: {
-          type: 'service',
-          message: `HTTP ${res.status} ${res.statusText}`,
-        },
-      };
+      return fail(`HTTP ${res.status} ${res.statusText}`, 'service');
     }
     const json = await res.json();
 
@@ -39,35 +34,27 @@ async function getTicker(pair, { timeoutMs = 2500 } = {}) {
       d.buy ?? 'N/A'
     } sell=${d.sell ?? 'N/A'} ts=${ms(d.timestamp) ?? 'N/A'}`;
 
-    return {
-      ok: true,
-      summary,
-      data: {
-        raw: json,
-        normalized: {
-          pair: chk.pair,
-          last: d.last ? Number(d.last) : null,
-          buy: d.buy ? Number(d.buy) : null,
-          sell: d.sell ? Number(d.sell) : null,
-          volume: d.vol ? Number(d.vol) : null,
-          timestamp: d.timestamp ? Number(d.timestamp) : null,
-          isoTime: ms(d.timestamp),
-        },
+    const data = {
+      raw: json,
+      normalized: {
+        pair: chk.pair,
+        last: d.last ? Number(d.last) : null,
+        buy: d.buy ? Number(d.buy) : null,
+        sell: d.sell ? Number(d.sell) : null,
+        volume: d.vol ? Number(d.vol) : null,
+        timestamp: d.timestamp ? Number(d.timestamp) : null,
+        isoTime: ms(d.timestamp),
       },
-      meta: createMeta(chk.pair),
     };
+
+    return ok(summary, data, createMeta(chk.pair));
   } catch (err) {
     clearTimeout(t);
     const isAbort = err?.name === 'AbortError';
-    return {
-      ok: false,
-      error: {
-        type: isAbort ? 'timeout' : 'network',
-        message: isAbort
-          ? `タイムアウト (${timeoutMs}ms)`
-          : err?.message || 'ネットワークエラー',
-      },
-    };
+    const message = isAbort
+      ? `タイムアウト (${timeoutMs}ms)`
+      : err?.message || 'ネットワークエラー';
+    return fail(message, isAbort ? 'timeout' : 'network');
   }
 }
 
