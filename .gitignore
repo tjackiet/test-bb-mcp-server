@@ -1,8 +1,7 @@
-# Node.js
-node_modules
-
-# 環境変数ファイル（もし作ったら）
+# Dotenv
 .env
+.env.*.local
 
-# Mac の余計なファイル
-.DS_Store
+# Node
+node_modules/
+npm-debug.log
