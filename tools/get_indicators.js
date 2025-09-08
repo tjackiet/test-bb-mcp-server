@@ -57,6 +57,74 @@ function bollingerBands(values, period = 20, stdDev = 2) {
   return { upper, middle, lower };
 }
 
+// 一目均衡表
+function ichimokuSeries(highs, lows, closes) {
+  const tenkanSen = []; // 転換線 (9)
+  const kijunSen = []; // 基準線 (26)
+  const rawSpanA = []; // 先行スパンA (計算用)
+  const rawSpanB = []; // 先行スパンB (計算用)
+
+  const tenkanPeriod = 9;
+  const kijunPeriod = 26;
+  const senkouBPeriod = 52;
+  const shift = 26;
+
+  for (let i = 0; i < highs.length; i++) {
+    // 転換線
+    if (i < tenkanPeriod - 1) {
+      tenkanSen.push(null);
+    } else {
+      const highSlice = highs.slice(i - tenkanPeriod + 1, i + 1);
+      const lowSlice = lows.slice(i - tenkanPeriod + 1, i + 1);
+      tenkanSen.push((Math.max(...highSlice) + Math.min(...lowSlice)) / 2);
+    }
+
+    // 基準線
+    if (i < kijunPeriod - 1) {
+      kijunSen.push(null);
+    } else {
+      const highSlice = highs.slice(i - kijunPeriod + 1, i + 1);
+      const lowSlice = lows.slice(i - kijunPeriod + 1, i + 1);
+      kijunSen.push((Math.max(...highSlice) + Math.min(...lowSlice)) / 2);
+    }
+
+    // 先行スパンA (計算用)
+    if (tenkanSen[i] && kijunSen[i]) {
+      rawSpanA.push((tenkanSen[i] + kijunSen[i]) / 2);
+    } else {
+      rawSpanA.push(null);
+    }
+
+    // 先行スパンB (計算用)
+    if (i < senkouBPeriod - 1) {
+      rawSpanB.push(null);
+    } else {
+      const highSlice = highs.slice(i - senkouBPeriod + 1, i + 1);
+      const lowSlice = lows.slice(i - senkouBPeriod + 1, i + 1);
+      rawSpanB.push((Math.max(...highSlice) + Math.min(...lowSlice)) / 2);
+    }
+  }
+
+  // --- 描画用に各系列の時点をずらす ---
+
+  // 先行スパン (未来に26本シフト)
+  // 今日の値を26日未来に描画するため、配列を左にシフトし、末尾をnullで埋める
+  const spanA = rawSpanA.slice(shift).concat(Array(shift).fill(null));
+  const spanB = rawSpanB.slice(shift).concat(Array(shift).fill(null));
+  
+  // 遅行スパン (過去に26本シフト)
+  // 今日の終値を26日過去に描画するため、配列を右にシフトし、先頭をnullで埋める
+  const chikou = Array(shift).fill(null).concat(closes.slice(0, -shift));
+
+  return {
+    tenkan: tenkanSen.map(v => v ? Number(v.toFixed(2)) : null),
+    kijun: kijunSen.map(v => v ? Number(v.toFixed(2)) : null),
+    spanA: spanA.map(v => v ? Number(v.toFixed(2)) : null),
+    spanB: spanB.map(v => v ? Number(v.toFixed(2)) : null),
+    chikou: chikou.map(v => v ? Number(v.toFixed(2)) : null),
+  };
+}
+
 // 一目均衡表（簡略版）
 function ichimoku(highs, lows, closes) {
   if (highs.length < 52 || lows.length < 52) return null;
@@ -156,6 +224,7 @@ export default async function getIndicators(
   // 一目均衡表計算 (全長データで行う)
   const allHighs = candlesResult.data.normalized.map((c) => c.high);
   const allLows = candlesResult.data.normalized.map((c) => c.low);
+  const ichiSeries = ichimokuSeries(allHighs, allLows, allCloses);
   const ichi = ichimoku(allHighs, allLows, allCloses);
   if (ichi) {
     indicators.ICHIMOKU_conversion = ichi.conversion;
@@ -177,7 +246,7 @@ export default async function getIndicators(
   const trend = analyzeTrend(indicators, latestClose);
 
   // チャート描画用データ (表示本数 displayCount で切り出す)
-  const chartIndicatorData = { ...indicators, bb_series: bbSeries };
+  const chartIndicatorData = { ...indicators, bb_series: bbSeries, ichi_series: ichiSeries };
   const chartData = createChartData(
     candlesResult.data.normalized,
     chartIndicatorData,
@@ -243,6 +312,12 @@ function createChartData(normalized, indicators, limit = 50) {
   const bbMiddle = indicators.bb_series?.middle.slice(-limit);
   const bbLower = indicators.bb_series?.lower.slice(-limit);
 
+  const ichiTenkan = indicators.ichi_series?.tenkan.slice(-limit);
+  const ichiKijun = indicators.ichi_series?.kijun.slice(-limit);
+  const ichiSpanA = indicators.ichi_series?.spanA.slice(-limit);
+  const ichiSpanB = indicators.ichi_series?.spanB.slice(-limit);
+  const ichiChikou = indicators.ichi_series?.chikou.slice(-limit);
+
   return {
     // 最近のデータのみ（軽量化）
     candles: recent.map(c => ({
@@ -263,6 +338,11 @@ function createChartData(normalized, indicators, limit = 50) {
       BB_upper: bbUpper,
       BB_middle: bbMiddle,
       BB_lower: bbLower,
+      ICHI_tenkan: ichiTenkan,
+      ICHI_kijun: ichiKijun,
+      ICHI_spanA: ichiSpanA,
+      ICHI_spanB: ichiSpanB,
+      ICHI_chikou: ichiChikou,
     },
     
     // チャート描画用の統計情報

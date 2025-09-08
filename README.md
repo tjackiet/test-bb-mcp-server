@@ -16,6 +16,12 @@
     - `render_chart_svg`: ローソク足チャートを静的なSVG画像として生成します。JavaScriptを使用しないため、Claudeのようなセキュリティ制約の厳しい環境でも確実な表示が保証されます。
     - `render_chart_html`: ローソク足チャートをインタラクティブなHTMLファイルとして生成します。高機能ですが、クライアント環境のセキュリティポリシー(CSP)によっては表示されない場合があります。
 
+### サンプルチャート (SVG)
+
+以下は `render_chart_svg` ツールによって生成されたBTC/JPYの日足チャートです。
+
+![Sample Chart](assets/sample_chart.svg)
+
 > **Note:** `render_chart_html` はインタラクティブですが、実行環境の CSP でブロックされる場合があります。安定表示が必要な場合は `render_chart_svg` を使用してください。
 
 ## Setup
@@ -94,12 +100,13 @@ node tools/get_candles_cli.mjs btc_jpy 1hour 20240511
 node tools/get_indicators_cli.mjs btc_jpy 1day
 ```
 
+### SVGチャート生成
+```bash
+# 日足チャートをSVGファイルとして出力
+node tools/render_chart_svg_cli.mjs btc_jpy 1day 45 > chart.svg
+```
+
 ### ティッカーデータ取得
 ```bash
 node tools/get_ticker.js btc_jpy
-```
-
-### 板データ取得
-```bash
-node tools/get_orderbook.js btc_jpy 5
 ```

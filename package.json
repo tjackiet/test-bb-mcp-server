@@ -3,9 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node src/server.mjs",
+    "start": "node src/server.mjs",
+    "dev": "LOG_LEVEL=debug nodemon src/server.mjs",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "stat": "node tools/stat.js",
     "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true"
   },
+  "keywords": [],
+  "author": "",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.4",
     "dotenv": "^16.4.5",

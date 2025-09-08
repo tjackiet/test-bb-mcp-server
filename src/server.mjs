@@ -206,18 +206,26 @@ registerToolWithLog(
   'render_chart_svg',
   {
     description:
-      'Generates a stable SVG candlestick chart. Ideal for environments with CSP restrictions. Automatically draws SMA lines. Recommended `limit` values are 30, 90, or 365.',
+      'ローソク足チャートをSVG画像形式で描画します。インジケータの表示も可能です。',
     inputSchema: {
       pair: z.string().optional().default('btc_jpy'),
-      type: z
-        .enum(['1day', '1week', '1month', '1hour', '4hour'])
-        .optional()
-        .default('1day'),
+      type: z.string().optional().default('1day'),
       limit: z.number().int().min(5).max(365).optional().default(60),
       withSMA: z
-        .array(z.number().int().min(2).max(300))
+        .array(z.number().int())
         .optional()
-        .default([25, 75]),
+        .default([25, 75])
+        .describe('描画する単純移動平均線の期間を配列で指定。空配列[]で非表示。'),
+      withBB: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe('ボリンジャーバンドを描画するかどうか'),
+      withIchimoku: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe('一目均衡表を描画するかどうか'),
     },
   },
   async (args) => renderChartSvg(args)

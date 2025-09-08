@@ -5,11 +5,13 @@ import { formatPair } from '../lib/formatter.js';
 
 export default async function renderChartSvg({
   pair = 'btc_jpy',
-  type = '1day',
+  type = 'day',
   limit = 60,
   withSMA = [25, 75],
   withBB = true,
+  withIchimoku = false, // デフォルトではオフに
 } = {}) {
+  // `limit` は表示したい本数。getIndicatorsにはバッファ計算を任せる
   const res = await getIndicators(pair, type, limit);
   if (!res?.ok) return res;
 
@@ -145,6 +147,57 @@ export default async function renderChartSvg({
     `;
   }
 
+  // 一目均衡表
+  let ichimokuLayers = '';
+  if (withIchimoku && indicators?.ICHI_tenkan) {
+
+    const createIchimokuPath = (data) => {
+      const points = [];
+      data.forEach((val, i) => {
+        if (val !== null) {
+          points.push({ x: x(i), y: y(val) });
+        }
+      });
+      if (points.length === 0) return '';
+      return 'M ' + points.map(p => `${p.x},${p.y}`).join(' L ');
+    };
+
+    const tenkanPath = createIchimokuPath(indicators.ICHI_tenkan);
+    const kijunPath = createIchimokuPath(indicators.ICHI_kijun);
+    const chikouPath = createIchimokuPath(indicators.ICHI_chikou);
+    const spanAPath = createIchimokuPath(indicators.ICHI_spanA);
+    const spanBPath = createIchimokuPath(indicators.ICHI_spanB);
+    
+    // 雲の描画
+    let kumoPath = '';
+    const spanAPoints = [];
+    indicators.ICHI_spanA.forEach((v, i) => v !== null && spanAPoints.push({x: x(i), y: y(v)}));
+    const spanBPoints = [];
+    indicators.ICHI_spanB.forEach((v, i) => v !== null && spanBPoints.push({x: x(i), y: y(v)}));
+
+    if (spanAPoints.length > 0 && spanBPoints.length > 0) {
+      // 雲のパスを生成
+      const pointA = spanAPoints.map(p => `${p.x},${p.y}`).join(' L ');
+      const pointBReversed = [...spanBPoints].reverse().map(p => `${p.x},${p.y}`).join(' L ');
+      kumoPath = `M ${pointA} L ${pointBReversed} Z`;
+    }
+
+    // 雲の色を決定（スパンAとBの位置関係に基づく）
+    // 最新の有効な値で比較
+    const lastA = [...indicators.ICHI_spanA].reverse().find(v => v !== null);
+    const lastB = [...indicators.ICHI_spanB].reverse().find(v => v !== null);
+    const kumoColor = lastA > lastB ? 'rgba(16, 163, 74, 0.1)' : 'rgba(239, 68, 68, 0.1)';
+
+    ichimokuLayers = `
+      <path d="${kumoPath}" fill="${kumoColor}" stroke="none" />
+      <path d="${tenkanPath}" fill="none" stroke="#f97316" stroke-width="1"/>
+      <path d="${kijunPath}" fill="none" stroke="#3b82f6" stroke-width="1"/>
+      <path d="${chikouPath}" fill="none" stroke="#16a34a" stroke-width="1" stroke-dasharray="2 2"/>
+      <path d="${spanAPath}" fill="none" stroke="rgba(239, 68, 68, 0.5)" stroke-width="1"/>
+      <path d="${spanBPath}" fill="none" stroke="rgba(16, 163, 74, 0.5)" stroke-width="1"/>
+    `;
+  }
+
   const title = `${formatPair(pair)} ${type} (${items.length} bars)`;
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
@@ -164,6 +217,8 @@ export default async function renderChartSvg({
   ${smaLayers}
   <!-- Bollinger Bands -->
   ${bbLayers}
+  <!-- Ichimoku Cloud -->
+  ${ichimokuLayers}
   <!-- 目盛り（軽量） -->
   <text x="${
     w / 2
