@@ -1,7 +1,5 @@
-# Dotenv
+node_modules
 .env
-.env.*.local
-
-# Node
-node_modules/
-npm-debug.log
+logs/
+reports/
+cache/

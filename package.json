@@ -8,6 +8,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "stat": "node tools/stat.js",
     "report": "node tools/report.js",
+    "clear-cache": "node tools/clear_cache.js",
     "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true"
   },
   "keywords": [],

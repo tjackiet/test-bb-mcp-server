@@ -59,6 +59,14 @@ async function processLogFile(filePath, stats, startTime) {
         stats.errorTypes[errorType] = (stats.errorTypes[errorType] || 0) + 1;
       }
 
+      // キャッシュヒット率の集計
+      const cacheStatus = log.result?.meta?.cache;
+      if (cacheStatus === 'hit') {
+        stats.cacheHits++;
+      } else if (cacheStatus === 'miss') {
+        stats.cacheMisses++;
+      }
+
       if (typeof log.ms === 'number') {
         stats.durations.push(log.ms);
       }
@@ -90,6 +98,8 @@ async function run() {
     fail: 0,
     durations: [],
     errorTypes: {},
+    cacheHits: 0,
+    cacheMisses: 0,
   };
 
   try {
@@ -127,6 +137,10 @@ async function run() {
         .join(', ');
     }
 
+    const totalCacheable = stats.cacheHits + stats.cacheMisses;
+    const cacheHitRate =
+      totalCacheable > 0 ? (stats.cacheHits / totalCacheable) * 100 : 0;
+
     const durationInfo = startTime ? ` (last ${durationStr})` : '';
 
     console.log(`
@@ -136,6 +150,7 @@ Success:      ${stats.success}
 Failure:      ${stats.fail}
 Error Rate:   ${errRate.toFixed(2)}%
 Error Types:  ${errorSummary}
+Cache Hit Rate: ${cacheHitRate.toFixed(2)}% (${stats.cacheHits}/${totalCacheable})
 
 --- Processing Time (ms) ---
 Average:      ${avgDuration.toFixed(2)} ms
