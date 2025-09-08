@@ -7,6 +7,7 @@
     "dev": "LOG_LEVEL=debug nodemon src/server.mjs",
     "test": "echo \"Error: no test specified\" && exit 1",
     "stat": "node tools/stat.js",
+    "report": "node tools/report.js",
     "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true"
   },
   "keywords": [],
