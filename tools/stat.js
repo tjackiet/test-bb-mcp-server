@@ -5,7 +5,33 @@ import readline from 'readline';
 
 const LOG_DIR = process.env.LOG_DIR || './logs';
 
-async function processLogFile(filePath, stats) {
+function parseDuration(durationStr) {
+  if (!durationStr) return null;
+  const match = durationStr.match(/^(\d+)([dhms])$/);
+  if (!match) return null;
+
+  const value = parseInt(match[1], 10);
+  const unit = match[2];
+  const now = new Date();
+
+  switch (unit) {
+    case 'd':
+      now.setDate(now.getDate() - value);
+      break;
+    case 'h':
+      now.setHours(now.getHours() - value);
+      break;
+    case 'm':
+      now.setMinutes(now.getMinutes() - value);
+      break;
+    case 's':
+      now.setSeconds(now.getSeconds() - value);
+      break;
+  }
+  return now;
+}
+
+async function processLogFile(filePath, stats, startTime) {
   const fileStream = fs.createReadStream(filePath);
   const rl = readline.createInterface({
     input: fileStream,
@@ -16,6 +42,11 @@ async function processLogFile(filePath, stats) {
     try {
       const log = JSON.parse(line);
 
+      // 期間フィルタ
+      if (startTime && new Date(log.ts) < startTime) {
+        continue;
+      }
+
       // tool_run イベントのみを集計対象とする
       if (log.type !== 'tool_run') continue;
 
@@ -24,6 +55,8 @@ async function processLogFile(filePath, stats) {
         stats.success++;
       } else {
         stats.fail++;
+        const errorType = log.result?.meta?.errorType || 'unknown';
+        stats.errorTypes[errorType] = (stats.errorTypes[errorType] || 0) + 1;
       }
 
       if (typeof log.ms === 'number') {
@@ -36,6 +69,16 @@ async function processLogFile(filePath, stats) {
 }
 
 async function run() {
+  const args = process.argv.slice(2);
+  const lastFlagIndex = args.indexOf('--last');
+  const durationStr = lastFlagIndex !== -1 ? args[lastFlagIndex + 1] : null;
+  const startTime = parseDuration(durationStr);
+
+  if (lastFlagIndex !== -1 && !startTime) {
+    console.error(`Error: Invalid duration format '${durationStr}'. Use format like '7d', '24h', '30m'.`);
+    process.exit(1);
+  }
+
   if (!fs.existsSync(LOG_DIR)) {
     console.error(`Error: Log directory not found at '${LOG_DIR}'`);
     process.exit(1);
@@ -46,6 +89,7 @@ async function run() {
     success: 0,
     fail: 0,
     durations: [],
+    errorTypes: {},
   };
 
   try {
@@ -61,7 +105,7 @@ async function run() {
 
     for (const file of logFiles) {
       const filePath = path.join(LOG_DIR, file);
-      await processLogFile(filePath, stats);
+      await processLogFile(filePath, stats, startTime);
     }
 
     // 集計結果の表示
@@ -76,12 +120,22 @@ async function run() {
     const minDuration =
       stats.durations.length > 0 ? Math.min(...stats.durations) : 0;
 
+    let errorSummary = 'N/A';
+    if (stats.fail > 0) {
+      errorSummary = Object.entries(stats.errorTypes)
+        .map(([type, count]) => `${type}: ${count}`)
+        .join(', ');
+    }
+
+    const durationInfo = startTime ? ` (last ${durationStr})` : '';
+
     console.log(`
---- Log Statistics ---
+--- Log Statistics${durationInfo} ---
 Total Runs:   ${stats.total}
 Success:      ${stats.success}
 Failure:      ${stats.fail}
 Error Rate:   ${errRate.toFixed(2)}%
+Error Types:  ${errorSummary}
 
 --- Processing Time (ms) ---
 Average:      ${avgDuration.toFixed(2)} ms
