@@ -1,5 +1,5 @@
 // tools/render_chart_svg.js
-import getCandles from './get_candles.js';
+import getIndicators from './get_indicators.js';
 import { ok, fail } from '../lib/result.js';
 import { formatPair } from '../lib/formatter.js';
 
@@ -8,11 +8,15 @@ export default async function renderChartSvg({
   type = '1day',
   limit = 60,
   withSMA = [25, 75],
+  withBB = true,
 } = {}) {
-  const res = await getCandles(pair, type, undefined, limit);
+  const res = await getIndicators(pair, type, limit);
   if (!res?.ok) return res;
 
-  const items = res.data?.normalized;
+  const chartData = res.data?.chart;
+  const items = chartData?.candles;
+  const indicators = chartData?.indicators;
+
   if (!items?.length) {
     return fail('No candle data available to render SVG chart.', 'user');
   }
@@ -96,6 +100,51 @@ export default async function renderChartSvg({
     .map((p, idx) => smaPath(p, smaColors[idx % smaColors.length]))
     .join('');
 
+  // ボリンジャーバンド
+  let bbLayers = '';
+  if (
+    withBB &&
+    indicators?.BB_upper &&
+    indicators?.BB_middle &&
+    indicators?.BB_lower
+  ) {
+    const createPoints = (data) => {
+      const points = [];
+      data.forEach((val, i) => {
+        if (val !== null) {
+          points.push({ x: x(i), y: y(val) });
+        }
+      });
+      return points;
+    };
+    const createPathFromPoints = (points) => {
+      if (points.length === 0) return '';
+      return 'M ' + points.map((p) => `${p.x},${p.y}`).join(' L ');
+    };
+
+    const upperPoints = createPoints(indicators.BB_upper);
+    const middlePoints = createPoints(indicators.BB_middle);
+    const lowerPoints = createPoints(indicators.BB_lower);
+
+    const upperPath = createPathFromPoints(upperPoints);
+    const middlePath = createPathFromPoints(middlePoints);
+    const lowerPath = createPathFromPoints(lowerPoints);
+
+    let bandPath = '';
+    if (upperPoints.length > 0 && lowerPoints.length > 0) {
+      const lowerPointsReversed = [...lowerPoints].reverse();
+      const allPoints = [...upperPoints, ...lowerPointsReversed];
+      bandPath = createPathFromPoints(allPoints) + ' Z';
+    }
+
+    bbLayers = `
+      <path d="${bandPath}" fill="rgba(59, 130, 246, 0.1)" stroke="none" />
+      <path d="${upperPath}" fill="none" stroke="#3b82f6" stroke-width="1"/>
+      <path d="${lowerPath}" fill="none" stroke="#3b82f6" stroke-width="1"/>
+      <path d="${middlePath}" fill="none" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4 4"/>
+    `;
+  }
+
   const title = `${formatPair(pair)} ${type} (${items.length} bars)`;
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
@@ -113,6 +162,8 @@ export default async function renderChartSvg({
   ${bodies}
   <!-- SMA -->
   ${smaLayers}
+  <!-- Bollinger Bands -->
+  ${bbLayers}
   <!-- 目盛り（軽量） -->
   <text x="${
     w / 2

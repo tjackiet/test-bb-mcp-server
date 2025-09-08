@@ -6,6 +6,7 @@ import getCandles from './get_candles.js';
 import { ensurePair, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
+import { getFetchCount } from '../lib/indicator_buffer.js';
 
 // 移動平均 (SMA)
 function sma(values, period) {
@@ -30,20 +31,30 @@ function rsi(values, period = 14) {
 
 // ボリンジャーバンド
 function bollingerBands(values, period = 20, stdDev = 2) {
-  if (values.length < period) return null;
-  
-  const recent = values.slice(-period);
-  const sma = recent.reduce((a, b) => a + b, 0) / period;
-  const variance = recent.reduce((sum, val) => 
-    sum + Math.pow(val - sma, 2), 0) / period;
-  const std = Math.sqrt(variance);
-  
-  return {
-    upper: Number((sma + (stdDev * std)).toFixed(2)),
-    middle: Number(sma.toFixed(2)),
-    lower: Number((sma - (stdDev * std)).toFixed(2)),
-    bandwidth: Number(((stdDev * std * 2) / sma * 100).toFixed(2))
-  };
+  const upper = [];
+  const middle = [];
+  const lower = [];
+
+  for (let i = 0; i < values.length; i++) {
+    if (i < period - 1) {
+      upper.push(null);
+      middle.push(null);
+      lower.push(null);
+      continue;
+    }
+
+    const slice = values.slice(i - period + 1, i + 1);
+    const smaValue = slice.reduce((a, b) => a + b, 0) / period;
+    const variance =
+      slice.reduce((sum, val) => sum + Math.pow(val - smaValue, 2), 0) /
+      period;
+    const std = Math.sqrt(variance);
+
+    upper.push(Number((smaValue + stdDev * std).toFixed(2)));
+    middle.push(Number(smaValue.toFixed(2)));
+    lower.push(Number((smaValue - stdDev * std).toFixed(2)));
+  }
+  return { upper, middle, lower };
 }
 
 // 一目均衡表（簡略版）
@@ -97,38 +108,55 @@ export default async function getIndicators(
   const chk = ensurePair(pair);
   if (!chk.ok) return fail(chk.error.message, chk.error.type);
 
-  // 必要なデータ数を決定
-  const requiredCount = getRequiredDataCount(type);
-  const actualLimit = limit || requiredCount;
+  // 表示したい本数
+  const displayCount = limit || 60;
+
+  // 計算に利用するすべてのインジケータキー
+  const indicatorKeys = [
+    'SMA_25',
+    'SMA_75',
+    'SMA_200',
+    'RSI_14',
+    'BB_20',
+    'ICHIMOKU',
+  ];
+
+  // バッファを含めて取得すべき合計本数を計算
+  const fetchCount = getFetchCount(displayCount, indicatorKeys);
 
   // ローソク足データを取得
-  const candlesResult = await getCandles(chk.pair, type, undefined, actualLimit);
+  const candlesResult = await getCandles(chk.pair, type, undefined, fetchCount);
   if (!candlesResult.ok) return candlesResult; // failをそのまま返す
 
-  const closes = candlesResult.data.normalized.map((c) => c.close);
-  const latestClose = closes.at(-1);
+  const allCloses = candlesResult.data.normalized.map((c) => c.close);
+  const latestClose = allCloses.at(-1);
 
-  // インジケーター計算
+  // インジケーター計算 (全長データで行う)
   const indicators = {
-    SMA_25: sma(closes, 25),
-    SMA_75: sma(closes, 75),
-    SMA_200: sma(closes, 200),
-    RSI_14: rsi(closes, 14),
+    SMA_25: sma(allCloses, 25),
+    SMA_75: sma(allCloses, 75),
+    SMA_200: sma(allCloses, 200),
+    RSI_14: rsi(allCloses, 14),
   };
 
-  // ボリンジャーバンド計算
-  const bb = bollingerBands(closes, 20, 2);
-  if (bb) {
-    indicators.BB_upper = bb.upper;
-    indicators.BB_middle = bb.middle;
-    indicators.BB_lower = bb.lower;
-    indicators.BB_bandwidth = bb.bandwidth;
+  // ボリンジャーバンド計算 (全長データで行う)
+  const bbSeries = bollingerBands(allCloses, 20, 2);
+  const lastUpper = bbSeries.upper.at(-1);
+  const lastMiddle = bbSeries.middle.at(-1);
+  const lastLower = bbSeries.lower.at(-1);
+
+  if (lastUpper && lastMiddle && lastLower) {
+    indicators.BB_upper = lastUpper;
+    indicators.BB_middle = lastMiddle;
+    indicators.BB_lower = lastLower;
+    const bandwidth = ((lastUpper - lastLower) / lastMiddle) * 100;
+    indicators.BB_bandwidth = Number(bandwidth.toFixed(2));
   }
 
-  // 一目均衡表計算
-  const highs = candlesResult.data.normalized.map(c => c.high);
-  const lows = candlesResult.data.normalized.map(c => c.low);
-  const ichi = ichimoku(highs, lows, closes);
+  // 一目均衡表計算 (全長データで行う)
+  const allHighs = candlesResult.data.normalized.map((c) => c.high);
+  const allLows = candlesResult.data.normalized.map((c) => c.low);
+  const ichi = ichimoku(allHighs, allLows, allCloses);
   if (ichi) {
     indicators.ICHIMOKU_conversion = ichi.conversion;
     indicators.ICHIMOKU_base = ichi.base;
@@ -138,24 +166,29 @@ export default async function getIndicators(
 
   // データ不足の警告
   const warnings = [];
-  if (closes.length < 25) warnings.push('SMA_25: データ不足');
-  if (closes.length < 75) warnings.push('SMA_75: データ不足');
-  if (closes.length < 200) warnings.push('SMA_200: データ不足');
-  if (closes.length < 15) warnings.push('RSI_14: データ不足');
-  if (closes.length < 20) warnings.push('Bollinger_Bands: データ不足');
-  if (closes.length < 52) warnings.push('Ichimoku: データ不足');
+  if (allCloses.length < 25) warnings.push('SMA_25: データ不足');
+  if (allCloses.length < 75) warnings.push('SMA_75: データ不足');
+  if (allCloses.length < 200) warnings.push('SMA_200: データ不足');
+  if (allCloses.length < 15) warnings.push('RSI_14: データ不足');
+  if (allCloses.length < 20) warnings.push('Bollinger_Bands: データ不足');
+  if (allCloses.length < 52) warnings.push('Ichimoku: データ不足');
 
   // トレンド分析
   const trend = analyzeTrend(indicators, latestClose);
 
-  // チャート描画用データ
-  const chartData = createChartData(candlesResult.data.normalized, indicators);
+  // チャート描画用データ (表示本数 displayCount で切り出す)
+  const chartIndicatorData = { ...indicators, bb_series: bbSeries };
+  const chartData = createChartData(
+    candlesResult.data.normalized,
+    chartIndicatorData,
+    displayCount
+  );
 
   const summary = formatSummary({
     pair: chk.pair,
     timeframe: type,
     latest: latestClose,
-    extra: `RSI=${indicators.RSI_14} trend=${trend} (count=${closes.length})`,
+    extra: `RSI=${indicators.RSI_14} trend=${trend} (count=${allCloses.length})`,
   });
 
   const data = {
@@ -167,8 +200,8 @@ export default async function getIndicators(
   };
   const meta = createMeta(chk.pair, {
     type,
-    count: closes.length,
-    requiredCount,
+    count: allCloses.length,
+    requiredCount: fetchCount,
     warnings: warnings.length > 0 ? warnings : undefined,
   });
 
@@ -205,7 +238,11 @@ function analyzeTrend(indicators, currentPrice) {
 // チャート描画用の軽量データ生成
 function createChartData(normalized, indicators, limit = 50) {
   const recent = normalized.slice(-limit);
-  
+
+  const bbUpper = indicators.bb_series?.upper.slice(-limit);
+  const bbMiddle = indicators.bb_series?.middle.slice(-limit);
+  const bbLower = indicators.bb_series?.lower.slice(-limit);
+
   return {
     // 最近のデータのみ（軽量化）
     candles: recent.map(c => ({
@@ -222,7 +259,10 @@ function createChartData(normalized, indicators, limit = 50) {
       SMA_25: indicators.SMA_25,
       SMA_75: indicators.SMA_75,
       SMA_200: indicators.SMA_200,
-      RSI_14: indicators.RSI_14
+      RSI_14: indicators.RSI_14,
+      BB_upper: bbUpper,
+      BB_middle: bbMiddle,
+      BB_lower: bbLower,
     },
     
     // チャート描画用の統計情報
