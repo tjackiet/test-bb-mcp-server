@@ -20,7 +20,11 @@
 
 以下は `render_chart_svg` ツールによって生成されたBTC/JPYの日足チャートです。
 
+**ボリンジャーバンド**
 ![Sample Chart](assets/sample_chart.svg)
+
+**一目均衡表**
+![Ichimoku Sample Chart](assets/ichimoku_sample.svg)
 
 > **Note:** `render_chart_html` はインタラクティブですが、実行環境の CSP でブロックされる場合があります。安定表示が必要な場合は `render_chart_svg` を使用してください。
 
@@ -111,6 +115,17 @@ node tools/get_indicators_cli.mjs btc_jpy 1day
 ```bash
 # 日足チャートをSVGファイルとして出力
 node tools/render_chart_svg_cli.mjs btc_jpy 1day 45 > chart.svg
+```
+
+インジケータの表示を制御するには、以下のフラグを追加します。
+
+- `--with-ichimoku`: 一目均衡表を描画（デフォルト: オフ）
+- `--no-bb`: ボリンジャーバンドを非表示（デフォルト: オン）
+- `--no-sma`: SMA（単純移動平均線）を非表示（デフォルト: オン）
+
+**実行例：一目均衡表のみを描画**
+```bash
+node tools/render_chart_svg_cli.mjs btc_jpy 1day 60 --with-ichimoku --no-bb --no-sma > ichimoku_chart.svg
 ```
 
 ### ティッカーデータ取得

@@ -2,11 +2,24 @@
 import renderChartSvg from './render_chart_svg.js';
 
 async function main() {
-  const pair = process.argv[2] || 'btc_jpy';
-  const type = process.argv[3] || '1day';
-  const limit = process.argv[4] ? parseInt(process.argv[4], 10) : 60;
+  const args = process.argv.slice(2);
+  const positionalArgs = args.filter((arg) => !arg.startsWith('--'));
+  const flagArgs = new Set(args.filter((arg) => arg.startsWith('--')));
 
-  const result = await renderChartSvg({ pair, type, limit });
+  const pair = positionalArgs[0] || 'btc_jpy';
+  const type = positionalArgs[1] || '1day';
+  const limit = positionalArgs[2] ? parseInt(positionalArgs[2], 10) : 60;
+
+  const options = {
+    pair,
+    type,
+    limit,
+    withSMA: flagArgs.has('--no-sma') ? [] : [25, 75],
+    withBB: !flagArgs.has('--no-bb'),
+    withIchimoku: flagArgs.has('--with-ichimoku'),
+  };
+
+  const result = await renderChartSvg(options);
 
   if (result.ok) {
     // SVGデータを標準出力に書き出す
