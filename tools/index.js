@@ -5,6 +5,7 @@ import getCandles from './get_candles.js';
 import getIndicators from './get_indicators.js';
 import renderChartHtml from './render_chart_html.js';
 import renderChartSvg from './render_chart_svg.js';
+import getSimpleTrend from './get_simple_trend.js';
 
 export {
   getTicker,
@@ -13,4 +14,5 @@ export {
   getIndicators,
   renderChartHtml,
   renderChartSvg,
+  getSimpleTrend,
 };

@@ -9,14 +9,25 @@ import { formatSummary } from '../lib/formatter.js';
 import { getFetchCount } from '../lib/indicator_buffer.js';
 
 // 移動平均 (SMA)
-function sma(values, period) {
-  if (values.length < period) return null;
-  const sum = values.slice(-period).reduce((a, b) => a + b, 0);
-  return Number((sum / period).toFixed(2));
+export function sma(values, period) {
+  const results = [];
+  let sum = 0;
+  for (let i = 0; i < values.length; i++) {
+    sum += values[i];
+    if (i >= period) {
+      sum -= values[i - period];
+    }
+    if (i >= period - 1) {
+      results.push(Number((sum / period).toFixed(2)));
+    } else {
+      results.push(null);
+    }
+  }
+  return results;
 }
 
 // RSI (相対力指数, デフォルト14日)
-function rsi(values, period = 14) {
+export function rsi(values, period = 14) {
   if (values.length < period + 1) return null;
 
   let gains = 0, losses = 0;
@@ -30,7 +41,7 @@ function rsi(values, period = 14) {
 }
 
 // ボリンジャーバンド
-function bollingerBands(values, period = 20, stdDev = 2) {
+export function bollingerBands(values, period = 20, stdDev = 2) {
   const upper = [];
   const middle = [];
   const lower = [];
@@ -58,7 +69,7 @@ function bollingerBands(values, period = 20, stdDev = 2) {
 }
 
 // 一目均衡表
-function ichimokuSeries(highs, lows, closes) {
+export function ichimokuSeries(highs, lows, closes) {
   const tenkanSen = []; // 転換線 (9)
   const kijunSen = []; // 基準線 (26)
   const rawSpanA = []; // 先行スパンA (計算用)
@@ -201,9 +212,9 @@ export default async function getIndicators(
 
   // インジケーター計算 (全長データで行う)
   const indicators = {
-    SMA_25: sma(allCloses, 25),
-    SMA_75: sma(allCloses, 75),
-    SMA_200: sma(allCloses, 200),
+    SMA_25: sma(allCloses, 25).at(-1),
+    SMA_75: sma(allCloses, 75).at(-1),
+    SMA_200: sma(allCloses, 200).at(-1),
     RSI_14: rsi(allCloses, 14),
   };
 

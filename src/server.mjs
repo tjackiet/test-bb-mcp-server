@@ -12,6 +12,7 @@ import {
   getIndicators,
   renderChartHtml,
   renderChartSvg,
+  getSimpleTrend,
 } from '../tools/index.js';
 import { logToolRun, logError } from '../lib/logger.js';
 
@@ -231,42 +232,93 @@ registerToolWithLog(
   async (args) => renderChartSvg(args)
 );
 
-// ---- Prompt: visualize_svg_chart ----
-server.registerPrompt(
-  'visualize_svg_chart',
+// ---- get_simple_trend ----
+registerToolWithLog(
+  'get_simple_trend',
   {
-    description: 'Generates and displays a candlestick chart as an SVG image.',
+    description: '20期間MAと一目均衡表に基づいたシンプルな市場トレンド（強気/弱気/中立）を取得します。',
     inputSchema: {
-      pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
-      type: z
-        .enum(['1day', '1week', '1month', '1hour', '4hour'])
-        .optional()
-        .default('1day'),
-      limit: z.number().int().min(5).max(365).optional().default(60),
+      pair: z.string().optional().default('btc_jpy'),
+      type: z.string().optional().default('1day'),
+      limit: z.number().int().min(30).max(365).optional().default(100),
     },
   },
-  async ({ pair, type, limit }) => {
+  async (args) => getSimpleTrend(args)
+);
+
+// ---- Prompt: analyze_simple_trend ----
+server.registerPrompt('analyze_simple_trend', {
+  description:
+    'シンプルなインジケータ（20期間MAと一目均衡表）を用いて市場トレンドを分析し、初心者向けに解説します。',
+  inputSchema: z.object({
+    pair: z
+      .string()
+      .optional()
+      .default('btc_jpy')
+      .describe('分析する通貨ペア (例: btc_jpy)'),
+    type: z
+      .string()
+      .optional()
+      .default('1day')
+      .describe('ローソク足の時間軸 (例: 1day)'),
+  }),
+  handler: async ({ pair, type }) => {
     return {
       messages: [
         {
           role: 'user',
           content: {
             type: 'text',
-            text: `${pair.toUpperCase()} の ${type} のチャートを、直近 ${limit} 本のデータでSVG画像として生成・表示してください。`,
+            text: `
+${pair.toUpperCase()} の市場トレンドを分析してください。
+
+1. \`get_simple_trend\` ツールを呼び出し、現在のトレンド（bullish/bearish/neutral）と、その根拠となる短いコメントを取得します。
+2. ツールの返却値を事実のベースとして利用し、特に初心者にも分かりやすいように、専門用語を避けながら平易な日本語で解説を作成してください。
+
+ユーザーの元の質問が「ビットコインは上がる？下がる？」のような非常に曖昧なものであっても、上記の手順に従って分析的な回答を生成してください。`,
           },
-        },
-        {
-          role: 'assistant',
-          content: [
-            {
-              type: 'tool_code',
-              tool_name: 'render_chart_svg',
-              tool_input: { pair, type, limit },
-            },
-          ],
         },
       ],
     };
+  },
+});
+
+// ---- Prompt: visualize_svg_chart ----
+server.registerPrompt(
+  'visualize_svg_chart',
+  {
+    description: 'Generates and displays a candlestick chart as an SVG image.',
+    inputSchema: z.object({
+      pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
+      type: z
+        .enum(['1day', '1week', '1month', '1hour', '4hour'])
+        .optional()
+        .default('1day'),
+      limit: z.number().int().min(5).max(365).optional().default(60),
+    }),
+    handler: async ({ pair, type, limit }) => {
+      return {
+        messages: [
+          {
+            role: 'user',
+            content: {
+              type: 'text',
+              text: `${pair.toUpperCase()} の ${type} のチャートを、直近 ${limit} 本のデータでSVG画像として生成・表示してください。`,
+            },
+          },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_code',
+                tool_name: 'render_chart_svg',
+                tool_input: { pair, type, limit },
+              },
+            ],
+          },
+        ],
+      };
+    },
   }
 );
 
@@ -276,29 +328,29 @@ server.registerPrompt(
   {
     description:
       'Get a market overview by combining ticker, orderbook, and indicators.',
-    inputSchema: {
+    inputSchema: z.object({
       pair: z.string().describe('e.g., btc_jpy'),
-    },
-  },
-  async ({ pair }) => {
-    const safePair = pair || 'btc_jpy'; // フォールバックは念のため残す
-    return {
-      messages: [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text: `${safePair.toUpperCase()}の現在の市場概況を報告してください。
+    }),
+    handler: async ({ pair }) => {
+      const safePair = pair || 'btc_jpy'; // フォールバックは念のため残す
+      return {
+        messages: [
+          {
+            role: 'user',
+            content: {
+              type: 'text',
+              text: `${safePair.toUpperCase()}の現在の市場概況を報告してください。
 
 1. \`get_ticker\`で最新価格を取得。
 2. \`get_orderbook\`で現在のスプレッドを確認。
 3. \`get_indicators\`（日足）でRSIとトレンドを取得。
 
 上記3つの情報をまとめて、簡潔に状況を説明してください。`,
+            },
           },
-        },
-      ],
-    };
+        ],
+      };
+    },
   }
 );
 
@@ -308,7 +360,7 @@ server.registerPrompt(
   {
     description:
       'Visualizes candle data as a chart by using the `render_chart_html` tool.',
-    inputSchema: {
+    inputSchema: z.object({
       pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
       type: z
         .enum([
@@ -334,25 +386,25 @@ server.registerPrompt(
         .optional()
         .default(90)
         .describe('Number of candles to render'),
-    },
-  },
-  async ({ pair, type, limit }) => {
-    const safePair = pair || 'btc_jpy';
-    return {
-      messages: [
-        {
-          role: 'user',
-          content: {
-            type: 'text',
-            text: `${safePair.toUpperCase()}の${type}チャートをHTMLとして描画してください。
+    }),
+    handler: async ({ pair, type, limit }) => {
+      const safePair = pair || 'btc_jpy';
+      return {
+        messages: [
+          {
+            role: 'user',
+            content: {
+              type: 'text',
+              text: `${safePair.toUpperCase()}の${type}チャートをHTMLとして描画してください。
 
 \`render_chart_html\`ツールを使い、直近${limit}本分のデータを描画したHTMLを生成してください（ライブラリを埋め込むために \`embedLib: true\` を指定してください）。
 
 実行後、返された\`data.html\`の内容をそのまま提示してください。`,
+            },
           },
-        },
-      ],
-    };
+        ],
+      };
+    },
   }
 );
 
