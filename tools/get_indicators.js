@@ -318,6 +318,7 @@ function analyzeTrend(indicators, currentPrice) {
 // チャート描画用の軽量データ生成
 function createChartData(normalized, indicators, limit = 50) {
   const recent = normalized.slice(-limit);
+  const shift = 26; // 先行スパンのシフト数
 
   const bbUpper = indicators.bb_series?.upper.slice(-limit);
   const bbMiddle = indicators.bb_series?.middle.slice(-limit);
@@ -325,12 +326,14 @@ function createChartData(normalized, indicators, limit = 50) {
 
   const ichiTenkan = indicators.ichi_series?.tenkan.slice(-limit);
   const ichiKijun = indicators.ichi_series?.kijun.slice(-limit);
-  const ichiSpanA = indicators.ichi_series?.spanA.slice(-limit);
-  const ichiSpanB = indicators.ichi_series?.spanB.slice(-limit);
+  
+  // 先行スパンは未来にシフトしているため、slice範囲を調整してnullを避ける
+  const ichiSpanA = indicators.ichi_series?.spanA ? indicators.ichi_series.spanA.slice(0, -shift).slice(-limit) : [];
+  const ichiSpanB = indicators.ichi_series?.spanB ? indicators.ichi_series.spanB.slice(0, -shift).slice(-limit) : [];
+  
   const ichiChikou = indicators.ichi_series?.chikou.slice(-limit);
 
   return {
-    // 最近のデータのみ（軽量化）
     candles: recent.map(c => ({
       time: c.isoTime,
       open: c.open,
