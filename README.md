@@ -125,7 +125,7 @@ node tools/render_chart_svg_cli.mjs btc_jpy 1day 45 > chart.svg
 
 **実行例：一目均衡表のみを100日分描画**
 ```bash
-node tools/render_chart_svg_cli.mjs btc_jpy 1day 100 --with-ichimoku --no-bb --no-sma > ichimoku_chart.svg
+node tools/render_chart_svg_cli.mjs btc_jpy 1day 100 --with-ichimoku --no-bb --no-sma > assets/ichimoku_sample.svg
 ```
 
 ### ティッカーデータ取得
