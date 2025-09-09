@@ -168,31 +168,68 @@ export default async function renderChartSvg({
     const spanAPath = createIchimokuPath(indicators.ICHI_spanA);
     const spanBPath = createIchimokuPath(indicators.ICHI_spanB);
     
-    // 雲の描画ロジックを修正
-    let greenKumoPath = '';
-    let redKumoPath = '';
+    // 雲の描画ロジックを修正（途切れないように）
+    const createCloudPaths = (spanA, spanB) => {
+      let greenCloudPath = '';
+      let redCloudPath = '';
+      let currentGreenPoints = [];
+      let currentRedPoints = [];
 
-    // 雲の各セグメントを生成
-    for (let i = 1; i < items.length; i++) {
-      const spanA_prev = indicators.ICHI_spanA[i - 1];
-      const spanA_curr = indicators.ICHI_spanA[i];
-      const spanB_prev = indicators.ICHI_spanB[i - 1];
-      const spanB_curr = indicators.ICHI_spanB[i];
+      const finishPath = (points, isGreen) => {
+        if (points.length < 2) return;
+        
+        const spanAPoints = points.map(p => ({ x: p.x, y: p.yA }));
+        const spanBPoints = points.map(p => ({ x: p.x, y: p.yB })).reverse();
+        const allPoints = [...spanAPoints, ...spanBPoints];
+        
+        const path = 'M ' + allPoints.map(p => `${p.x},${p.y}`).join(' L ') + ' Z';
 
-      if (spanA_prev !== null && spanA_curr !== null && spanB_prev !== null && spanB_curr !== null) {
-        const pathSegment = `M ${x(i - 1)},${y(spanA_prev)} L ${x(i)},${y(spanA_curr)} L ${x(i)},${y(spanB_curr)} L ${x(i - 1)},${y(spanB_prev)} Z`;
-
-        if (spanA_curr > spanB_curr) {
-          greenKumoPath += pathSegment;
+        if (isGreen) {
+          greenCloudPath += path;
         } else {
-          redKumoPath += pathSegment;
+          redCloudPath += path;
+        }
+      };
+
+      for (let i = 0; i < items.length; i++) {
+        const valA = spanA[i];
+        const valB = spanB[i];
+
+        if (typeof valA === 'number' && typeof valB === 'number') {
+          const point = { x: x(i), yA: y(valA), yB: y(valB) };
+          const isGreen = valA >= valB; // 等しい場合も描画対象に含める
+
+          if (isGreen) {
+            if (currentRedPoints.length > 0) {
+              finishPath(currentRedPoints, false);
+              currentRedPoints = [];
+            }
+            currentGreenPoints.push(point);
+          } else {
+            if (currentGreenPoints.length > 0) {
+              finishPath(currentGreenPoints, true);
+              currentGreenPoints = [];
+            }
+            currentRedPoints.push(point);
+          }
+        } else {
+          finishPath(currentGreenPoints, true);
+          finishPath(currentRedPoints, false);
+          currentGreenPoints = [];
+          currentRedPoints = [];
         }
       }
-    }
+      finishPath(currentGreenPoints, true);
+      finishPath(currentRedPoints, false);
+
+      return { greenCloudPath, redCloudPath };
+    };
+
+    const { greenCloudPath, redCloudPath } = createCloudPaths(indicators.ICHI_spanA, indicators.ICHI_spanB);
     
     ichimokuLayers = `
-      <path d="${greenKumoPath}" fill="rgba(16, 163, 74, 0.1)" stroke="none" />
-      <path d="${redKumoPath}" fill="rgba(239, 68, 68, 0.1)" stroke="none" />
+      <path d="${greenCloudPath}" fill="rgba(16, 163, 74, 0.1)" stroke="none" />
+      <path d="${redCloudPath}" fill="rgba(239, 68, 68, 0.1)" stroke="none" />
       <path d="${tenkanPath}" fill="none" stroke="#f97316" stroke-width="1"/>
       <path d="${kijunPath}" fill="none" stroke="#3b82f6" stroke-width="1"/>
       <path d="${chikouPath}" fill="none" stroke="#16a34a" stroke-width="1" stroke-dasharray="2 2"/>
