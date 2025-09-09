@@ -168,28 +168,31 @@ export default async function renderChartSvg({
     const spanAPath = createIchimokuPath(indicators.ICHI_spanA);
     const spanBPath = createIchimokuPath(indicators.ICHI_spanB);
     
-    // 雲の描画
-    let kumoPath = '';
-    const spanAPoints = [];
-    indicators.ICHI_spanA.forEach((v, i) => v !== null && spanAPoints.push({x: x(i), y: y(v)}));
-    const spanBPoints = [];
-    indicators.ICHI_spanB.forEach((v, i) => v !== null && spanBPoints.push({x: x(i), y: y(v)}));
+    // 雲の描画ロジックを修正
+    let greenKumoPath = '';
+    let redKumoPath = '';
 
-    if (spanAPoints.length > 0 && spanBPoints.length > 0) {
-      // 雲のパスを生成
-      const pointA = spanAPoints.map(p => `${p.x},${p.y}`).join(' L ');
-      const pointBReversed = [...spanBPoints].reverse().map(p => `${p.x},${p.y}`).join(' L ');
-      kumoPath = `M ${pointA} L ${pointBReversed} Z`;
+    // 雲の各セグメントを生成
+    for (let i = 1; i < items.length; i++) {
+      const spanA_prev = indicators.ICHI_spanA[i - 1];
+      const spanA_curr = indicators.ICHI_spanA[i];
+      const spanB_prev = indicators.ICHI_spanB[i - 1];
+      const spanB_curr = indicators.ICHI_spanB[i];
+
+      if (spanA_prev !== null && spanA_curr !== null && spanB_prev !== null && spanB_curr !== null) {
+        const pathSegment = `M ${x(i - 1)},${y(spanA_prev)} L ${x(i)},${y(spanA_curr)} L ${x(i)},${y(spanB_curr)} L ${x(i - 1)},${y(spanB_prev)} Z`;
+
+        if (spanA_curr > spanB_curr) {
+          greenKumoPath += pathSegment;
+        } else {
+          redKumoPath += pathSegment;
+        }
+      }
     }
-
-    // 雲の色を決定（スパンAとBの位置関係に基づく）
-    // 最新の有効な値で比較
-    const lastA = [...indicators.ICHI_spanA].reverse().find(v => v !== null);
-    const lastB = [...indicators.ICHI_spanB].reverse().find(v => v !== null);
-    const kumoColor = lastA > lastB ? 'rgba(16, 163, 74, 0.1)' : 'rgba(239, 68, 68, 0.1)';
-
+    
     ichimokuLayers = `
-      <path d="${kumoPath}" fill="${kumoColor}" stroke="none" />
+      <path d="${greenKumoPath}" fill="rgba(16, 163, 74, 0.1)" stroke="none" />
+      <path d="${redKumoPath}" fill="rgba(239, 68, 68, 0.1)" stroke="none" />
       <path d="${tenkanPath}" fill="none" stroke="#f97316" stroke-width="1"/>
       <path d="${kijunPath}" fill="none" stroke="#3b82f6" stroke-width="1"/>
       <path d="${chikouPath}" fill="none" stroke="#16a34a" stroke-width="1" stroke-dasharray="2 2"/>
