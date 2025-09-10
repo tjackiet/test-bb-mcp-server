@@ -10,13 +10,18 @@ export default async function renderChartSvg({
   withSMA = [25, 75],
   withBB = true,
   withIchimoku = false, // デフォルトではオフに
+  withLegend = true,
 } = {}) {
-  // `limit` は表示したい本数。getIndicatorsにはバッファ計算を任せる
-  const res = await getIndicators(pair, type, limit);
+  // 取得本数: Ichimoku時は左側の雲を埋めるため+26
+  const fetchLimit = withIchimoku ? limit + 26 : limit;
+  const res = await getIndicators(pair, type, fetchLimit);
   if (!res?.ok) return res;
 
   const chartData = res.data?.chart;
-  const items = chartData?.candles;
+  const allItems = chartData?.candles || [];
+  // 表示は最後のlimit本に絞る
+  const leftPad = Math.max(0, allItems.length - limit);
+  const items = allItems.slice(-limit);
   const indicators = chartData?.indicators;
 
   if (!items?.length) {
@@ -35,14 +40,24 @@ export default async function renderChartSvg({
   const lows = items.map((d) => d.low);
   const xMin = 0;
   const xMax = xs.length - 1;
+  // 一目均衡表の先行スパンを未来に26本突き出して描画するために、
+  // X軸の分母（スケール範囲）を未来分だけ拡張
+  const forwardShift = withIchimoku ? 26 : 0;
   const yMin = Math.min(...lows);
   const yMax = Math.max(...highs);
 
   const x = (i) =>
-    padding.left + ((i - xMin) * plotW) / Math.max(1, xMax - xMin);
+    padding.left + ((i - xMin) * plotW) / Math.max(1, xMax - xMin + forwardShift);
   const y = (v) =>
     h - padding.bottom - ((v - yMin) * plotH) / Math.max(1, yMax - yMin);
 
+  // 先行表示時の左側欠けを埋めるための補正（26）
+  const leftCompensation = withIchimoku ? 26 : 0;
+
+  // --- 凡例メタデータと描画レイヤーの準備 ---
+  const legendMeta = {};
+  let legendLayers = '';
+  
   const barW = Math.max(2, (plotW / Math.max(1, xs.length)) * 0.6);
 
   // ローソク（棒＋ヒゲ）
@@ -70,37 +85,41 @@ export default async function renderChartSvg({
     })
     .join('');
 
-  // 簡易SMA
-  const smaColors = ['#3b82f6', '#f59e0b', '#10b981'];
-  const closes = items.map((d) => d.close);
-
-  const smaPath = (period, color) => {
-    if (closes.length < period) return '';
-
-    const smaValues = [];
-    let sum = 0;
-    for (let i = 0; i < closes.length; i++) {
-      sum += closes[i];
-      if (i >= period) {
-        sum -= closes[i - period];
+  // --- インジケータ描画 ---
+  const smaColors = { 25: '#3b82f6', 75: '#f59e0b', 200: '#10b981' };
+  
+  // 汎用的なライン描画関数
+  const createLinePath = (data, color, options = {}) => {
+    if (!data || data.length === 0) return '';
+    const points = [];
+    const offset = options.offset || 0; // 先行(+26) / 遅行(-26)
+    data.forEach((val, i) => {
+      if (val !== null && typeof val === 'number') {
+        // 取得増分(leftPad)は座標から差し引き、可視ウィンドウ(0..limit-1)基準で描画
+        points.push(`${x(i - leftPad + offset)},${y(val)}`);
       }
-      if (i >= period - 1) {
-        smaValues.push({ i, v: sum / period });
-      }
-    }
-
-    if (smaValues.length === 0) return '';
-
-    let d = `M ${x(smaValues[0].i)},${y(smaValues[0].v)}`;
-    for (let k = 1; k < smaValues.length; k++) {
-      d += ` L ${x(smaValues[k].i)},${y(smaValues[k].v)}`;
-    }
-    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
+    });
+    if (points.length === 0) return '';
+    const d = 'M ' + points.join(' L ');
+    const dash = options.dash ? `stroke-dasharray="${options.dash}"` : '';
+    const width = options.width || '1.5';
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}" ${dash}/>`;
   };
-
-  const smaLayers = (withSMA || [])
-    .map((p, idx) => smaPath(p, smaColors[idx % smaColors.length]))
-    .join('');
+  
+  // SMAレイヤー
+  const sma25 = indicators?.SMA_25 || [];
+  const sma75 = indicators?.SMA_75 || [];
+  const sma200 = indicators?.SMA_200 || [];
+  let smaLayers = '';
+  if (withSMA?.includes(25) && sma25.length > 0) {
+    smaLayers += createLinePath(sma25, smaColors[25]);
+  }
+  if (withSMA?.includes(75) && sma75.length > 0) {
+    smaLayers += createLinePath(sma75, smaColors[75]);
+  }
+  if (withSMA?.includes(200) && sma200.length > 0) {
+    smaLayers += createLinePath(sma200, smaColors[200]);
+  }
 
   // ボリンジャーバンド
   let bbLayers = '';
@@ -151,25 +170,15 @@ export default async function renderChartSvg({
   let ichimokuLayers = '';
   if (withIchimoku && indicators?.ICHI_tenkan) {
 
-    const createIchimokuPath = (data) => {
-      const points = [];
-      data.forEach((val, i) => {
-        if (val !== null) {
-          points.push({ x: x(i), y: y(val) });
-        }
-      });
-      if (points.length === 0) return '';
-      return 'M ' + points.map(p => `${p.x},${p.y}`).join(' L ');
-    };
-
-    const tenkanPath = createIchimokuPath(indicators.ICHI_tenkan);
-    const kijunPath = createIchimokuPath(indicators.ICHI_kijun);
-    const chikouPath = createIchimokuPath(indicators.ICHI_chikou);
-    const spanAPath = createIchimokuPath(indicators.ICHI_spanA);
-    const spanBPath = createIchimokuPath(indicators.ICHI_spanB);
+    // Tenkan = red, Kijun = blue
+    const tenkanPath = createLinePath(indicators.ICHI_tenkan, '#ef4444', { width: '1', offset: 0 });
+    const kijunPath = createLinePath(indicators.ICHI_kijun, '#3b82f6', { width: '1', offset: 0 });
+    const chikouPath = createLinePath(indicators.ICHI_chikou, '#16a34a', { width: '1', dash: '2 2', offset: -26 });
+    const spanAPath = createLinePath(indicators.ICHI_spanA, 'rgba(239, 68, 68, 0.5)', { width: '1', offset: 26 });
+    const spanBPath = createLinePath(indicators.ICHI_spanB, 'rgba(16, 163, 74, 0.5)', { width: '1', offset: 26 });
     
     // 雲の描画ロジックを修正（途切れないように）
-    const createCloudPaths = (spanA, spanB) => {
+    const createCloudPaths = (spanA, spanB, offset) => {
       let greenCloudPath = '';
       let redCloudPath = '';
       let currentGreenPoints = [];
@@ -191,13 +200,15 @@ export default async function renderChartSvg({
         }
       };
 
-      for (let i = 0; i < items.length; i++) {
-        const valA = spanA[i];
-        const valB = spanB[i];
+      // 先行スパンの配列長（未来分を含む）を使う
+      const len = Math.max(spanA?.length || 0, spanB?.length || 0);
+      for (let i = 0; i < len; i++) {
+        const spanA_val = spanA?.[i] ?? null;
+        const spanB_val = spanB?.[i] ?? null;
 
-        if (typeof valA === 'number' && typeof valB === 'number') {
-          const point = { x: x(i), yA: y(valA), yB: y(valB) };
-          const isGreen = valA >= valB; // 等しい場合も描画対象に含める
+        if (typeof spanA_val === 'number' && typeof spanB_val === 'number') {
+          const point = { x: x(i - leftPad + (offset || 0)), yA: y(spanA_val), yB: y(spanB_val) };
+          const isGreen = spanA_val >= spanB_val; // 等しい場合も描画対象に含める
 
           if (isGreen) {
             if (currentRedPoints.length > 0) {
@@ -225,23 +236,53 @@ export default async function renderChartSvg({
       return { greenCloudPath, redCloudPath };
     };
 
-    const { greenCloudPath, redCloudPath } = createCloudPaths(indicators.ICHI_spanA, indicators.ICHI_spanB);
+    const { greenCloudPath, redCloudPath } = createCloudPaths(indicators.ICHI_spanA, indicators.ICHI_spanB, 26);
     
     ichimokuLayers = `
       <path d="${greenCloudPath}" fill="rgba(16, 163, 74, 0.1)" stroke="none" />
       <path d="${redCloudPath}" fill="rgba(239, 68, 68, 0.1)" stroke="none" />
-      <path d="${tenkanPath}" fill="none" stroke="#f97316" stroke-width="1"/>
-      <path d="${kijunPath}" fill="none" stroke="#3b82f6" stroke-width="1"/>
-      <path d="${chikouPath}" fill="none" stroke="#16a34a" stroke-width="1" stroke-dasharray="2 2"/>
-      <path d="${spanAPath}" fill="none" stroke="rgba(239, 68, 68, 0.5)" stroke-width="1"/>
-      <path d="${spanBPath}" fill="none" stroke="rgba(16, 163, 74, 0.5)" stroke-width="1"/>
+      ${tenkanPath}
+      ${kijunPath}
+      ${chikouPath}
+      ${spanAPath}
+      ${spanBPath}
     `;
   }
 
+  // --- 凡例の動的構築 ---
+  if (withLegend) {
+    const legendItems = [];
+    if (withSMA?.length > 0) {
+      withSMA.forEach((p, idx) => {
+        legendMeta[`SMA_${p}`] = `SMA ${p} (${smaColors[p]})`;
+        legendItems.push({ text: `SMA ${p}`, color: smaColors[p] });
+      });
+    }
+    if (withBB) {
+      legendMeta.BB = 'ボリンジャーバンド (青)';
+      legendItems.push({ text: 'Bollinger Bands', color: '#3b82f6' });
+    }
+    if (withIchimoku) {
+      legendMeta.Ichimoku = '一目均衡表';
+      // 転換線・基準線を個別に表示
+      legendItems.push({ text: 'Tenkan (転換線)', color: '#ef4444' });
+      legendItems.push({ text: 'Kijun (基準線)', color: '#3b82f6' });
+    }
+
+    let yOffset = h - padding.bottom + 20;
+    legendLayers = legendItems.map((item, i) => {
+      const xPos = padding.left + (i * 150);
+      return `
+        <rect x="${xPos}" y="${yOffset - 8}" width="10" height="10" fill="${item.color}" />
+        <text x="${xPos + 15}" y="${yOffset}" font-family="sans-serif" font-size="12" fill="#555">${item.text}</text>
+      `;
+    }).join('');
+  }
+  
   const title = `${formatPair(pair)} ${type} (${items.length} bars)`;
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">
-  <rect x="0" y="0" width="${w}" height="${h}" fill="#ffffff"/>
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h + (withLegend ? 40 : 0)}" viewBox="0 0 ${w} ${h + (withLegend ? 40 : 0)}">
+  <rect x="0" y="0" width="${w}" height="${h + (withLegend ? 40 : 0)}" fill="#ffffff"/>
   <g class="grid">
     <line x1="${padding.left}" y1="${h - padding.bottom}" x2="${
     w - padding.right
@@ -259,6 +300,8 @@ export default async function renderChartSvg({
   ${bbLayers}
   <!-- Ichimoku Cloud -->
   ${ichimokuLayers}
+  <!-- Legend -->
+  ${legendLayers}
   <!-- 目盛り（軽量） -->
   <text x="${
     w / 2
@@ -270,7 +313,7 @@ export default async function renderChartSvg({
   const summary = `${title} SVG chart`;
   return ok(
     summary,
-    { svg },
+    { svg, legend: legendMeta },
     { pair, type, count: items.length, mode: 'svg' }
   );
 }

@@ -12,7 +12,6 @@ import {
   getIndicators,
   renderChartHtml,
   renderChartSvg,
-  getSimpleTrend,
 } from '../tools/index.js';
 import { logToolRun, logError } from '../lib/logger.js';
 
@@ -211,72 +210,52 @@ registerToolWithLog(
     inputSchema: {
       pair: z.string().optional().default('btc_jpy'),
       type: z.string().optional().default('1day'),
-      limit: z.number().int().min(5).max(365).optional().default(60),
+      limit: z.number().int().min(5).max(365).optional().default(100),
       withSMA: z
         .array(z.number().int())
         .optional()
-        .default([25, 75])
+        .default([])
         .describe('描画する単純移動平均線の期間を配列で指定。空配列[]で非表示。'),
       withBB: z
         .boolean()
         .optional()
-        .default(true)
+        .default(false)
         .describe('ボリンジャーバンドを描画するかどうか'),
       withIchimoku: z
         .boolean()
         .optional()
         .default(false)
         .describe('一目均衡表を描画するかどうか'),
+      withLegend: z
+        .boolean()
+        .optional()
+        .default(true)
+        .describe('凡例を描画するかどうか'),
     },
   },
   async (args) => renderChartSvg(args)
 );
 
-// ---- get_simple_trend ----
-registerToolWithLog(
-  'get_simple_trend',
-  {
-    description: '20期間MAと一目均衡表に基づいたシンプルな市場トレンド（強気/弱気/中立）を取得します。',
-    inputSchema: {
-      pair: z.string().optional().default('btc_jpy'),
-      type: z.string().optional().default('1day'),
-      limit: z.number().int().min(30).max(365).optional().default(100),
-    },
-  },
-  async (args) => getSimpleTrend(args)
-);
-
-// ---- Prompt: analyze_simple_trend ----
-server.registerPrompt('analyze_simple_trend', {
-  description:
-    'シンプルなインジケータ（20期間MAと一目均衡表）を用いて市場トレンドを分析し、初心者向けに解説します。',
+// ---- Prompt: analyze_with_ichimoku ----
+server.registerPrompt('analyze_with_ichimoku', {
+  description: '一目均衡表を重ねてチャートを描画し、トレンドを分析する',
   inputSchema: z.object({
-    pair: z
-      .string()
-      .optional()
-      .default('btc_jpy')
-      .describe('分析する通貨ペア (例: btc_jpy)'),
-    type: z
-      .string()
-      .optional()
-      .default('1day')
-      .describe('ローソク足の時間軸 (例: 1day)'),
+    pair: z.string().optional().default('btc_jpy'),
+    type: z.string().optional().default('1day'),
+    limit: z.number().int().min(30).max(200).optional().default(90),
   }),
-  handler: async ({ pair, type }) => {
+  handler: async ({ pair, type, limit }) => {
     return {
       messages: [
         {
-          role: 'user',
-          content: {
-            type: 'text',
-            text: `
-${pair.toUpperCase()} の市場トレンドを分析してください。
-
-1. \`get_simple_trend\` ツールを呼び出し、現在のトレンド（bullish/bearish/neutral）と、その根拠となる短いコメントを取得します。
-2. ツールの返却値を事実のベースとして利用し、特に初心者にも分かりやすいように、専門用語を避けながら平易な日本語で解説を作成してください。
-
-ユーザーの元の質問が「ビットコインは上がる？下がる？」のような非常に曖昧なものであっても、上記の手順に従って分析的な回答を生成してください。`,
-          },
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_code',
+              tool_name: 'render_chart_svg',
+              tool_input: { pair, type, limit, withIchimoku: true, withSMA: [] },
+            },
+          ],
         },
       ],
     };

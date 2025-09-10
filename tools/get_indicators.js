@@ -8,16 +8,14 @@ import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
 import { getFetchCount } from '../lib/indicator_buffer.js';
 
-// 移動平均 (SMA)
-export function sma(values, period) {
+// SMA (単純移動平均線)
+export function sma(values, period = 25) {
   const results = [];
   let sum = 0;
   for (let i = 0; i < values.length; i++) {
     sum += values[i];
     if (i >= period) {
       sum -= values[i - period];
-    }
-    if (i >= period - 1) {
       results.push(Number((sum / period).toFixed(2)));
     } else {
       results.push(null);
@@ -26,18 +24,53 @@ export function sma(values, period) {
   return results;
 }
 
-// RSI (相対力指数, デフォルト14日)
+// RSI (時系列を返すバージョン)
 export function rsi(values, period = 14) {
-  if (values.length < period + 1) return null;
+  const results = [];
+  let gains = 0;
+  let losses = 0;
 
-  let gains = 0, losses = 0;
-  for (let i = values.length - period; i < values.length; i++) {
-    const diff = values[i] - values[i - 1];
-    if (diff >= 0) gains += diff;
-    else losses -= diff;
+  for (let i = 0; i < values.length; i++) {
+    if (i === 0) {
+      results.push(null); // 最初は差分がないのでnull
+      continue;
+    }
+    
+    const diff = values[i] - values[i-1];
+    
+    if (i <= period) {
+      if (diff >= 0) {
+        gains += diff;
+      } else {
+        losses -= diff;
+      }
+    }
+    
+    if (i === period) {
+       const rs = gains / (losses || 1);
+       results.push(Number((100 - 100 / (1 + rs)).toFixed(2)));
+    } else if (i > period) {
+      const prevGains = results[i-1] ? (results[i-1].gains || 0) : 0;
+      const prevLosses = results[i-1] ? (results[i-1].losses || 0) : 0;
+      
+      const currentGains = diff >=0 ? diff : 0;
+      const currentLosses = diff < 0 ? -diff : 0;
+
+      gains = (prevGains * (period - 1) + currentGains) / period;
+      losses = (prevLosses * (period - 1) + currentLosses) / period;
+      
+      const rs = gains / (losses || 1);
+      const rsiValue = Number((100 - 100 / (1 + rs)).toFixed(2));
+
+      results.push({value: rsiValue, gains, losses});
+
+    } else {
+      results.push(null); // データ不足
+    }
   }
-  const rs = gains / (losses || 1);
-  return Number((100 - 100 / (1 + rs)).toFixed(2));
+  
+  // オブジェクトから値だけを抽出
+  return results.map(r => r ? r.value : null);
 }
 
 // ボリンジャーバンド
@@ -207,22 +240,38 @@ export default async function getIndicators(
   const candlesResult = await getCandles(chk.pair, type, undefined, fetchCount);
   if (!candlesResult.ok) return candlesResult; // failをそのまま返す
 
-  const allCloses = candlesResult.data.normalized.map((c) => c.close);
-  const latestClose = allCloses.at(-1);
+  const normalized = candlesResult.data.normalized;
+  const allHighs = normalized.map((c) => c.high);
+  const allLows = normalized.map((c) => c.low);
+  const allCloses = normalized.map((c) => c.close);
 
   // インジケーター計算 (全長データで行う)
+  const rsi14_series = rsi(allCloses, 14);
+  const bb20 = bollingerBands(allCloses, 20, 2);
+  const ichiSeries = ichimokuSeries(allHighs, allLows, allCloses);
+  const sma_25_series = sma(allCloses, 25);
+  const sma_75_series = sma(allCloses, 75);
+  const sma_200_series = sma(allCloses, 200);
+
   const indicators = {
-    SMA_25: sma(allCloses, 25).at(-1),
-    SMA_75: sma(allCloses, 75).at(-1),
-    SMA_200: sma(allCloses, 200).at(-1),
-    RSI_14: rsi(allCloses, 14),
+    SMA_25: sma_25_series.at(-1),
+    SMA_75: sma_75_series.at(-1),
+    SMA_200: sma_200_series.at(-1),
+    RSI_14: rsi14_series.at(-1),
+    BB_upper: bb20.upper.at(-1),
+    BB_middle: bb20.middle.at(-1),
+    BB_lower: bb20.lower.at(-1),
+    bb_series: bb20, // for chart
+    ichi_series: ichiSeries, // for chart
+    sma_25_series,
+    sma_75_series,
+    sma_200_series,
   };
 
   // ボリンジャーバンド計算 (全長データで行う)
-  const bbSeries = bollingerBands(allCloses, 20, 2);
-  const lastUpper = bbSeries.upper.at(-1);
-  const lastMiddle = bbSeries.middle.at(-1);
-  const lastLower = bbSeries.lower.at(-1);
+  const lastUpper = bb20.upper.at(-1);
+  const lastMiddle = bb20.middle.at(-1);
+  const lastLower = bb20.lower.at(-1);
 
   if (lastUpper && lastMiddle && lastLower) {
     indicators.BB_upper = lastUpper;
@@ -233,15 +282,12 @@ export default async function getIndicators(
   }
 
   // 一目均衡表計算 (全長データで行う)
-  const allHighs = candlesResult.data.normalized.map((c) => c.high);
-  const allLows = candlesResult.data.normalized.map((c) => c.low);
-  const ichiSeries = ichimokuSeries(allHighs, allLows, allCloses);
-  const ichi = ichimoku(allHighs, allLows, allCloses);
-  if (ichi) {
-    indicators.ICHIMOKU_conversion = ichi.conversion;
-    indicators.ICHIMOKU_base = ichi.base;
-    indicators.ICHIMOKU_spanA = ichi.spanA;
-    indicators.ICHIMOKU_spanB = ichi.spanB;
+  const ichiSimple = ichimoku(allHighs, allLows, allCloses);
+  if (ichiSimple) {
+    indicators.ICHIMOKU_conversion = ichiSimple.conversion;
+    indicators.ICHIMOKU_base = ichiSimple.base;
+    indicators.ICHIMOKU_spanA = ichiSimple.spanA;
+    indicators.ICHIMOKU_spanB = ichiSimple.spanB;
   }
 
   // データ不足の警告
@@ -254,21 +300,35 @@ export default async function getIndicators(
   if (allCloses.length < 52) warnings.push('Ichimoku: データ不足');
 
   // トレンド分析
-  const trend = analyzeTrend(indicators, latestClose);
+  const trend = analyzeTrend(indicators, allCloses.at(-1));
 
   // チャート描画用データ (表示本数 displayCount で切り出す)
-  const chartIndicatorData = { ...indicators, bb_series: bbSeries, ichi_series: ichiSeries };
   const chartData = createChartData(
     candlesResult.data.normalized,
-    chartIndicatorData,
+    indicators,
     displayCount
   );
+
+  // サマリー用の最新値取得
+  const latestIndicators = {
+    SMA_25: indicators.SMA_25,
+    SMA_75: indicators.SMA_75,
+    SMA_200: indicators.SMA_200,
+    RSI_14: indicators.RSI_14,
+  };
+  // 既に計算済みのichiSimpleを再利用
+  if (indicators.ICHIMOKU_conversion) {
+    latestIndicators.ICHIMOKU_conversion = indicators.ICHIMOKU_conversion;
+    latestIndicators.ICHIMOKU_base = indicators.ICHIMOKU_base;
+    latestIndicators.ICHIMOKU_spanA = indicators.ICHIMOKU_spanA;
+    latestIndicators.ICHIMOKU_spanB = indicators.ICHIMOKU_spanB;
+  }
 
   const summary = formatSummary({
     pair: chk.pair,
     timeframe: type,
-    latest: latestClose,
-    extra: `RSI=${indicators.RSI_14} trend=${trend} (count=${allCloses.length})`,
+    latest: allCloses.at(-1),
+    extra: `RSI=${latestIndicators.RSI_14} trend=${trend} (count=${allCloses.length})`,
   });
 
   const data = {
@@ -327,11 +387,19 @@ function createChartData(normalized, indicators, limit = 50) {
   const ichiTenkan = indicators.ichi_series?.tenkan.slice(-limit);
   const ichiKijun = indicators.ichi_series?.kijun.slice(-limit);
   
-  // 先行スパンは未来にシフトしているため、slice範囲を調整してnullを避ける
-  const ichiSpanA = indicators.ichi_series?.spanA ? indicators.ichi_series.spanA.slice(0, -shift).slice(-limit) : [];
-  const ichiSpanB = indicators.ichi_series?.spanB ? indicators.ichi_series.spanB.slice(0, -shift).slice(-limit) : [];
+  // 先行スパンは未来方向に突き出す表示が必要なため、limit+shiftを確保
+  const ichiSpanA = indicators.ichi_series?.spanA
+    ? indicators.ichi_series.spanA.slice(-(limit + shift))
+    : [];
+  const ichiSpanB = indicators.ichi_series?.spanB
+    ? indicators.ichi_series.spanB.slice(-(limit + shift))
+    : [];
   
   const ichiChikou = indicators.ichi_series?.chikou.slice(-limit);
+  
+  const sma25 = indicators.sma_25_series?.slice(-limit) || [];
+  const sma75 = indicators.sma_75_series?.slice(-limit) || [];
+  const sma200 = indicators.sma_200_series?.slice(-limit) || [];
 
   return {
     candles: recent.map(c => ({
@@ -345,10 +413,10 @@ function createChartData(normalized, indicators, limit = 50) {
     
     // インジケーター値
     indicators: {
-      SMA_25: indicators.SMA_25,
-      SMA_75: indicators.SMA_75,
-      SMA_200: indicators.SMA_200,
-      RSI_14: indicators.RSI_14,
+      SMA_25: sma25,
+      SMA_75: sma75,
+      SMA_200: sma200,
+      RSI_14: indicators.RSI_14, // Note: これは最新値のみ
       BB_upper: bbUpper,
       BB_middle: bbMiddle,
       BB_lower: bbLower,

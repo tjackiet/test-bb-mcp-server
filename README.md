@@ -117,6 +117,10 @@ node tools/get_indicators_cli.mjs btc_jpy 1day
 node tools/render_chart_svg_cli.mjs btc_jpy 1day 45 > chart.svg
 ```
 
+> **Note:** 移動平均線や一目均衡表などのインジケータを完全に描画するには、その計算に必要な期間（例: SMA75なら75本以上）を含んだ十分なローソク足の本数 (`limit`) を指定する必要があります。本数が不足する場合、インジケータはチャートの途中から描画されます。
+
+- 初心者向け解説については、専用ツール `get_simple_trend` は廃止しました。以後は **`get_indicators` の返却値（SMA・RSI・一目均衡表など）を基にプロンプトで整形** してください。これにより、分析ロジックの一貫性が保たれ、Claude からも安定した出力が得られます。
+
 インジケータの表示を制御するには、以下のフラグを追加します。
 
 - `--with-ichimoku`: 一目均衡表を描画（デフォルト: オフ）
