@@ -11,7 +11,6 @@ import {
 } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
-import { getCache, setCache } from '../lib/cache.js';
 
 const TYPES = new Set([
   '1min',
@@ -45,15 +44,6 @@ export default async function getCandles(
   date = todayYyyymmdd(),
   limit = 200
 ) {
-  const cacheKey = `candles-${pair}-${type}-${date}-${limit}`;
-  const cached = getCache(cacheKey);
-  if (cached) {
-    // console.log(`[Cache] HIT: ${cacheKey}`);
-    // キャッシュヒットを示すメタ情報を追加して返す
-    cached.meta.cache = 'hit';
-    return cached;
-  }
-
   // 入力バリデーション
   const chk = ensurePair(pair);
   if (!chk.ok) return fail(chk.error.message, chk.error.type);
@@ -105,7 +95,6 @@ export default async function getCandles(
       { raw: json, normalized },
       createMeta(chk.pair, { type, count: normalized.length })
     );
-    setCache(cacheKey, result); // 成功時のみキャッシュ
     return result;
   } catch (e) {
     return fail(e?.message || 'ネットワークエラー', 'network');
