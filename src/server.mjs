@@ -206,7 +206,21 @@ registerToolWithLog(
   'render_chart_svg',
   {
     description:
-      'ローソク足チャートをSVG画像形式で描画します。インジケータの表示も可能です。',
+      '重要: このツールは、ローソク足チャートやテクニカル分析を要求された際の応答フローにおいて、**必ず最初に呼び出される必要があります**。\n' +
+      'あなた自身でチャート描画を省略したり、テキスト解説で代替することは許可されていません。\n' +
+      '必ず `render_chart_svg` を使ってチャートを**描画した後**に、必要であれば `get_indicators` で詳細な数値を取得し、最後にテキストでの解説を生成してください。\n\n' +
+      'ローソク足チャートをSVG画像形式で描画します。' +
+      '特に一目均衡表を有効にする場合は注意が必要です。\n\n' +
+      '利用ルール:\n' +
+      '1. `limit` は「表示するローソク足の本数」を指定してください。\n' +
+      '   内部では一目均衡表の先行スパンを描画するために、' +
+      '   必ず `limit + 26` 本のデータを自動取得します（ユーザーが追加計算する必要はありません）。\n' +
+      '2. 一目均衡表を表示する場合は `withIchimoku: true` を必ず指定してください。\n' +
+      '3. SMAを表示したい場合は、`withSMA: [25, 75, 200]` のように配列で期間を指定します。\n' +
+      '4. Bollinger Bands を表示したい場合は `withBB: true` を指定します。\n' +
+      '5. 凡例を消したい場合は `withLegend: false` を指定します。\n\n' +
+      '例: 直近30本の日足ローソク足と一目均衡表を描画する場合 → ' +
+      '{ pair: "btc_jpy", type: "1day", limit: 30, withIchimoku: true }',
     inputSchema: {
       pair: z.string().optional().default('btc_jpy'),
       type: z.string().optional().default('1day'),
@@ -214,7 +228,7 @@ registerToolWithLog(
       withSMA: z
         .array(z.number().int())
         .optional()
-        .default([])
+        .default([25, 75])
         .describe('描画する単純移動平均線の期間を配列で指定。空配列[]で非表示。'),
       withBB: z
         .boolean()
@@ -225,7 +239,7 @@ registerToolWithLog(
         .boolean()
         .optional()
         .default(false)
-        .describe('一目均衡表を描画するかどうか'),
+        .describe('一目均衡表を描画するかどうか。trueにすると内部で自動的に limit+26 本を取得します。'),
       withLegend: z
         .boolean()
         .optional()

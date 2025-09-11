@@ -1,20 +1,34 @@
 // tools/render_chart_svg.js
+import fs from 'fs/promises';
+import path from 'path';
 import getIndicators from './get_indicators.js';
 import { ok, fail } from '../lib/result.js';
 import { formatPair } from '../lib/formatter.js';
 
-export default async function renderChartSvg({
-  pair = 'btc_jpy',
-  type = 'day',
-  limit = 60,
-  withSMA = [25, 75],
-  withBB = true,
-  withIchimoku = false, // デフォルトではオフに
-  withLegend = true,
-} = {}) {
+export default async function renderChartSvg(args = {}) {
+  // --- パラメータの解決（強制排他ルール） ---
+  const withIchimoku = args.withIchimoku ?? false;
+  
+  // withIchimokuがtrueなら、他のインジケータは強制的に無効化
+  let withSMA = args.withSMA ?? (withIchimoku ? [] : [25, 75]);
+  let withBB = args.withBB ?? (withIchimoku ? false : true);
+  if (withIchimoku) {
+    withSMA = [];
+    withBB = false;
+  }
+
+  const {
+    pair = 'btc_jpy',
+    type = 'day',
+    limit = 60,
+    withLegend = true,
+  } = args;
+
+  // AIからの呼び出しを考慮し、Ichimoku描画に必要なバッファをここで確保する
+  const internalLimit = withIchimoku ? limit + 26 : limit;
+
   // 取得本数: Ichimoku時は左側の雲を埋めるため+26
-  const fetchLimit = withIchimoku ? limit + 26 : limit;
-  const res = await getIndicators(pair, type, fetchLimit);
+  const res = await getIndicators(pair, type, internalLimit);
   if (!res?.ok) return res;
 
   const chartData = res.data?.chart;
@@ -371,10 +385,34 @@ export default async function renderChartSvg({
     </svg>
   `;
 
-  const summary = `${formatPair(pair)} ${type} chart (SVG)`;
-  return ok(
-    summary,
-    { svg, legend: legendMeta },
-    { pair, type, limit, indicators: Object.keys(legendMeta) }
-  );
+  // --- SVGをファイルに保存（フォールバック付き） ---
+  const filename = `chart-${pair}-${type}-${Date.now()}.svg`;
+  const assetsDir = 'assets';
+  const outputPath = path.join(assetsDir, filename);
+
+  try {
+    // ディレクトリが存在しない場合は作成
+    await fs.mkdir(assetsDir, { recursive: true });
+    await fs.writeFile(outputPath, svg);
+
+    // 保存成功時
+    const summary = `${formatPair(pair)} ${type} chart saved to ${outputPath}`;
+    return ok(
+      summary,
+      { filePath: outputPath, legend: legendMeta },
+      { pair, type, limit, indicators: Object.keys(legendMeta) }
+    );
+  } catch (err) {
+    console.warn(
+      `[Warning] Failed to save SVG to ${outputPath}. Fallback to inline SVG.`,
+      err
+    );
+    // 保存失敗時はSVG文字列を直接返す
+    const summary = `${formatPair(pair)} ${type} chart (SVG, file save failed)`;
+    return ok(
+      summary,
+      { svg, legend: legendMeta },
+      { pair, type, limit, indicators: Object.keys(legendMeta) }
+    );
+  }
 }
