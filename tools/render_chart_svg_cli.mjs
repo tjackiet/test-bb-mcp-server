@@ -25,7 +25,7 @@ async function main() {
     // SVGデータを標準出力に書き出す
     console.log(result.data.svg);
   } else {
-    console.error('Failed to generate chart:', result.error.message);
+    console.error('Failed to generate chart:', result.summary);
     process.exit(1);
   }
 }

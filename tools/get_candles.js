@@ -72,6 +72,13 @@ export default async function getCandles(
     const cs = json?.data?.candlestick?.[0];
     const ohlcvs = cs?.ohlcv ?? [];
 
+    if (ohlcvs.length === 0) {
+      return fail(
+        `ローソク足データが見つかりません (${chk.pair} / ${type} / ${dateCheck.value})`,
+        'user'
+      );
+    }
+
     // 最新に近い側を limit 件抽出（配列末尾側が新しい想定）
     const rows = ohlcvs.slice(-limitCheck.value);
 

@@ -331,7 +331,9 @@ export default async function getIndicators(
     extra: `RSI=${latestIndicators.RSI_14} trend=${trend} (count=${allCloses.length})`,
   });
 
+  // data のネストを一段階浅くする
   const data = {
+    summary,
     raw: candlesResult.data.raw,
     normalized: candlesResult.data.normalized,
     indicators,
