@@ -66,9 +66,11 @@ export default async function renderChartSvg({
   
   // Y軸下部に5%のバッファを持たせる
   const yAxisMinWithBuffer = dataYMin * 0.95;
+  // Y軸上部にも5%のバッファを持たせる
+  const yAxisMaxWithBuffer = dataYMax * 1.05;
   
   // チャートのY軸範囲は実際の安値・高値を含むように拡張
-  const yTicks = niceTicks(yAxisMinWithBuffer, dataYMax, 6);
+  const yTicks = niceTicks(yAxisMinWithBuffer, yAxisMaxWithBuffer, 6);
   const yMin = yTicks[0];
   const yMax = yTicks.at(-1);
   
