@@ -8,9 +8,13 @@ import { formatPair } from '../lib/formatter.js';
 export default async function renderChartSvg(args = {}) {
   // --- パラメータの解決（強制排他ルール） ---
   const withIchimoku = args.withIchimoku ?? false;
+  const ichimokuOpt = args.ichimoku || {};
+  const ichimokuMode = ichimokuOpt.mode || (withIchimoku ? 'full' : 'light');
+  const drawChikou = ichimokuMode === 'full' || ichimokuOpt.withChikou === true;
   
-  // withIchimokuがtrueなら、他のインジケータは強制的に無効化
-  let withSMA = args.withSMA ?? (withIchimoku ? [] : [25, 75]);
+  // デフォルト（軽量版）: SMA 25/75/200
+  // オプション: SMA 5/20/50 はユーザー指定時のみ追加描画
+  let withSMA = args.withSMA ?? (withIchimoku ? [] : [25, 75, 200]);
   let withBB = args.withBB ?? (withIchimoku ? false : true);
   if (withIchimoku) {
     withSMA = [];
@@ -18,22 +22,23 @@ export default async function renderChartSvg(args = {}) {
   }
 
   const {
-    pair = 'btc_jpy',
+  pair = 'btc_jpy',
     type = 'day',
-    limit = 60,
+  limit = 60,
     withLegend = true,
   } = args;
 
-  // AIからの呼び出しを考慮し、Ichimoku描画に必要なバッファをここで確保する
+  // ★ データ取得はバッファ計算をgetIndicatorsに任せる
   const internalLimit = withIchimoku ? limit + 26 : limit;
-
-  // 取得本数: Ichimoku時は左側の雲を埋めるため+26
   const res = await getIndicators(pair, type, internalLimit);
   if (!res?.ok) return res;
 
   const chartData = res.data?.chart;
   const items = chartData?.candles || [];
   const indicators = chartData?.indicators;
+  const pastBuffer = chartData.meta?.pastBuffer ?? 0;
+  const forwardShift = chartData.meta?.shift ?? 0;
+  const displayItems = items.slice(pastBuffer);
 
   if (!items?.length) {
     return fail('No candle data available to render SVG chart.', 'user');
@@ -67,27 +72,43 @@ export default async function renderChartSvg(args = {}) {
     return ticks;
   }
 
-  const xs = items.map((_, i) => i);
-  const highs = items.map((d) => d.high);
-  const lows = items.map((d) => d.low);
+  const xs = displayItems.map((_, i) => i);
+  const highs = displayItems.map((d) => d.high);
+  const lows = displayItems.map((d) => d.low);
   const xMin = 0;
   const xMax = xs.length - 1;
-  // 一目均衡表の先行スパンを未来に26本突き出して描画するために、
-  // X軸の分母（スケール範囲）を未来分だけ拡張
-  const forwardShift = withIchimoku ? 26 : 0;
-  const dataYMin = Math.min(...lows);
-  const dataYMax = Math.max(...highs);
+  // forwardShift は上部で meta.shift から取得済み
   
-  // Y軸下部に5%のバッファを持たせる
+  // Y軸の範囲を、表示されるすべての要素から計算
+  const allYValues = [
+    ...highs,
+    ...lows,
+  ];
+  if (withIchimoku) {
+    // インジケータのデータも表示範囲にスライスしてからY軸範囲計算に含める
+    allYValues.push(...(indicators.ICHI_tenkan?.slice(pastBuffer).filter(v => v !== null) || []));
+    allYValues.push(...(indicators.ICHI_kijun?.slice(pastBuffer).filter(v => v !== null) || []));
+    allYValues.push(...(indicators.ICHI_spanA?.slice(pastBuffer).filter(v => v !== null) || []));
+    allYValues.push(...(indicators.ICHI_spanB?.slice(pastBuffer).filter(v => v !== null) || []));
+  }
+  if (withBB) {
+    allYValues.push(...(indicators.BB_upper?.slice(pastBuffer).filter(v => v !== null) || []));
+    allYValues.push(...(indicators.BB_lower?.slice(pastBuffer).filter(v => v !== null) || []));
+  }
+  if (withSMA && withSMA.length > 0) {
+    withSMA.forEach(period => {
+      allYValues.push(...(indicators[`SMA_${period}`]?.slice(pastBuffer).filter(v => v !== null) || []));
+    });
+  }
+  
+  const dataYMin = Math.min(...allYValues);
+  const dataYMax = Math.max(...allYValues);
   const yAxisMinWithBuffer = dataYMin * 0.95;
-  // Y軸上部にも5%のバッファを持たせる
   const yAxisMaxWithBuffer = dataYMax * 1.05;
-  
-  // チャートのY軸範囲は実際の安値・高値を含むように拡張
   const yTicks = niceTicks(yAxisMinWithBuffer, yAxisMaxWithBuffer, 6);
   const yMin = yTicks[0];
   const yMax = yTicks.at(-1);
-  
+
   // Y軸ラベルの最大幅に基づいてpadding.leftを動的に調整
   const maxLabelWidth = Math.max(...yTicks.map(v => v.toLocaleString().length));
   const dynamicPaddingLeft = maxLabelWidth * 8 + 16; // 1文字8pxと仮定 + 余白
@@ -95,12 +116,14 @@ export default async function renderChartSvg(args = {}) {
   // スケール計算
   const w = 860;
   const h = 420;
-  const padding = { top: 24, right: 16, bottom: 40, left: dynamicPaddingLeft };
+  // 上部に余白を多めに確保（凡例が詰まらないように）
+  const padding = { top: 48, right: 16, bottom: 40, left: dynamicPaddingLeft };
   const plotW = w - padding.left - padding.right;
   const plotH = h - padding.top - padding.bottom;
 
-  const x = (i) =>
-    padding.left + (i * plotW) / Math.max(1, xMax + forwardShift);
+  // X座標計算: 描画ウィンドウ内での相対位置を計算
+  const x = (i) => padding.left + (i * plotW) / Math.max(1, xMax + forwardShift);
+
   const y = (v) =>
     h - padding.bottom - ((v - yMin) * plotH) / Math.max(1, yMax - yMin);
 
@@ -110,11 +133,11 @@ export default async function renderChartSvg(args = {}) {
   // --- 凡例メタデータと描画レイヤーの準備 ---
   const legendMeta = {};
   let legendLayers = '';
-  
+
   const barW = Math.max(2, (plotW / Math.max(1, xs.length)) * 0.6);
 
   // ローソク（棒＋ヒゲ）
-  const sticks = items
+  const sticks = displayItems
     .map((d, i) => {
       const cx = x(i);
       return `<line x1="${cx}" y1="${y(d.high)}" x2="${cx}" y2="${
@@ -123,7 +146,7 @@ export default async function renderChartSvg(args = {}) {
     })
     .join('');
 
-  const bodies = items
+  const bodies = displayItems
     .map((d, i) => {
       const cx = x(i) - barW / 2;
       const o = y(d.open);
@@ -139,7 +162,7 @@ export default async function renderChartSvg(args = {}) {
     .join('');
 
   // --- インジケータ描画 ---
-  const smaColors = { 25: '#3b82f6', 75: '#f59e0b', 200: '#10b981' };
+  const smaColors = { 5: '#f472b6', 20: '#a78bfa', 25: '#3b82f6', 50: '#22d3ee', 75: '#f59e0b', 200: '#10b981' };
   
   // 汎用的なライン描画関数
   const createLinePath = (data, color, options = {}) => {
@@ -148,24 +171,36 @@ export default async function renderChartSvg(args = {}) {
     const offset = options.offset || 0; // 先行(+26) / 遅行(-26)
     data.forEach((val, i) => {
       if (val !== null && typeof val === 'number') {
-        // 取得増分(leftPad)は座標から差し引き、可視ウィンドウ(0..limit-1)基準で描画
-        points.push(`${x(i + offset)},${y(val)}`);
+        // ★ 座標計算時にpastBufferを引くことで、描画開始位置を揃える
+        points.push(`${x(i - pastBuffer + offset)},${y(val)}`);
       }
     });
     if (points.length === 0) return '';
     const d = 'M ' + points.join(' L ');
     const dash = options.dash ? `stroke-dasharray="${options.dash}"` : '';
-    const width = options.width || '1.5';
+    const width = options.width || '2';
     return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}" ${dash}/>`;
   };
   
   // SMAレイヤー
+  const sma5 = indicators?.SMA_5 || [];
+  const sma20 = indicators?.SMA_20 || [];
   const sma25 = indicators?.SMA_25 || [];
+  const sma50 = indicators?.SMA_50 || [];
   const sma75 = indicators?.SMA_75 || [];
   const sma200 = indicators?.SMA_200 || [];
   let smaLayers = '';
+  if (withSMA?.includes(5) && sma5.length > 0) {
+    smaLayers += createLinePath(sma5, smaColors[5]);
+  }
+  if (withSMA?.includes(20) && sma20.length > 0) {
+    smaLayers += createLinePath(sma20, smaColors[20]);
+  }
   if (withSMA?.includes(25) && sma25.length > 0) {
     smaLayers += createLinePath(sma25, smaColors[25]);
+  }
+  if (withSMA?.includes(50) && sma50.length > 0) {
+    smaLayers += createLinePath(sma50, smaColors[50]);
   }
   if (withSMA?.includes(75) && sma75.length > 0) {
     smaLayers += createLinePath(sma75, smaColors[75]);
@@ -227,65 +262,97 @@ export default async function renderChartSvg(args = {}) {
     // bitbankアプリの配色: 転換線=青, 基準線=赤
     const tenkanPath = createLinePath(indicators.ICHI_tenkan, '#00a3ff', { width: '1', offset: 0 });
     const kijunPath = createLinePath(indicators.ICHI_kijun, '#ff4d4d', { width: '1', offset: 0 });
-    const chikouPath = createLinePath(indicators.ICHI_chikou, '#16a34a', { width: '1', dash: '2 2', offset: -26 });
-    const spanAPath = createLinePath(indicators.ICHI_spanA, 'rgba(239, 68, 68, 0.5)', { width: '1', offset: 26 });
-    const spanBPath = createLinePath(indicators.ICHI_spanB, 'rgba(16, 163, 74, 0.5)', { width: '1', offset: 26 });
+    const chikouPath = drawChikou ? createLinePath(indicators.ICHI_chikou, '#16a34a', { width: '1', dash: '2 2', offset: -26 }) : '';
+    // SpanA 上側=緑、SpanB 下側=赤（Bitbank準拠）
+    const spanAPath = createLinePath(indicators.ICHI_spanA, '#16a34a', { width: '1', offset: 26 });
+    const spanBPath = createLinePath(indicators.ICHI_spanB, '#ef4444', { width: '1', offset: 26 });
     
-    // 雲の描画ロジックを修正（途切れないように）
+    // 雲の描画ロジックを修正（交差点で色を正確に切り替える）
     const createCloudPaths = (spanA, spanB, offset) => {
       let greenCloudPath = '';
       let redCloudPath = '';
-      let currentGreenPoints = [];
-      let currentRedPoints = [];
 
-      const finishPath = (points, isGreen) => {
-        if (points.length < 2) return;
-        
-        const spanAPoints = points.map(p => ({ x: p.x, y: p.yA }));
-        const spanBPoints = points.map(p => ({ x: p.x, y: p.yB })).reverse();
-        const allPoints = [...spanAPoints, ...spanBPoints];
-        
-        const path = 'M ' + allPoints.map(p => `${p.x},${p.y}`).join(' L ') + ' Z';
+      // 現在の領域（同一色の連続区間）を保持
+      let currentTop = [];
+      let currentBottom = [];
+      let currentIsGreen = null;
 
-        if (isGreen) {
-          greenCloudPath += path;
+      const pushPolygon = () => {
+        if (currentTop.length < 2 || currentBottom.length < 2) return;
+        const polygon = 'M ' + [...currentTop, ...currentBottom.slice().reverse()]
+          .map(p => `${p.x},${p.y}`)
+          .join(' L ') + ' Z';
+        if (currentIsGreen) {
+          greenCloudPath += polygon;
         } else {
-          redCloudPath += path;
+          redCloudPath += polygon;
         }
       };
 
-      // 先行スパンの配列長（未来分を含む）を使う
+      const toPoint = (i, yVal) => ({ x: x(i - pastBuffer + (offset || 0)), y: y(yVal) });
+
       const len = Math.max(spanA?.length || 0, spanB?.length || 0);
-      for (let i = 0; i < len; i++) {
-        const spanA_val = spanA?.[i] ?? null;
-        const spanB_val = spanB?.[i] ?? null;
+      for (let i = 0; i < len - 1; i++) {
+        const a0 = spanA?.[i];
+        const b0 = spanB?.[i];
+        const a1 = spanA?.[i + 1];
+        const b1 = spanB?.[i + 1];
 
-        if (typeof spanA_val === 'number' && typeof spanB_val === 'number') {
-          const point = { x: x(i + (offset || 0)), yA: y(spanA_val), yB: y(spanB_val) };
-          const isGreen = spanA_val >= spanB_val; // 等しい場合も描画対象に含める
-
-          if (isGreen) {
-            if (currentRedPoints.length > 0) {
-              finishPath(currentRedPoints, false);
-              currentRedPoints = [];
-            }
-            currentGreenPoints.push(point);
-          } else {
-            if (currentGreenPoints.length > 0) {
-              finishPath(currentGreenPoints, true);
-              currentGreenPoints = [];
-            }
-            currentRedPoints.push(point);
-          }
-        } else {
-          finishPath(currentGreenPoints, true);
-          finishPath(currentRedPoints, false);
-          currentGreenPoints = [];
-          currentRedPoints = [];
+        // nullを含むセグメントは区切ってスキップ
+        if (
+          a0 == null || b0 == null || a1 == null || b1 == null ||
+          !isFinite(a0) || !isFinite(b0) || !isFinite(a1) || !isFinite(b1)
+        ) {
+          pushPolygon();
+          currentTop = [];
+          currentBottom = [];
+          currentIsGreen = null;
+          continue;
         }
+
+        const isGreen0 = a0 >= b0;
+        const isGreen1 = a1 >= b1;
+
+        // 初回開始
+        if (currentIsGreen === null) {
+          currentIsGreen = isGreen0;
+          // 始点を追加
+          currentTop.push(toPoint(i, currentIsGreen ? a0 : b0));
+          currentBottom.push(toPoint(i, currentIsGreen ? b0 : a0));
+        }
+
+        // 交差がない場合はそのまま次点を追加
+        if (isGreen0 === isGreen1) {
+          currentTop.push(toPoint(i + 1, currentIsGreen ? a1 : b1));
+          currentBottom.push(toPoint(i + 1, currentIsGreen ? b1 : a1));
+          continue;
+        }
+
+        // 交差がある場合: 交点を計算して両配列に追加し、ポリゴンを確定
+        // A(t) = a0 + t*(a1-a0), B(t) = b0 + t*(b1-b0), A(t) = B(t) を解く
+        const da = a1 - a0;
+        const db = b1 - b0;
+        const denom = (da - db);
+        const t = denom === 0 ? 0 : (a0 - b0) / denom; // [0,1]想定
+        const tClamped = Math.max(0, Math.min(1, t));
+        const xi = i + tClamped;
+        const yi = a0 + tClamped * da; // = b0 + tClamped * db
+
+        const pInt = toPoint(xi, yi);
+
+        // 現在区間の終点として交点を追加
+        currentTop.push(pInt);
+        currentBottom.push(pInt);
+        pushPolygon();
+
+        // 次の区間を交点から開始（色を反転）
+        currentIsGreen = isGreen1;
+        currentTop = [pInt, toPoint(i + 1, currentIsGreen ? a1 : b1)];
+        currentBottom = [pInt, toPoint(i + 1, currentIsGreen ? b1 : a1)];
       }
-      finishPath(currentGreenPoints, true);
-      finishPath(currentRedPoints, false);
+
+      // 末尾を確定
+      pushPolygon();
 
       return { greenCloudPath, redCloudPath };
     };
@@ -293,8 +360,8 @@ export default async function renderChartSvg(args = {}) {
     const { greenCloudPath, redCloudPath } = createCloudPaths(indicators.ICHI_spanA, indicators.ICHI_spanB, 26);
     
     ichimokuLayers = `
-      <path d="${greenCloudPath}" fill="rgba(16, 163, 74, 0.1)" stroke="none" />
-      <path d="${redCloudPath}" fill="rgba(239, 68, 68, 0.1)" stroke="none" />
+      <path d="${greenCloudPath}" fill="rgba(16, 163, 74, 0.16)" stroke="none" />
+      <path d="${redCloudPath}" fill="rgba(239, 68, 68, 0.24)" stroke="none" />
       ${tenkanPath}
       ${kijunPath}
       ${chikouPath}
@@ -309,7 +376,7 @@ export default async function renderChartSvg(args = {}) {
     if (withSMA?.length > 0) {
       withSMA.forEach((p, idx) => {
         legendMeta[`SMA_${p}`] = `SMA ${p} (${smaColors[p]})`;
-        legendItems.push({ text: `SMA ${p}`, color: smaColors[p] });
+        legendItems.push({ text: `SMA ${p}`, color: smaColors[p] || '#e5e7eb' });
       });
     }
     if (withBB) {
@@ -323,7 +390,8 @@ export default async function renderChartSvg(args = {}) {
       legendItems.push({ text: '基準線', color: '#ff4d4d' });
     }
 
-    let yOffset = padding.top / 2;
+    // 凡例は上部に余白を持たせて配置
+    let yOffset = Math.max(14, padding.top - 18);
     legendLayers = `<g font-size="12" fill="#e5e7eb">` + legendItems.map((item, i) => {
       const xPos = padding.left + (i * 130);
       return `<g transform="translate(${xPos}, ${yOffset})">
@@ -348,19 +416,22 @@ export default async function renderChartSvg(args = {}) {
   const xAxis = `
     <line x1="${padding.left}" y1="${h - padding.bottom}" x2="${w - padding.right}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>
     <g font-size="12" fill="#e5e7eb">
-      ${items.filter((_, i) => i % Math.floor(items.length / 5) === 0).map((d) => {
-        const idx = items.indexOf(d);
-        const xPos = x(idx);
-        const date = new Date(d.time || d.timestamp);
-        if (isNaN(date.getTime())) return ''; // 不正な日付はスキップ
-
-        const formattedDate = `${date.getMonth() + 1}/${date.getDate()}`;
-        return `<text x="${xPos}" y="${h - padding.bottom + 16}" text-anchor="middle">${formattedDate}</text>`;
-      }).join('')}
+      ${displayItems
+        .map((d, i) => {
+          const step = Math.max(1, Math.floor(displayItems.length / 5));
+          if (i % step !== 0) return '';
+          const xPos = x(i);
+          const date = new Date(d.isoTime || d.time || d.timestamp);
+          if (isNaN(date.getTime())) return '';
+          const label = `${date.getMonth() + 1}/${date.getDate()}`;
+          return `<text x="${xPos}" y="${h - padding.bottom + 16}" text-anchor="middle" fill="#e5e7eb" font-size="10">${label}</text>`;
+        })
+        .join('')}
     </g>
   `;
 
-  const svg = `
+  // --- 2種類のSVGを構築 ---
+  const createSvgString = (layers) => `
     <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #1f2937; color: #e5e7eb; font-family: sans-serif;">
       <title>${formatPair(pair)} ${type} chart</title>
       <defs>
@@ -373,33 +444,38 @@ export default async function renderChartSvg(args = {}) {
         ${xAxis}
       </g>
       <g class="plot-area" clip-path="url(#plotArea)">
-        ${ichimokuLayers}
-        ${bbLayers}
-        ${smaLayers}
+        ${layers.ichimoku}
+        ${layers.bb}
         ${sticks}
         ${bodies}
+        ${layers.sma}
       </g>
       <g class="legend">
         ${legendLayers}
       </g>
     </svg>
   `;
+  
+  const fullSvg = createSvgString({ ichimoku: ichimokuLayers, bb: bbLayers, sma: smaLayers });
+  const lightSvg = createSvgString({ ichimoku: withIchimoku ? ichimokuLayers : '', bb: bbLayers, sma: smaLayers });
+
 
   // --- SVGをファイルに保存（フォールバック付き） ---
-  const filename = `chart-${pair}-${type}-${Date.now()}.svg`;
+  const filenameSuffix = withIchimoku ? '_light' : '';
+  const filename = `chart-${pair}-${type}-${Date.now()}${filenameSuffix}.svg`;
   const assetsDir = 'assets';
   const outputPath = path.join(assetsDir, filename);
 
   try {
     // ディレクトリが存在しない場合は作成
     await fs.mkdir(assetsDir, { recursive: true });
-    await fs.writeFile(outputPath, svg);
+    await fs.writeFile(outputPath, withIchimoku ? lightSvg : fullSvg);
 
     // 保存成功時
     const summary = `${formatPair(pair)} ${type} chart saved to ${outputPath}`;
     return ok(
       summary,
-      { filePath: outputPath, legend: legendMeta },
+      { filePath: outputPath, svg: lightSvg, legend: legendMeta }, // ★ 出力構造を統一
       { pair, type, limit, indicators: Object.keys(legendMeta) }
     );
   } catch (err) {
@@ -407,12 +483,12 @@ export default async function renderChartSvg(args = {}) {
       `[Warning] Failed to save SVG to ${outputPath}. Fallback to inline SVG.`,
       err
     );
-    // 保存失敗時はSVG文字列を直接返す
+    // 保存失敗時は軽量版SVGを直接返す
     const summary = `${formatPair(pair)} ${type} chart (SVG, file save failed)`;
-    return ok(
-      summary,
-      { svg, legend: legendMeta },
+  return ok(
+    summary,
+      { svg: lightSvg, legend: legendMeta }, // ★ 出力構造を統一
       { pair, type, limit, indicators: Object.keys(legendMeta) }
-    );
-  }
+  );
+}
 }

@@ -150,21 +150,16 @@ export function ichimokuSeries(highs, lows, closes) {
   }
 
   // --- 描画用に各系列の時点をずらす ---
-
-  // 先行スパン (未来に26本シフト)
-  // 今日の値を26日未来に描画するため、配列を左にシフトし、末尾をnullで埋める
-  const spanA = rawSpanA.slice(shift).concat(Array(shift).fill(null));
-  const spanB = rawSpanB.slice(shift).concat(Array(shift).fill(null));
-  
-  // 遅行スパン (過去に26本シフト)
-  // 今日の終値を26日過去に描画するため、配列を右にシフトし、先頭をnullで埋める
-  const chikou = Array(shift).fill(null).concat(closes.slice(0, -shift));
+  // ★ 責務分離のため、描画側(render_chart_svg)でオフセットするため、ここではシフトしない
+  // 遅行スパン (closesをそのまま利用し、描画側で-26オフセット)
+  const chikou = closes;
 
   return {
     tenkan: tenkanSen.map(v => v ? Number(v.toFixed(2)) : null),
     kijun: kijunSen.map(v => v ? Number(v.toFixed(2)) : null),
-    spanA: spanA.map(v => v ? Number(v.toFixed(2)) : null),
-    spanB: spanB.map(v => v ? Number(v.toFixed(2)) : null),
+    // 先行スパンもシフトせず、元データを返す
+    spanA: rawSpanA.map(v => v ? Number(v.toFixed(2)) : null),
+    spanB: rawSpanB.map(v => v ? Number(v.toFixed(2)) : null),
     chikou: chikou.map(v => v ? Number(v.toFixed(2)) : null),
   };
 }
@@ -225,7 +220,10 @@ export default async function getIndicators(
 
   // 計算に利用するすべてのインジケータキー
   const indicatorKeys = [
+    'SMA_5',
+    'SMA_20',
     'SMA_25',
+    'SMA_50',
     'SMA_75',
     'SMA_200',
     'RSI_14',
@@ -249,12 +247,18 @@ export default async function getIndicators(
   const rsi14_series = rsi(allCloses, 14);
   const bb20 = bollingerBands(allCloses, 20, 2);
   const ichiSeries = ichimokuSeries(allHighs, allLows, allCloses);
+  const sma_5_series = sma(allCloses, 5);
+  const sma_20_series = sma(allCloses, 20);
   const sma_25_series = sma(allCloses, 25);
+  const sma_50_series = sma(allCloses, 50);
   const sma_75_series = sma(allCloses, 75);
   const sma_200_series = sma(allCloses, 200);
 
   const indicators = {
+    SMA_5: sma_5_series.at(-1),
+    SMA_20: sma_20_series.at(-1),
     SMA_25: sma_25_series.at(-1),
+    SMA_50: sma_50_series.at(-1),
     SMA_75: sma_75_series.at(-1),
     SMA_200: sma_200_series.at(-1),
     RSI_14: rsi14_series.at(-1),
@@ -263,7 +267,10 @@ export default async function getIndicators(
     BB_lower: bb20.lower.at(-1),
     bb_series: bb20, // for chart
     ichi_series: ichiSeries, // for chart
+    sma_5_series,
+    sma_20_series,
     sma_25_series,
+    sma_50_series,
     sma_75_series,
     sma_200_series,
   };
@@ -292,7 +299,10 @@ export default async function getIndicators(
 
   // データ不足の警告
   const warnings = [];
+  if (allCloses.length < 5) warnings.push('SMA_5: データ不足');
+  if (allCloses.length < 20) warnings.push('SMA_20: データ不足');
   if (allCloses.length < 25) warnings.push('SMA_25: データ不足');
+  if (allCloses.length < 50) warnings.push('SMA_50: データ不足');
   if (allCloses.length < 75) warnings.push('SMA_75: データ不足');
   if (allCloses.length < 200) warnings.push('SMA_200: データ不足');
   if (allCloses.length < 15) warnings.push('RSI_14: データ不足');
@@ -379,56 +389,39 @@ function analyzeTrend(indicators, currentPrice) {
 
 // チャート描画用の軽量データ生成
 function createChartData(normalized, indicators, limit = 50) {
+  const fullLength = normalized.length;
   const recent = normalized.slice(-limit);
-  const shift = 26; // 先行スパンのシフト数
-
-  const bbUpper = indicators.bb_series?.upper.slice(-limit);
-  const bbMiddle = indicators.bb_series?.middle.slice(-limit);
-  const bbLower = indicators.bb_series?.lower.slice(-limit);
-
-  const ichiTenkan = indicators.ichi_series?.tenkan.slice(-limit);
-  const ichiKijun = indicators.ichi_series?.kijun.slice(-limit);
-  
-  // 先行スパンは未来方向に突き出す表示が必要なため、limit+shiftを確保
-  const ichiSpanA = indicators.ichi_series?.spanA
-    ? indicators.ichi_series.spanA.slice(-(limit + shift))
-    : [];
-  const ichiSpanB = indicators.ichi_series?.spanB
-    ? indicators.ichi_series.spanB.slice(-(limit + shift))
-    : [];
-  
-  const ichiChikou = indicators.ichi_series?.chikou.slice(-limit);
-  
-  const sma25 = indicators.sma_25_series?.slice(-limit) || [];
-  const sma75 = indicators.sma_75_series?.slice(-limit) || [];
-  const sma200 = indicators.sma_200_series?.slice(-limit) || [];
+  const pastBuffer = fullLength - recent.length;
+  const shift = 26; // Ichimokuの先行スパンのシフト固定値
 
   return {
-    candles: recent.map(c => ({
-      time: c.isoTime,
-      open: c.open,
-      high: c.high,
-      low: c.low,
-      close: c.close,
-      volume: c.volume
-    })),
+    candles: normalized, // ★ 描画側でスライスするため、バッファ付きのまま渡す
     
-    // インジケーター値
+    // インジケーター値は全長を渡す
     indicators: {
-      SMA_25: sma25,
-      SMA_75: sma75,
-      SMA_200: sma200,
-      RSI_14: indicators.RSI_14, // Note: これは最新値のみ
-      BB_upper: bbUpper,
-      BB_middle: bbMiddle,
-      BB_lower: bbLower,
-      ICHI_tenkan: ichiTenkan,
-      ICHI_kijun: ichiKijun,
-      ICHI_spanA: ichiSpanA,
-      ICHI_spanB: ichiSpanB,
-      ICHI_chikou: ichiChikou,
+      SMA_5: indicators.sma_5_series,
+      SMA_20: indicators.sma_20_series,
+      SMA_25: indicators.sma_25_series,
+      SMA_50: indicators.sma_50_series,
+      SMA_75: indicators.sma_75_series,
+      SMA_200: indicators.sma_200_series,
+      RSI_14: indicators.RSI_14, // 最新値のみ
+      BB_upper: indicators.bb_series?.upper,
+      BB_middle: indicators.bb_series?.middle,
+      BB_lower: indicators.bb_series?.lower,
+      ICHI_tenkan: indicators.ichi_series?.tenkan,
+      ICHI_kijun: indicators.ichi_series?.kijun,
+      ICHI_spanA: indicators.ichi_series?.spanA,
+      ICHI_spanB: indicators.ichi_series?.spanB,
+      ICHI_chikou: indicators.ichi_series?.chikou,
     },
     
+    // 描画側に伝えるメタ情報
+    meta: {
+      pastBuffer,
+      shift, // ★ 先行スパンのシフト数を描画側に伝える
+    },
+
     // チャート描画用の統計情報
     stats: {
       min: Math.min(...recent.map(c => c.low)),

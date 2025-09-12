@@ -10,19 +10,46 @@ async function main() {
   const type = positionalArgs[1] || '1day';
   const limit = positionalArgs[2] ? parseInt(positionalArgs[2], 10) : 60;
 
+  const withIchimoku = flagArgs.has('--with-ichimoku');
+  
+  // デフォルト（軽量版）: SMA 25/75/200
+  // オプション: --sma=5,20,50 など指定時のみ追加描画
   const options = {
     pair,
     type,
     limit,
-    withSMA: flagArgs.has('--no-sma') ? [] : [25, 75],
+    withSMA: flagArgs.has('--no-sma') ? [] : [25, 75, 200],
     withBB: !flagArgs.has('--no-bb'),
-    withIchimoku: flagArgs.has('--with-ichimoku'),
+    withIchimoku: withIchimoku,
   };
+  
+  // モード指定があればichimokuオブジェクトとして渡す
+  const modeFlag = args.find(a => a.startsWith('--ichimoku-mode='));
+  if (modeFlag) {
+    const mode = modeFlag.split('=')[1];
+    options.ichimoku = { mode };
+    options.withIchimoku = true; // モード指定時は自動で有効化
+  }
+
+  // --- New: SMA periods ---
+  const smaFlag = args.find(a => a.startsWith('--sma='));
+  if (smaFlag) {
+    const list = smaFlag.split('=')[1];
+    if (list && list.length > 0) {
+      const periods = list.split(',').map((v) => parseInt(v.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0);
+      if (periods.length > 0) {
+        options.withSMA = periods;
+      }
+    }
+  }
 
   const result = await renderChartSvg(options);
 
   if (result.ok) {
-    // SVGデータを標準出力に書き出す
+    // 出力の安定化
+    if (result.data.filePath) {
+      console.error(`Chart saved to ${result.data.filePath}`);
+    }
     console.log(result.data.svg);
   } else {
     console.error('Failed to generate chart:', result.summary);
