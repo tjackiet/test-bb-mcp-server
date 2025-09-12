@@ -16,6 +16,7 @@ export default async function renderChartSvg(args = {}) {
   // オプション: SMA 5/20/50 はユーザー指定時のみ追加描画
   let withSMA = args.withSMA ?? (withIchimoku ? [] : [25, 75, 200]);
   let withBB = args.withBB ?? (withIchimoku ? false : true);
+  const bbMode = (args.bbMode || 'light'); // 'light' | 'full'（withBB=false の場合は未使用）
   if (withIchimoku) {
     withSMA = [];
     withBB = false;
@@ -92,8 +93,17 @@ export default async function renderChartSvg(args = {}) {
     allYValues.push(...(indicators.ICHI_spanB?.slice(pastBuffer).filter(v => v !== null) || []));
   }
   if (withBB) {
-    allYValues.push(...(indicators.BB_upper?.slice(pastBuffer).filter(v => v !== null) || []));
-    allYValues.push(...(indicators.BB_lower?.slice(pastBuffer).filter(v => v !== null) || []));
+    if (bbMode === 'full') {
+      // ±1,2,3σ をすべて範囲に含める
+      ['BB1_upper','BB1_lower','BB2_upper','BB2_lower','BB3_upper','BB3_lower'].forEach(key => {
+        const series = indicators[key]?.slice?.(pastBuffer) || [];
+        allYValues.push(...series.filter(v => v !== null));
+      });
+    } else {
+      // 互換キー(±2σ)のみ
+      allYValues.push(...(indicators.BB_upper?.slice(pastBuffer).filter(v => v !== null) || []));
+      allYValues.push(...(indicators.BB_lower?.slice(pastBuffer).filter(v => v !== null) || []));
+    }
   }
   if (withSMA && withSMA.length > 0) {
     withSMA.forEach(period => {
@@ -126,9 +136,6 @@ export default async function renderChartSvg(args = {}) {
 
   const y = (v) =>
     h - padding.bottom - ((v - yMin) * plotH) / Math.max(1, yMax - yMin);
-
-  // 先行表示時の左側欠けを埋めるための補正（26）
-  const leftCompensation = withIchimoku ? 26 : 0;
 
   // --- 凡例メタデータと描画レイヤーの準備 ---
   const legendMeta = {};
@@ -163,6 +170,13 @@ export default async function renderChartSvg(args = {}) {
 
   // --- インジケータ描画 ---
   const smaColors = { 5: '#f472b6', 20: '#a78bfa', 25: '#3b82f6', 50: '#22d3ee', 75: '#f59e0b', 200: '#10b981' };
+  const bbColors = {
+    bandFill2: 'rgba(59, 130, 246, 0.10)', // 2σバンド塗り
+    line1: '#9ca3af', // ±1σ
+    line2: '#3b82f6', // ±2σ
+    line3: '#f59e0b', // ±3σ
+    middle: '#9ca3af',
+  };
   
   // 汎用的なライン描画関数
   const createLinePath = (data, color, options = {}) => {
@@ -171,7 +185,6 @@ export default async function renderChartSvg(args = {}) {
     const offset = options.offset || 0; // 先行(+26) / 遅行(-26)
     data.forEach((val, i) => {
       if (val !== null && typeof val === 'number') {
-        // ★ 座標計算時にpastBufferを引くことで、描画開始位置を揃える
         points.push(`${x(i - pastBuffer + offset)},${y(val)}`);
       }
     });
@@ -181,7 +194,7 @@ export default async function renderChartSvg(args = {}) {
     const width = options.width || '2';
     return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}" ${dash}/>`;
   };
-  
+
   // SMAレイヤー
   const sma5 = indicators?.SMA_5 || [];
   const sma20 = indicators?.SMA_20 || [];
@@ -211,47 +224,75 @@ export default async function renderChartSvg(args = {}) {
 
   // ボリンジャーバンド
   let bbLayers = '';
-  if (
-    withBB &&
-    indicators?.BB_upper &&
-    indicators?.BB_middle &&
-    indicators?.BB_lower
-  ) {
+  if (withBB) {
     const createPoints = (data) => {
       const points = [];
-      data.forEach((val, i) => {
-        if (val !== null) {
-          points.push({ x: x(i), y: y(val) });
+      data?.forEach?.((val, i) => {
+        if (val !== null && val !== undefined) {
+          points.push({ x: x(i - pastBuffer), y: y(val) });
         }
       });
       return points;
     };
     const createPathFromPoints = (points) => {
-      if (points.length === 0) return '';
+      if (!points || points.length === 0) return '';
       return 'M ' + points.map((p) => `${p.x},${p.y}`).join(' L ');
     };
 
-    const upperPoints = createPoints(indicators.BB_upper);
-    const middlePoints = createPoints(indicators.BB_middle);
-    const lowerPoints = createPoints(indicators.BB_lower);
+    const makeBand = (upperSeries, lowerSeries, fill) => {
+      const upperPoints = createPoints(upperSeries);
+      const lowerPoints = createPoints(lowerSeries);
+      const upperPath = createPathFromPoints(upperPoints);
+      const lowerPath = createPathFromPoints(lowerPoints);
+      let bandPath = '';
+      if (upperPoints.length > 0 && lowerPoints.length > 0) {
+        const lowerPointsReversed = [...lowerPoints].reverse();
+        const allPoints = [...upperPoints, ...lowerPointsReversed];
+        bandPath = createPathFromPoints(allPoints) + ' Z';
+      }
+      return { upperPath, lowerPath, bandPath };
+    };
 
-    const upperPath = createPathFromPoints(upperPoints);
-    const middlePath = createPathFromPoints(middlePoints);
-    const lowerPath = createPathFromPoints(lowerPoints);
-
-    let bandPath = '';
-    if (upperPoints.length > 0 && lowerPoints.length > 0) {
-      const lowerPointsReversed = [...lowerPoints].reverse();
-      const allPoints = [...upperPoints, ...lowerPointsReversed];
-      bandPath = createPathFromPoints(allPoints) + ' Z';
+    if (bbMode === 'full') {
+      // ±2σのバンド塗り
+      const band2 = makeBand(indicators.BB2_upper, indicators.BB2_lower, bbColors.bandFill2);
+      bbLayers += `
+        <path d="${band2.bandPath}" fill="${bbColors.bandFill2}" stroke="none" />
+      `;
+      // ±1σ ライン（グレー）
+      const p1u = createPathFromPoints(createPoints(indicators.BB1_upper));
+      const p1l = createPathFromPoints(createPoints(indicators.BB1_lower));
+      bbLayers += `
+        <path d="${p1u}" fill="none" stroke="${bbColors.line1}" stroke-width="1"/>
+        <path d="${p1l}" fill="none" stroke="${bbColors.line1}" stroke-width="1"/>
+      `;
+      // ±2σ ライン（青） + 中央線（灰の破線）
+      const p2u = createPathFromPoints(createPoints(indicators.BB2_upper));
+      const p2m = createPathFromPoints(createPoints(indicators.BB2_middle));
+      const p2l = createPathFromPoints(createPoints(indicators.BB2_lower));
+      bbLayers += `
+        <path d="${p2u}" fill="none" stroke="${bbColors.line2}" stroke-width="1"/>
+        <path d="${p2l}" fill="none" stroke="${bbColors.line2}" stroke-width="1"/>
+        <path d="${p2m}" fill="none" stroke="${bbColors.middle}" stroke-width="1" stroke-dasharray="4 4"/>
+      `;
+      // ±3σ ライン（オレンジ）
+      const p3u = createPathFromPoints(createPoints(indicators.BB3_upper));
+      const p3l = createPathFromPoints(createPoints(indicators.BB3_lower));
+      bbLayers += `
+        <path d="${p3u}" fill="none" stroke="${bbColors.line3}" stroke-width="1"/>
+        <path d="${p3l}" fill="none" stroke="${bbColors.line3}" stroke-width="1"/>
+      `;
+    } else {
+      // light: 互換キー（±2σ）のみを使って従来描画
+      const band2 = makeBand(indicators.BB_upper, indicators.BB_lower, bbColors.bandFill2);
+      const mid2 = createPathFromPoints(createPoints(indicators.BB_middle));
+      bbLayers = `
+        <path d="${band2.bandPath}" fill="${bbColors.bandFill2}" stroke="none" />
+        <path d="${band2.upperPath}" fill="none" stroke="${bbColors.line2}" stroke-width="1"/>
+        <path d="${band2.lowerPath}" fill="none" stroke="${bbColors.line2}" stroke-width="1"/>
+        <path d="${mid2}" fill="none" stroke="${bbColors.middle}" stroke-width="1" stroke-dasharray="4 4"/>
+      `;
     }
-
-    bbLayers = `
-      <path d="${bandPath}" fill="rgba(59, 130, 246, 0.1)" stroke="none" />
-      <path d="${upperPath}" fill="none" stroke="#3b82f6" stroke-width="1"/>
-      <path d="${lowerPath}" fill="none" stroke="#3b82f6" stroke-width="1"/>
-      <path d="${middlePath}" fill="none" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4 4"/>
-    `;
   }
 
   // 一目均衡表
@@ -267,93 +308,37 @@ export default async function renderChartSvg(args = {}) {
     const spanAPath = createLinePath(indicators.ICHI_spanA, '#16a34a', { width: '1', offset: 26 });
     const spanBPath = createLinePath(indicators.ICHI_spanB, '#ef4444', { width: '1', offset: 26 });
     
-    // 雲の描画ロジックを修正（交差点で色を正確に切り替える）
+    // 雲の描画ロジック（交点で色切替）省略（既存）
     const createCloudPaths = (spanA, spanB, offset) => {
       let greenCloudPath = '';
       let redCloudPath = '';
-
-      // 現在の領域（同一色の連続区間）を保持
       let currentTop = [];
       let currentBottom = [];
       let currentIsGreen = null;
-
       const pushPolygon = () => {
         if (currentTop.length < 2 || currentBottom.length < 2) return;
         const polygon = 'M ' + [...currentTop, ...currentBottom.slice().reverse()]
           .map(p => `${p.x},${p.y}`)
           .join(' L ') + ' Z';
-        if (currentIsGreen) {
-          greenCloudPath += polygon;
-        } else {
-          redCloudPath += polygon;
-        }
+        if (currentIsGreen) greenCloudPath += polygon; else redCloudPath += polygon;
       };
-
       const toPoint = (i, yVal) => ({ x: x(i - pastBuffer + (offset || 0)), y: y(yVal) });
-
       const len = Math.max(spanA?.length || 0, spanB?.length || 0);
       for (let i = 0; i < len - 1; i++) {
-        const a0 = spanA?.[i];
-        const b0 = spanB?.[i];
-        const a1 = spanA?.[i + 1];
-        const b1 = spanB?.[i + 1];
-
-        // nullを含むセグメントは区切ってスキップ
-        if (
-          a0 == null || b0 == null || a1 == null || b1 == null ||
-          !isFinite(a0) || !isFinite(b0) || !isFinite(a1) || !isFinite(b1)
-        ) {
-          pushPolygon();
-          currentTop = [];
-          currentBottom = [];
-          currentIsGreen = null;
-          continue;
+        const a0 = spanA?.[i]; const b0 = spanB?.[i];
+        const a1 = spanA?.[i + 1]; const b1 = spanB?.[i + 1];
+        if (a0 == null || b0 == null || a1 == null || b1 == null || !isFinite(a0) || !isFinite(b0) || !isFinite(a1) || !isFinite(b1)) {
+          pushPolygon(); currentTop = []; currentBottom = []; currentIsGreen = null; continue;
         }
-
-        const isGreen0 = a0 >= b0;
-        const isGreen1 = a1 >= b1;
-
-        // 初回開始
-        if (currentIsGreen === null) {
-          currentIsGreen = isGreen0;
-          // 始点を追加
-          currentTop.push(toPoint(i, currentIsGreen ? a0 : b0));
-          currentBottom.push(toPoint(i, currentIsGreen ? b0 : a0));
-        }
-
-        // 交差がない場合はそのまま次点を追加
-        if (isGreen0 === isGreen1) {
-          currentTop.push(toPoint(i + 1, currentIsGreen ? a1 : b1));
-          currentBottom.push(toPoint(i + 1, currentIsGreen ? b1 : a1));
-          continue;
-        }
-
-        // 交差がある場合: 交点を計算して両配列に追加し、ポリゴンを確定
-        // A(t) = a0 + t*(a1-a0), B(t) = b0 + t*(b1-b0), A(t) = B(t) を解く
-        const da = a1 - a0;
-        const db = b1 - b0;
-        const denom = (da - db);
-        const t = denom === 0 ? 0 : (a0 - b0) / denom; // [0,1]想定
-        const tClamped = Math.max(0, Math.min(1, t));
-        const xi = i + tClamped;
-        const yi = a0 + tClamped * da; // = b0 + tClamped * db
-
-        const pInt = toPoint(xi, yi);
-
-        // 現在区間の終点として交点を追加
-        currentTop.push(pInt);
-        currentBottom.push(pInt);
-        pushPolygon();
-
-        // 次の区間を交点から開始（色を反転）
-        currentIsGreen = isGreen1;
-        currentTop = [pInt, toPoint(i + 1, currentIsGreen ? a1 : b1)];
-        currentBottom = [pInt, toPoint(i + 1, currentIsGreen ? b1 : a1)];
+        const isGreen0 = a0 >= b0; const isGreen1 = a1 >= b1;
+        if (currentIsGreen === null) { currentIsGreen = isGreen0; currentTop.push(toPoint(i, currentIsGreen ? a0 : b0)); currentBottom.push(toPoint(i, currentIsGreen ? b0 : a0)); }
+        if (isGreen0 === isGreen1) { currentTop.push(toPoint(i + 1, currentIsGreen ? a1 : b1)); currentBottom.push(toPoint(i + 1, currentIsGreen ? b1 : a1)); continue; }
+        const da = a1 - a0; const db = b1 - b0; const denom = (da - db); const t = denom === 0 ? 0 : (a0 - b0) / denom; const tClamped = Math.max(0, Math.min(1, t));
+        const xi = i + tClamped; const yi = a0 + tClamped * da; const pInt = toPoint(xi, yi);
+        currentTop.push(pInt); currentBottom.push(pInt); pushPolygon();
+        currentIsGreen = isGreen1; currentTop = [pInt, toPoint(i + 1, currentIsGreen ? a1 : b1)]; currentBottom = [pInt, toPoint(i + 1, currentIsGreen ? b1 : a1)];
       }
-
-      // 末尾を確定
       pushPolygon();
-
       return { greenCloudPath, redCloudPath };
     };
 
@@ -374,18 +359,26 @@ export default async function renderChartSvg(args = {}) {
   if (withLegend) {
     const legendItems = [];
     if (withSMA?.length > 0) {
-      withSMA.forEach((p, idx) => {
+      withSMA.forEach((p) => {
         legendMeta[`SMA_${p}`] = `SMA ${p} (${smaColors[p]})`;
         legendItems.push({ text: `SMA ${p}`, color: smaColors[p] || '#e5e7eb' });
       });
     }
     if (withBB) {
-      legendMeta.BB = 'ボリンジャーバンド (青)';
-      legendItems.push({ text: 'Bollinger Bands', color: '#3b82f6' });
+      if (bbMode === 'full') {
+        legendMeta.BB1 = 'BB ±1σ';
+        legendMeta.BB2 = 'BB ±2σ';
+        legendMeta.BB3 = 'BB ±3σ';
+        legendItems.push({ text: 'BB ±1σ', color: bbColors.line1 });
+        legendItems.push({ text: 'BB ±2σ', color: bbColors.line2 });
+        legendItems.push({ text: 'BB ±3σ', color: bbColors.line3 });
+      } else {
+        legendMeta.BB = 'Bollinger Bands (±2σ)';
+        legendItems.push({ text: 'BB ±2σ', color: bbColors.line2 });
+      }
     }
     if (withIchimoku) {
       legendMeta.Ichimoku = '一目均衡表';
-      // 転換線・基準線を個別に表示
       legendItems.push({ text: '転換線', color: '#00a3ff' });
       legendItems.push({ text: '基準線', color: '#ff4d4d' });
     }
@@ -475,20 +468,19 @@ export default async function renderChartSvg(args = {}) {
     const summary = `${formatPair(pair)} ${type} chart saved to ${outputPath}`;
     return ok(
       summary,
-      { filePath: outputPath, svg: lightSvg, legend: legendMeta }, // ★ 出力構造を統一
-      { pair, type, limit, indicators: Object.keys(legendMeta) }
+      { filePath: outputPath, svg: lightSvg, legend: legendMeta },
+      { pair, type, limit, indicators: Object.keys(legendMeta), bbMode }
     );
   } catch (err) {
     console.warn(
       `[Warning] Failed to save SVG to ${outputPath}. Fallback to inline SVG.`,
       err
     );
-    // 保存失敗時は軽量版SVGを直接返す
     const summary = `${formatPair(pair)} ${type} chart (SVG, file save failed)`;
-  return ok(
-    summary,
-      { svg: lightSvg, legend: legendMeta }, // ★ 出力構造を統一
-      { pair, type, limit, indicators: Object.keys(legendMeta) }
-  );
-}
+    return ok(
+      summary,
+      { svg: lightSvg, legend: legendMeta },
+      { pair, type, limit, indicators: Object.keys(legendMeta), bbMode }
+    );
+  }
 }

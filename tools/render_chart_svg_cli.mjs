@@ -23,12 +23,21 @@ async function main() {
     withIchimoku: withIchimoku,
   };
   
-  // モード指定があればichimokuオブジェクトとして渡す
+  // Ichimoku モード
   const modeFlag = args.find(a => a.startsWith('--ichimoku-mode='));
   if (modeFlag) {
     const mode = modeFlag.split('=')[1];
     options.ichimoku = { mode };
     options.withIchimoku = true; // モード指定時は自動で有効化
+  }
+
+  // BollingerBands モード: --bb-mode=light|full
+  const bbModeFlag = args.find(a => a.startsWith('--bb-mode='));
+  if (bbModeFlag) {
+    const bbMode = bbModeFlag.split('=')[1];
+    if (bbMode === 'light' || bbMode === 'full') {
+      options.bbMode = bbMode;
+    }
   }
 
   // --- New: SMA periods ---

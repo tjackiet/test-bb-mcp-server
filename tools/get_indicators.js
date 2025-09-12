@@ -245,7 +245,9 @@ export default async function getIndicators(
 
   // インジケーター計算 (全長データで行う)
   const rsi14_series = rsi(allCloses, 14);
-  const bb20 = bollingerBands(allCloses, 20, 2);
+  const bb1 = bollingerBands(allCloses, 20, 1);
+  const bb2 = bollingerBands(allCloses, 20, 2);
+  const bb3 = bollingerBands(allCloses, 20, 3);
   const ichiSeries = ichimokuSeries(allHighs, allLows, allCloses);
   const sma_5_series = sma(allCloses, 5);
   const sma_20_series = sma(allCloses, 20);
@@ -262,11 +264,25 @@ export default async function getIndicators(
     SMA_75: sma_75_series.at(-1),
     SMA_200: sma_200_series.at(-1),
     RSI_14: rsi14_series.at(-1),
-    BB_upper: bb20.upper.at(-1),
-    BB_middle: bb20.middle.at(-1),
-    BB_lower: bb20.lower.at(-1),
-    bb_series: bb20, // for chart
-    ichi_series: ichiSeries, // for chart
+    // Backward compatibility (±2σ)
+    BB_upper: bb2.upper.at(-1),
+    BB_middle: bb2.middle.at(-1),
+    BB_lower: bb2.lower.at(-1),
+    // Multi-sigma last values
+    BB1_upper: bb1.upper.at(-1),
+    BB1_middle: bb1.middle.at(-1),
+    BB1_lower: bb1.lower.at(-1),
+    BB2_upper: bb2.upper.at(-1),
+    BB2_middle: bb2.middle.at(-1),
+    BB2_lower: bb2.lower.at(-1),
+    BB3_upper: bb3.upper.at(-1),
+    BB3_middle: bb3.middle.at(-1),
+    BB3_lower: bb3.lower.at(-1),
+    // series for chart
+    bb1_series: bb1,
+    bb2_series: bb2,
+    bb3_series: bb3,
+    ichi_series: ichiSeries,
     sma_5_series,
     sma_20_series,
     sma_25_series,
@@ -274,19 +290,6 @@ export default async function getIndicators(
     sma_75_series,
     sma_200_series,
   };
-
-  // ボリンジャーバンド計算 (全長データで行う)
-  const lastUpper = bb20.upper.at(-1);
-  const lastMiddle = bb20.middle.at(-1);
-  const lastLower = bb20.lower.at(-1);
-
-  if (lastUpper && lastMiddle && lastLower) {
-    indicators.BB_upper = lastUpper;
-    indicators.BB_middle = lastMiddle;
-    indicators.BB_lower = lastLower;
-    const bandwidth = ((lastUpper - lastLower) / lastMiddle) * 100;
-    indicators.BB_bandwidth = Number(bandwidth.toFixed(2));
-  }
 
   // 一目均衡表計算 (全長データで行う)
   const ichiSimple = ichimoku(allHighs, allLows, allCloses);
@@ -406,9 +409,20 @@ function createChartData(normalized, indicators, limit = 50) {
       SMA_75: indicators.sma_75_series,
       SMA_200: indicators.sma_200_series,
       RSI_14: indicators.RSI_14, // 最新値のみ
-      BB_upper: indicators.bb_series?.upper,
-      BB_middle: indicators.bb_series?.middle,
-      BB_lower: indicators.bb_series?.lower,
+      // Bollinger Bands series for multiple sigmas
+      BB1_upper: indicators.bb1_series?.upper,
+      BB1_middle: indicators.bb1_series?.middle,
+      BB1_lower: indicators.bb1_series?.lower,
+      BB2_upper: indicators.bb2_series?.upper,
+      BB2_middle: indicators.bb2_series?.middle,
+      BB2_lower: indicators.bb2_series?.lower,
+      BB3_upper: indicators.bb3_series?.upper,
+      BB3_middle: indicators.bb3_series?.middle,
+      BB3_lower: indicators.bb3_series?.lower,
+      // Back-compat keys (±2σ)
+      BB_upper: indicators.bb2_series?.upper,
+      BB_middle: indicators.bb2_series?.middle,
+      BB_lower: indicators.bb2_series?.lower,
       ICHI_tenkan: indicators.ichi_series?.tenkan,
       ICHI_kijun: indicators.ichi_series?.kijun,
       ICHI_spanA: indicators.ichi_series?.spanA,
