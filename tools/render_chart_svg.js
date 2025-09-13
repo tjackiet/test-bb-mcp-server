@@ -439,8 +439,8 @@ export default async function renderChartSvg(args = {}) {
       <g class="plot-area" clip-path="url(#plotArea)">
         ${layers.ichimoku}
         ${layers.bb}
-        ${sticks}
-        ${bodies}
+  ${sticks}
+  ${bodies}
         ${layers.sma}
       </g>
       <g class="legend">
@@ -477,10 +477,10 @@ export default async function renderChartSvg(args = {}) {
       err
     );
     const summary = `${formatPair(pair)} ${type} chart (SVG, file save failed)`;
-    return ok(
-      summary,
+  return ok(
+    summary,
       { svg: lightSvg, legend: legendMeta },
       { pair, type, limit, indicators: Object.keys(legendMeta), bbMode }
-    );
-  }
+  );
+}
 }

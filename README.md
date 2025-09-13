@@ -21,7 +21,7 @@
 以下は `render_chart_svg` ツールによって生成されたBTC/JPYの日足チャートです。
 
 **ボリンジャーバンド**
-![Sample Chart](assets/sample_chart.svg)
+![Sample Chart](assets/bb_light.svg)
 
 **一目均衡表**
 ![Ichimoku Sample Chart](assets/ichimoku_sample.svg)
@@ -38,62 +38,62 @@ SVGファイルとして出力してください。
 ## Setup
 
 1.  **環境変数を設定してください**  
-    `.env.example` をコピーして `.env` ファイルを作成します。
-    ```bash
-    cp .env.example .env
-    ```
-    必要に応じて `.env` ファイル内の値を調整してください。
-    - `PORT`: サーバーのポート番号（注: 現在の実装では `stdio` 通信のため使用されません）
-    - `LOG_DIR`: ログファイルを保存するディレクトリ
-    - `LOG_LEVEL`: ログの出力レベル（`info`, `debug` など）
+   `.env.example` をコピーして `.env` ファイルを作成します。
+   ```bash
+   cp .env.example .env
+   ```
+   必要に応じて `.env` ファイル内の値を調整してください。
+   - `PORT`: サーバーのポート番号（注: 現在の実装では `stdio` 通信のため使用されません）
+   - `LOG_DIR`: ログファイルを保存するディレクトリ
+   - `LOG_LEVEL`: ログの出力レベル（`info`, `debug` など）
 
 ## サーバーの起動方法
 
 ### Docker を利用する場合（推奨）
 
 1.  **Dockerイメージをビルド**
-    ```bash
-    docker build -t bitbank-mcp .
-    ```
+   ```bash
+   docker build -t bitbank-mcp .
+   ```
 
 2.  **コンテナを起動し、Inspectorに接続**
-    ```bash
-    npx @modelcontextprotocol/inspector docker run -i --rm bitbank-mcp
-    ```
-    上記コマンドを実行すると、コンテナが起動し、自動的にブラウザでMCP Inspectorが開きサーバーに接続されます。
+   ```bash
+   npx @modelcontextprotocol/inspector docker run -i --rm bitbank-mcp
+   ```
+   上記コマンドを実行すると、コンテナが起動し、自動的にブラウザでMCP Inspectorが開きサーバーに接続されます。
 
-    **Note: 実行ログの保存**
-    
-    コンテナ内で実行されたツールのログを、ホストマシン（あなたのPC）の`./logs`ディレクトリに保存したい場合は、`-v`オプション（ボリュームマウント）を追加してコンテナを起動してください。
+   **Note: 実行ログの保存**
+   
+   コンテナ内で実行されたツールのログを、ホストマシン（あなたのPC）の`./logs`ディレクトリに保存したい場合は、`-v`オプション（ボリュームマウント）を追加してコンテナを起動してください。
 
-    ```bash
-    npx @modelcontextprotocol/inspector docker run -i --rm -v "$(pwd)/logs:/app/logs" bitbank-mcp
-    ```
+   ```bash
+   npx @modelcontextprotocol/inspector docker run -i --rm -v "$(pwd)/logs:/app/logs" bitbank-mcp
+   ```
 
 3.  **ログの確認手順**
-    
-    `-v`オプション付きでコンテナを起動し、Inspectorからツールをいくつか実行した後、**別のターミナル**から以下のコマンドでログを確認できます。
+   
+   `-v`オプション付きでコンテナを起動し、Inspectorからツールをいくつか実行した後、**別のターミナル**から以下のコマンドでログを確認できます。
 
-    ```bash
-    # ログファイルが作成されているか確認
-    ls logs/
+   ```bash
+   # ログファイルが作成されているか確認
+   ls logs/
 
-    # ログファイルの中身を確認
-    cat logs/$(date +%F).jsonl
-    ```
+   # ログファイルの中身を確認
+   cat logs/$(date +%F).jsonl
+   ```
 
 ### ローカル環境で直接実行する場合
 
 1.  **依存パッケージのインストール**
-    ```bash
-    npm install
-    ```
+   ```bash
+   npm install
+   ```
 
 2.  **Inspector に接続してサーバーを起動**
-    ```bash
-    npx @modelcontextprotocol/inspector node src/server.mjs
-    ```
-    このコマンドを実行すると、サーバーが起動し、自動的にMCP Inspectorが開いて接続されます。実行ログは`.env`で指定された`LOG_DIR`（デフォルト: `./logs`）に保存されます。
+   ```bash
+   npx @modelcontextprotocol/inspector node src/server.mjs
+   ```
+   このコマンドを実行すると、サーバーが起動し、自動的にMCP Inspectorが開いて接続されます。実行ログは`.env`で指定された`LOG_DIR`（デフォルト: `./logs`）に保存されます。
 
 ## CLIツールとしての使用方法
 
@@ -130,9 +130,4 @@ node tools/render_chart_svg_cli.mjs btc_jpy 1day 45 > chart.svg
 **実行例：一目均衡表のみを100日分描画**
 ```bash
 node tools/render_chart_svg_cli.mjs btc_jpy 1day 100 --with-ichimoku --no-bb --no-sma > assets/ichimoku_sample.svg
-```
-
-### ティッカーデータ取得
-```bash
-node tools/get_ticker.js btc_jpy
 ```
