@@ -9,8 +9,10 @@ export declare const GetIndicatorsInputSchema: z.ZodObject<any>;
 
 export declare const CandleTypeEnum: z.ZodTypeAny;
 export declare const RenderChartSvgInputSchema: z.ZodObject<any>;
+export declare const RenderChartSvgOutputSchema: z.ZodObject<any>;
 
 export type RenderChartSvgInput = z.infer<typeof RenderChartSvgInputSchema>;
+export type RenderChartSvgOutput = z.infer<typeof RenderChartSvgOutputSchema>;
 export type GetTickerInput = z.infer<typeof GetTickerInputSchema>;
 export type GetOrderbookInput = z.infer<typeof GetOrderbookInputSchema>;
 export type GetCandlesInput = z.infer<typeof GetCandlesInputSchema>;

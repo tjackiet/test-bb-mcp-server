@@ -3,11 +3,211 @@
 
 // === Enums & Inputs ===
 
-[object Object]
-[object Object]
+export type CandleType = "1min" | "5min" | "15min" | "30min" | "1hour" | "4hour" | "8hour" | "12hour" | "1day" | "1week" | "1month";
+export type RenderChartSvgInput = {
+    pair?: string;
+    type?: ("1min" | "5min" | "15min" | "30min" | "1hour" | "4hour" | "8hour" | "12hour" | "1day" | "1week" | "1month");
+    limit?: number;
+    withSMA?: number[];
+    withBB?: boolean;
+    bbMode?: ("default" | "extended" | "light" | "full");
+    withIchimoku?: boolean;
+    ichimoku?: {
+        mode?: ("default" | "extended");
+        withChikou?: boolean | undefined;
+    } | undefined;
+    withLegend?: boolean;
+};
+export type RenderChartSvgOutput = {
+    ok: true | false;
+    summary: string;
+    data: {
+        svg?: string | undefined;
+        filePath?: string | undefined;
+        legend?: {
+            [x: string]: string;
+        } | undefined;
+    } | {};
+    meta?: {
+        pair: string;
+        type: ("1min" | "5min" | "15min" | "30min" | "1hour" | "4hour" | "8hour" | "12hour" | "1day" | "1week" | "1month") | string;
+        limit?: number | undefined;
+        indicators?: string[] | undefined;
+        bbMode?: ("default" | "extended") | undefined;
+    } | undefined;
+};
 
 // === Indicators DTOs ===
 
-[object Object]
-[object Object]
-[object Object]
+export type ChartPayloadFromSchema = {
+    candles: {
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+        volume?: number | undefined;
+        isoTime?: (string | null) | undefined;
+        time?: (string | number) | undefined;
+        timestamp?: number | undefined;
+    }[];
+    indicators: {
+        ICHI_tenkan: (number | null)[];
+        ICHI_kijun: (number | null)[];
+        ICHI_spanA: (number | null)[];
+        ICHI_spanB: (number | null)[];
+        ICHI_chikou: (number | null)[];
+        BB_upper: (number | null)[];
+        BB_middle: (number | null)[];
+        BB_lower: (number | null)[];
+        BB1_upper: (number | null)[];
+        BB1_middle: (number | null)[];
+        BB1_lower: (number | null)[];
+        BB2_upper: (number | null)[];
+        BB2_middle: (number | null)[];
+        BB2_lower: (number | null)[];
+        BB3_upper: (number | null)[];
+        BB3_middle: (number | null)[];
+        BB3_lower: (number | null)[];
+        SMA_5: (number | null)[];
+        SMA_20: (number | null)[];
+        SMA_25: (number | null)[];
+        SMA_50: (number | null)[];
+        SMA_75: (number | null)[];
+        SMA_200: (number | null)[];
+        RSI_14?: (number | null) | undefined;
+    };
+    meta?: {
+        pastBuffer?: number | undefined;
+        shift?: number | undefined;
+    } | undefined;
+    stats?: {
+        min: number;
+        max: number;
+        avg: number;
+        volume_avg: number;
+    } | undefined;
+};
+export type GetIndicatorsDataFromSchema = {
+    summary: string;
+    raw?: unknown;
+    normalized: {
+        open: number;
+        high: number;
+        low: number;
+        close: number;
+        volume?: number | undefined;
+        isoTime?: (string | null) | undefined;
+        time?: (string | number) | undefined;
+        timestamp?: number | undefined;
+    }[];
+    indicators: {
+        SMA_5?: (number | null) | undefined;
+        SMA_20?: (number | null) | undefined;
+        SMA_25?: (number | null) | undefined;
+        SMA_50?: (number | null) | undefined;
+        SMA_75?: (number | null) | undefined;
+        SMA_200?: (number | null) | undefined;
+        RSI_14?: (number | null) | undefined;
+        BB_upper?: (number | null) | undefined;
+        BB_middle?: (number | null) | undefined;
+        BB_lower?: (number | null) | undefined;
+        BB1_upper?: (number | null) | undefined;
+        BB1_middle?: (number | null) | undefined;
+        BB1_lower?: (number | null) | undefined;
+        BB2_upper?: (number | null) | undefined;
+        BB2_middle?: (number | null) | undefined;
+        BB2_lower?: (number | null) | undefined;
+        BB3_upper?: (number | null) | undefined;
+        BB3_middle?: (number | null) | undefined;
+        BB3_lower?: (number | null) | undefined;
+        ICHIMOKU_conversion?: (number | null) | undefined;
+        ICHIMOKU_base?: (number | null) | undefined;
+        ICHIMOKU_spanA?: (number | null) | undefined;
+        ICHIMOKU_spanB?: (number | null) | undefined;
+        bb1_series?: {
+            upper: (number | null)[];
+            middle: (number | null)[];
+            lower: (number | null)[];
+        } | undefined;
+        bb2_series?: {
+            upper: (number | null)[];
+            middle: (number | null)[];
+            lower: (number | null)[];
+        } | undefined;
+        bb3_series?: {
+            upper: (number | null)[];
+            middle: (number | null)[];
+            lower: (number | null)[];
+        } | undefined;
+        ichi_series?: {
+            tenkan: (number | null)[];
+            kijun: (number | null)[];
+            spanA: (number | null)[];
+            spanB: (number | null)[];
+            chikou: (number | null)[];
+        } | undefined;
+        sma_5_series?: (number | null)[] | undefined;
+        sma_20_series?: (number | null)[] | undefined;
+        sma_25_series?: (number | null)[] | undefined;
+        sma_50_series?: (number | null)[] | undefined;
+        sma_75_series?: (number | null)[] | undefined;
+        sma_200_series?: (number | null)[] | undefined;
+    };
+    trend: "strong_uptrend" | "uptrend" | "strong_downtrend" | "downtrend" | "overbought" | "oversold" | "sideways" | "insufficient_data";
+    chart: {
+        candles: {
+            open: number;
+            high: number;
+            low: number;
+            close: number;
+            volume?: number | undefined;
+            isoTime?: (string | null) | undefined;
+            time?: (string | number) | undefined;
+            timestamp?: number | undefined;
+        }[];
+        indicators: {
+            ICHI_tenkan: (number | null)[];
+            ICHI_kijun: (number | null)[];
+            ICHI_spanA: (number | null)[];
+            ICHI_spanB: (number | null)[];
+            ICHI_chikou: (number | null)[];
+            BB_upper: (number | null)[];
+            BB_middle: (number | null)[];
+            BB_lower: (number | null)[];
+            BB1_upper: (number | null)[];
+            BB1_middle: (number | null)[];
+            BB1_lower: (number | null)[];
+            BB2_upper: (number | null)[];
+            BB2_middle: (number | null)[];
+            BB2_lower: (number | null)[];
+            BB3_upper: (number | null)[];
+            BB3_middle: (number | null)[];
+            BB3_lower: (number | null)[];
+            SMA_5: (number | null)[];
+            SMA_20: (number | null)[];
+            SMA_25: (number | null)[];
+            SMA_50: (number | null)[];
+            SMA_75: (number | null)[];
+            SMA_200: (number | null)[];
+            RSI_14?: (number | null) | undefined;
+        };
+        meta: {
+            pastBuffer?: number | undefined;
+            shift?: number | undefined;
+        };
+        stats: {
+            min: number;
+            max: number;
+            avg: number;
+            volume_avg: number;
+        };
+    };
+};
+export type GetIndicatorsMetaFromSchema = {
+    pair: string;
+    fetchedAt: string;
+    type: ("1min" | "5min" | "15min" | "30min" | "1hour" | "4hour" | "8hour" | "12hour" | "1day" | "1week" | "1month") | string;
+    count: number;
+    requiredCount: number;
+    warnings?: string[] | undefined;
+};

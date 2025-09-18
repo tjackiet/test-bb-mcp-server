@@ -3,10 +3,11 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { zodToTs } from 'zod-to-ts';
+import { zodToTs, printNode } from 'zod-to-ts';
 import {
   CandleTypeEnum,
   RenderChartSvgInputSchema,
+  RenderChartSvgOutputSchema,
   ChartPayloadSchema,
   GetIndicatorsDataSchema,
   GetIndicatorsMetaSchema,
@@ -28,14 +29,33 @@ chunks.push("/* eslint-disable */");
 
 // Enums and inputs
 chunks.push(section('Enums & Inputs'));
-chunks.push(zodToTs(CandleTypeEnum, 'CandleType').node);
-chunks.push(zodToTs(RenderChartSvgInputSchema, 'RenderChartSvgInput').node);
+{
+  const { node } = zodToTs(CandleTypeEnum, 'CandleType');
+  chunks.push(`export type CandleType = ${printNode(node)};`);
+}
+{
+  const { node } = zodToTs(RenderChartSvgInputSchema, 'RenderChartSvgInput');
+  chunks.push(`export type RenderChartSvgInput = ${printNode(node)};`);
+}
+{
+  const { node } = zodToTs(RenderChartSvgOutputSchema, 'RenderChartSvgOutput');
+  chunks.push(`export type RenderChartSvgOutput = ${printNode(node)};`);
+}
 
 // Indicators
 chunks.push(section('Indicators DTOs'));
-chunks.push(zodToTs(ChartPayloadSchema, 'ChartPayload').node);
-chunks.push(zodToTs(GetIndicatorsDataSchema, 'GetIndicatorsDataFromSchema').node);
-chunks.push(zodToTs(GetIndicatorsMetaSchema, 'GetIndicatorsMetaFromSchema').node);
+{
+  const { node } = zodToTs(ChartPayloadSchema, 'ChartPayloadFromSchema');
+  chunks.push(`export type ChartPayloadFromSchema = ${printNode(node)};`);
+}
+{
+  const { node } = zodToTs(GetIndicatorsDataSchema, 'GetIndicatorsDataFromSchema');
+  chunks.push(`export type GetIndicatorsDataFromSchema = ${printNode(node)};`);
+}
+{
+  const { node } = zodToTs(GetIndicatorsMetaSchema, 'GetIndicatorsMetaFromSchema');
+  chunks.push(`export type GetIndicatorsMetaFromSchema = ${printNode(node)};`);
+}
 
 const content = chunks.join('\n');
 
