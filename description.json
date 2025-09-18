@@ -5,56 +5,62 @@
   "tools": {
     "get_ticker": {
       "description": "Get ticker for a pair (e.g., btc_jpy)",
-      "input": { "pair": { "type": "string", "default": "btc_jpy" } }
+      "input": {
+        "pair": {
+          "type": "unknown"
+        }
+      }
     },
     "get_orderbook": {
       "description": "Get orderbook topN for a pair",
       "input": {
-        "pair": { "type": "string" },
-        "topN": { "type": "number", "default": 10 }
+        "pair": {
+          "type": "unknown"
+        },
+        "opN": {
+          "type": "unknown"
+        }
       }
     },
     "get_candles": {
       "description": "Get candles. date: 1month→YYYY, others→YYYYMMDD",
       "input": {
-        "pair": { "type": "string" },
-        "type": { "type": "string", "enum": ["1min","5min","15min","30min","1hour","4hour","8hour","12hour","1day","1week","1month"] },
-        "date": { "type": "string" },
-        "limit": { "type": "number", "default": 200 }
+        "pair": {
+          "type": "unknown"
+        },
+        "type": {
+          "type": "unknown"
+        },
+        "date": {
+          "type": "unknown"
+        },
+        "limit": {
+          "type": "unknown"
+        },
+        "view": {
+          "type": "unknown"
+        }
       }
     },
     "get_indicators": {
       "description": "Compute indicators (SMA/RSI/BB/Ichimoku). Use sufficient limit.",
       "input": {
-        "pair": { "type": "string", "default": "btc_jpy" },
-        "type": { "type": "string", "default": "1day" },
-        "limit": { "type": "number" }
+        "pair": {
+          "type": "unknown"
+        },
+        "type": {
+          "type": "unknown"
+        },
+        "limit": {
+          "type": "unknown"
+        }
       }
     },
-    "render_chart_html": {
-      "description": "[Experimental] Render chart as standalone HTML (may be blocked by CSP).",
-      "input": {
-        "pair": { "type": "string", "default": "btc_jpy" },
-        "type": { "type": "string", "default": "1day" },
-        "limit": { "type": "number", "default": 90 },
-        "embedLib": { "type": "boolean", "default": true }
-      },
-      "output": { "html": "string" }
-    },
     "render_chart_svg": {
-      "description": "Render candlestick chart as SVG. BB default=light (±2σ). Ichimoku mode default='default' (no Chikou). Use mode='extended' ONLY when user explicitly asks. Do NOT self-render; display returned SVG only.",
+      "description": "Render candlestick chart as SVG. Do NOT self-render; display returned SVG only.",
       "input": {
-        "pair": { "type": "string", "default": "btc_jpy" },
-        "type": { "type": "string", "default": "1day" },
-        "limit": { "type": "number", "default": 100 },
-        "withSMA": { "type": "array:number", "default": [25,75,200] },
-        "withBB": { "type": "boolean", "default": true },
-        "bbMode": { "type": "string", "enum": ["default","extended","light","full"], "default": "default" },
-        "withIchimoku": { "type": "boolean", "default": false },
-        "ichimoku": { "type": "object", "properties": { "mode": { "type": "string", "enum": ["default","extended"], "default": "default" } } },
-        "withLegend": { "type": "boolean", "default": true }
-      },
-      "output": { "svg": "string", "filePath": "string?" }
+        "type": "unknown"
+      }
     }
   }
 }

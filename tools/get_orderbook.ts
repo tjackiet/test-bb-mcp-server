@@ -1,6 +1,8 @@
 import { ensurePair, validateLimit, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
+import { fetchJson } from '../lib/http.js';
+import { GetOrderbookOutputSchema } from '../src/schemas.js';
 import type { Result, GetOrderbookData, GetOrderbookMeta, OrderbookLevelWithCum } from '../src/types/domain.d.ts';
 
 export interface GetOrderbookOptions {
@@ -39,17 +41,8 @@ export default async function getOrderbook(
 
   const url = `https://public.bitbank.cc/${chk.pair}/depth`;
 
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(t);
-
-    if (!res.ok) {
-      return fail(`HTTP ${res.status} ${res.statusText}`, 'service');
-    }
-    const json: any = await res.json();
+    const json: any = await fetchJson(url, { timeoutMs, retries: 2 });
     const d = json?.data ?? {};
     const asks = toLevels(d.asks, limitCheck.value);
     const bids = toLevels(d.bids, limitCheck.value);
@@ -84,12 +77,11 @@ export default async function getOrderbook(
       count: asks.length + bids.length,
     }) as GetOrderbookMeta;
 
-    return ok(summary, data, meta);
+    return GetOrderbookOutputSchema.parse(ok(summary, data, meta)) as unknown as Result<GetOrderbookData, GetOrderbookMeta>;
   } catch (err: any) {
-    clearTimeout(t);
     const isAbort = err?.name === 'AbortError';
     const message = isAbort ? `タイムアウト (${timeoutMs}ms)` : err?.message || 'ネットワークエラー';
-    return fail(message, isAbort ? 'timeout' : 'network');
+    return GetOrderbookOutputSchema.parse(fail(message, isAbort ? 'timeout' : 'network')) as unknown as Result<GetOrderbookData, GetOrderbookMeta>;
   }
 }
 

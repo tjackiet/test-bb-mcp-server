@@ -1,6 +1,8 @@
 import { ensurePair, createMeta } from '../lib/validate.js';
+import { fetchJson } from '../lib/http.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
+import { GetTickerOutputSchema } from '../src/schemas.js';
 import type { Result, GetTickerData, GetTickerMeta } from '../src/types/domain.d.ts';
 
 export interface GetTickerOptions {
@@ -14,24 +16,15 @@ function toIsoTime(ts: unknown): string | null {
 
 export default async function getTicker(
   pair: string,
-  { timeoutMs = 2500 }: GetTickerOptions = {}
+  { timeoutMs = 5000 }: GetTickerOptions = {}
 ): Promise<Result<GetTickerData, GetTickerMeta>> {
   const chk = ensurePair(pair);
   if (!chk.ok) return fail(chk.error.message, chk.error.type);
 
   const url = `https://public.bitbank.cc/${chk.pair}/ticker`;
 
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
-
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    clearTimeout(t);
-
-    if (!res.ok) {
-      return fail(`HTTP ${res.status} ${res.statusText}`, 'service');
-    }
-    const json: any = await res.json();
+    const json: any = await fetchJson(url, { timeoutMs, retries: 2 });
 
     const d = json?.data ?? {};
     const summary = formatSummary({
@@ -53,12 +46,11 @@ export default async function getTicker(
       },
     };
 
-    return ok(summary, data, createMeta(chk.pair));
+    return GetTickerOutputSchema.parse(ok(summary, data, createMeta(chk.pair))) as unknown as Result<GetTickerData, GetTickerMeta>;
   } catch (err: any) {
-    clearTimeout(t);
     const isAbort = err?.name === 'AbortError';
     const message = isAbort ? `タイムアウト (${timeoutMs}ms)` : err?.message || 'ネットワークエラー';
-    return fail(message, isAbort ? 'timeout' : 'network');
+    return GetTickerOutputSchema.parse(fail(message, isAbort ? 'timeout' : 'network')) as unknown as Result<GetTickerData, GetTickerMeta>;
   }
 }
 

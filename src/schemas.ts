@@ -153,7 +153,7 @@ export const ChartPayloadSchema = z
       'ICHI_tenkan','ICHI_kijun','ICHI_spanA','ICHI_spanB','ICHI_chikou',
     ];
     for (const key of seriesKeys) {
-      const arr = val.indicators[key];
+      const arr = (val as any).indicators[key];
       if (!Array.isArray(arr) || arr.length !== len) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
@@ -302,7 +302,7 @@ export const GetTickerInputSchema = z.object({
 
 export const GetOrderbookInputSchema = z.object({
 	pair: z.string(),
-	topN: z.number().int().min(1).max(1000).optional().default(10),
+	opN: z.number().int().min(1).max(1000).optional().default(10),
 });
 
 export const GetCandlesInputSchema = z.object({

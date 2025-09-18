@@ -1,6 +1,7 @@
 import { fetchJson } from '../lib/http.js';
 import { ensurePair, validateLimit, validateDate, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
+import { GetCandlesOutputSchema } from '../src/schemas.js';
 import { formatSummary } from '../lib/formatter.js';
 import type { Result, GetCandlesData, GetCandlesMeta, CandleType } from '../src/types/domain.d.ts';
 
@@ -53,7 +54,7 @@ export default async function getCandles(
   const url = `https://public.bitbank.cc/${chk.pair}/candlestick/${type}/${dateCheck.value}`;
 
   try {
-    const json: any = await fetchJson(url, { timeoutMs: 3000, retries: 2 });
+    const json: any = await fetchJson(url, { timeoutMs: 5000, retries: 2 });
     const cs = json?.data?.candlestick?.[0];
     const ohlcvs: unknown[] = cs?.ohlcv ?? [];
 
@@ -80,12 +81,12 @@ export default async function getCandles(
 
     const result = ok<GetCandlesData, GetCandlesMeta>(
       summary,
-      { raw: json, normalized },
+      { raw: json, normalized } as GetCandlesData,
       createMeta(chk.pair, { type, count: normalized.length }) as GetCandlesMeta
     );
-    return result;
+    return GetCandlesOutputSchema.parse(result) as unknown as Result<GetCandlesData, GetCandlesMeta>;
   } catch (e: any) {
-    return fail(e?.message || 'ネットワークエラー', 'network');
+    return GetCandlesOutputSchema.parse(fail(e?.message || 'ネットワークエラー', 'network')) as unknown as Result<GetCandlesData, GetCandlesMeta>;
   }
 }
 

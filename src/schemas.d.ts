@@ -31,3 +31,7 @@ export declare const TrendLabelEnum: z.ZodTypeAny;
 export declare const IndicatorsInternalSchema: z.ZodTypeAny;
 export declare const GetIndicatorsDataSchema: z.ZodTypeAny;
 export declare const GetIndicatorsMetaSchema: z.ZodTypeAny;
+export declare const GetTickerOutputSchema: z.ZodTypeAny;
+export declare const GetOrderbookOutputSchema: z.ZodTypeAny;
+export declare const GetCandlesOutputSchema: z.ZodTypeAny;
+export declare const GetIndicatorsOutputSchema: z.ZodTypeAny;

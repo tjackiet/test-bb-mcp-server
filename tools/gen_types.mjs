@@ -1,4 +1,4 @@
-// Generate .d.ts from Zod schemas in src/schemas.js
+// Generate .d.ts from Zod schemas in src/schemas.ts
 // Usage: node tools/gen_types.mjs
 import fs from 'fs/promises';
 import path from 'path';
@@ -11,7 +11,7 @@ import {
   ChartPayloadSchema,
   GetIndicatorsDataSchema,
   GetIndicatorsMetaSchema,
-} from '../src/schemas.js';
+} from '../src/schemas.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

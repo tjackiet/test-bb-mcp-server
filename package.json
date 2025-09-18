@@ -11,6 +11,8 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "ci:typecheck": "npm run gen:types && tsc --noEmit -p tsconfig.json",
     "gen:types": "node tools/gen_types.mjs",
+    "sync:manifest": "node tools/sync_manifest.mjs",
+    "sync:prompts": "node tools/sync_prompts.mjs",
     "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true"
   },
   "keywords": [],

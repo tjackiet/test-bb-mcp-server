@@ -2,23 +2,115 @@
   "prompts": {
     "bb_light_chart": {
       "description": "Render chart with Bollinger Bands light (±2σ).",
-      "input": { "pair": "btc_jpy", "type": "1day", "limit": 90 },
-      "messages": [ { "role": "assistant", "content": [ { "type": "tool_code", "tool_name": "render_chart_svg", "tool_input": { "pair": "{{pair}}", "type": "{{type}}", "limit": "{{limit}}", "withBB": true, "bbMode": "light", "withSMA": [] } } ] } ]
+      "input": {
+        "pair": "btc_jpy",
+        "type": "1day",
+        "limit": 90
+      },
+      "messages": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_code",
+              "tool_name": "render_chart_svg",
+              "tool_input": {
+                "pair": "{{pair}}",
+                "type": "{{type}}",
+                "limit": "{{limit}}",
+                "withBB": true,
+                "bbMode": "light",
+                "withSMA": []
+              }
+            }
+          ]
+        }
+      ]
     },
     "bb_full_chart": {
       "description": "Render chart with Bollinger Bands full (±1/±2/±3σ). Use only if user explicitly requests full.",
-      "input": { "pair": "btc_jpy", "type": "1day", "limit": 90 },
-      "messages": [ { "role": "assistant", "content": [ { "type": "tool_code", "tool_name": "render_chart_svg", "tool_input": { "pair": "{{pair}}", "type": "{{type}}", "limit": "{{limit}}", "withBB": true, "bbMode": "full", "withSMA": [] } } ] } ]
+      "input": {
+        "pair": "btc_jpy",
+        "type": "1day",
+        "limit": 90
+      },
+      "messages": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_code",
+              "tool_name": "render_chart_svg",
+              "tool_input": {
+                "pair": "{{pair}}",
+                "type": "{{type}}",
+                "limit": "{{limit}}",
+                "withBB": true,
+                "bbMode": "full",
+                "withSMA": []
+              }
+            }
+          ]
+        }
+      ]
     },
     "ichimoku_default_chart": {
       "description": "Render chart with Ichimoku default (Tenkan/Kijun/Cloud only).",
-      "input": { "pair": "btc_jpy", "type": "1day", "limit": 90 },
-      "messages": [ { "role": "assistant", "content": [ { "type": "tool_code", "tool_name": "render_chart_svg", "tool_input": { "pair": "{{pair}}", "type": "{{type}}", "limit": "{{limit}}", "withIchimoku": true, "ichimoku": { "mode": "default" }, "withSMA": [] } } ] } ]
+      "input": {
+        "pair": "btc_jpy",
+        "type": "1day",
+        "limit": 90
+      },
+      "messages": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_code",
+              "tool_name": "render_chart_svg",
+              "tool_input": {
+                "pair": "{{pair}}",
+                "type": "{{type}}",
+                "limit": "{{limit}}",
+                "withIchimoku": true,
+                "ichimoku": {
+                  "mode": "default"
+                },
+                "withSMA": []
+              }
+            }
+          ]
+        }
+      ]
     },
     "ichimoku_extended_chart": {
       "description": "Render chart with Ichimoku extended (includes Chikou). Use only if user explicitly requests extended.",
-      "input": { "pair": "btc_jpy", "type": "1day", "limit": 90 },
-      "messages": [ { "role": "assistant", "content": [ { "type": "tool_code", "tool_name": "render_chart_svg", "tool_input": { "pair": "{{pair}}", "type": "{{type}}", "limit": "{{limit}}", "withIchimoku": true, "ichimoku": { "mode": "extended" }, "withSMA": [] } } ] } ]
+      "input": {
+        "pair": "btc_jpy",
+        "type": "1day",
+        "limit": 90
+      },
+      "messages": [
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "tool_code",
+              "tool_name": "render_chart_svg",
+              "tool_input": {
+                "pair": "{{pair}}",
+                "type": "{{type}}",
+                "limit": "{{limit}}",
+                "withIchimoku": true,
+                "ichimoku": {
+                  "mode": "extended"
+                },
+                "withSMA": []
+              }
+            }
+          ]
+        }
+      ]
     }
   }
 }

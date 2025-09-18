@@ -3,7 +3,7 @@ import { ensurePair, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
 import { getFetchCount } from '../lib/indicator_buffer.js';
-import { GetIndicatorsDataSchema, GetIndicatorsMetaSchema } from '../src/schemas.js';
+import { GetIndicatorsDataSchema, GetIndicatorsMetaSchema, GetIndicatorsOutputSchema } from '../src/schemas.js';
 import type {
   Result,
   Candle,
@@ -259,7 +259,7 @@ export default async function getIndicators(
 
   const displayCount = limit || 60;
 
-  const indicatorKeys = ['SMA_5','SMA_20','SMA_25','SMA_50','SMA_75','SMA_200','RSI_14','BB_20','ICHIMOKU'] as const;
+  const indicatorKeys = ['SMA_5', 'SMA_20', 'SMA_25', 'SMA_50', 'SMA_75', 'SMA_200', 'RSI_14', 'BB_20', 'ICHIMOKU'] as const;
   const fetchCount = getFetchCount(displayCount, indicatorKeys as unknown as any);
 
   const candlesResult = await getCandles(chk.pair, type as any, undefined as any, fetchCount);
@@ -341,12 +341,12 @@ export default async function getIndicators(
     const len = chartData.candles.length;
     const seriesMap = chartData.indicators as unknown as Record<string, NumericSeries | number | null | undefined>;
     const keys = [
-      'SMA_5','SMA_20','SMA_25','SMA_50','SMA_75','SMA_200',
-      'BB_upper','BB_middle','BB_lower',
-      'BB1_upper','BB1_middle','BB1_lower',
-      'BB2_upper','BB2_middle','BB2_lower',
-      'BB3_upper','BB3_middle','BB3_lower',
-      'ICHI_tenkan','ICHI_kijun','ICHI_spanA','ICHI_spanB','ICHI_chikou',
+      'SMA_5', 'SMA_20', 'SMA_25', 'SMA_50', 'SMA_75', 'SMA_200',
+      'BB_upper', 'BB_middle', 'BB_lower',
+      'BB1_upper', 'BB1_middle', 'BB1_lower',
+      'BB2_upper', 'BB2_middle', 'BB2_lower',
+      'BB3_upper', 'BB3_middle', 'BB3_lower',
+      'ICHI_tenkan', 'ICHI_kijun', 'ICHI_spanA', 'ICHI_spanB', 'ICHI_chikou',
     ];
     keys.forEach((k) => {
       const arr = seriesMap[k] as NumericSeries | undefined;
@@ -381,7 +381,7 @@ export default async function getIndicators(
     extra: `RSI=${latestIndicators.RSI_14} trend=${trend} (count=${allCloses.length})`,
   });
 
-  const data = {
+  const data: GetIndicatorsData = {
     summary,
     raw: candlesResult.data.raw,
     normalized,
@@ -399,7 +399,7 @@ export default async function getIndicators(
 
   const parsedData = GetIndicatorsDataSchema.parse(data);
   const parsedMeta = GetIndicatorsMetaSchema.parse(meta);
-  return ok(summary, parsedData, parsedMeta);
+  return GetIndicatorsOutputSchema.parse(ok(summary, parsedData, parsedMeta)) as unknown as Result<GetIndicatorsData, GetIndicatorsMeta>;
 }
 
 
