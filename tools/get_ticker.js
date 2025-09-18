@@ -10,6 +10,15 @@ function ms(ts) {
   return Number.isNaN(d.valueOf()) ? null : d.toISOString();
 }
 
+/**
+ * @typedef {object} GetTickerOptions
+ * @property {number} [timeoutMs=2500]
+ */
+/**
+ * @param {string} pair
+ * @param {GetTickerOptions} [options]
+ * @returns {Promise<import('../src/types/domain.d').Result<import('../src/types/domain.d').GetTickerData, import('../src/types/domain.d').GetTickerMeta>>}
+ */
 async function getTicker(pair, { timeoutMs = 2500 } = {}) {
   // ペアバリデーション
   const chk = ensurePair(pair);

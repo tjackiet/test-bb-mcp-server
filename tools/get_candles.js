@@ -38,6 +38,13 @@ const toIso = (ms) => {
   return Number.isNaN(d.valueOf()) ? null : d.toISOString();
 };
 
+/**
+ * @param {string} pair
+ * @param {import('../src/types/domain.d').CandleType | string} [type='1day']
+ * @param {string} [date]
+ * @param {number} [limit=200]
+ * @returns {Promise<import('../src/types/domain.d').Result<import('../src/types/domain.d').GetCandlesData, import('../src/types/domain.d').GetCandlesMeta>>}
+ */
 export default async function getCandles(
   pair,
   type = '1day',

@@ -4,6 +4,7 @@ import 'dotenv/config';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
+import { RenderChartSvgInputSchema, GetTickerInputSchema, GetOrderbookInputSchema, GetCandlesInputSchema, GetIndicatorsInputSchema } from './schemas.js';
 
 import {
   getTicker,
@@ -15,7 +16,7 @@ import {
 } from '../tools/index.js';
 import { logToolRun, logError } from '../lib/logger.js';
 
-const server = new McpServer({ name: 'bitbank-mcp', version: '0.1.0' });
+const server = new McpServer({ name: 'bitbank-mcp', version: '0.3.0' });
 
 const respond = (result) => ({
   content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
@@ -52,9 +53,7 @@ registerToolWithLog(
   'get_ticker',
   {
     description: 'Get ticker for a pair (e.g., btc_jpy)',
-    inputSchema: {
-      pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
-    },
+    inputSchema: GetTickerInputSchema.shape,
   },
   async ({ pair }) => getTicker(pair)
 );
@@ -64,17 +63,7 @@ registerToolWithLog(
   'get_orderbook',
   {
     description: 'Get orderbook topN for a pair',
-    inputSchema: {
-      pair: z.string().describe('e.g., btc_jpy'),
-      topN: z
-        .number()
-        .int()
-        .min(1)
-        .max(1000)
-        .optional()
-        .default(10)
-        .describe('Top levels to return'),
-    },
+    inputSchema: GetOrderbookInputSchema.shape,
   },
   async ({ pair, topN }) => getOrderbook(pair, topN)
 );
@@ -84,29 +73,7 @@ registerToolWithLog(
   'get_candles',
   {
     description: 'Get candles. date: 1month → YYYY, others → YYYYMMDD',
-    inputSchema: {
-      pair: z.string().describe('e.g., btc_jpy'),
-      type: z.enum([
-        '1min',
-        '5min',
-        '15min',
-        '30min',
-        '1hour',
-        '4hour',
-        '8hour',
-        '12hour',
-        '1day',
-        '1week',
-        '1month',
-      ]),
-      date: z.string().describe('YYYY (1month) or YYYYMMDD (others)'),
-      limit: z.number().int().min(1).max(1000).optional().default(200),
-      view: z
-        .enum(['full', 'items'])
-        .optional()
-        .default('full')
-        .describe('full: all fields / items: ".data.normalized.items" only'),
-    },
+    inputSchema: GetCandlesInputSchema.shape,
   },
   async ({ pair, type, date, limit, view }) => {
     const result = await getCandles(pair, type, date, limit);
@@ -128,32 +95,7 @@ registerToolWithLog(
   {
     description:
       'Get technical indicators for a pair. For meaningful results, use a sufficient `limit` (e.g., 200 for daily candles). If `limit` is omitted, an appropriate default value will be used.',
-    inputSchema: {
-      pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
-      type: z
-        .enum([
-          '1min',
-          '5min',
-          '15min',
-          '30min',
-          '1hour',
-          '4hour',
-          '8hour',
-          '12hour',
-          '1day',
-          '1week',
-          '1month',
-        ])
-        .optional()
-        .default('1day'),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(1000)
-        .optional()
-        .describe('Number of candles to use for calculation'),
-    },
+    inputSchema: GetIndicatorsInputSchema.shape,
   },
   async ({ pair, type, limit }) => getIndicators(pair, type, limit)
 );
@@ -206,57 +148,59 @@ registerToolWithLog(
   'render_chart_svg',
   {
     description:
-      '重要: このツールは、ローソク足チャートやテクニカル分析を要求された際の応答フローにおいて、**必ず最初に呼び出される必要があります**。\n' +
-      'あなた自身でチャート描画を省略したり、テキスト解説で代替することは許可されていません。\n' +
-      '必ず `render_chart_svg` を使ってチャートを**描画した後**に、必要であれば `get_indicators` で詳細な数値を取得し、最後にテキストでの解説を生成してください。\n\n' +
-      'ローソク足チャートをSVG画像形式で描画します。' +
-      '特に一目均衡表を有効にする場合は注意が必要です。\n\n' +
-      '利用ルール:\n' +
-      '1. `limit` は「表示するローソク足の本数」を指定してください。\n' +
-      '   内部では一目均衡表の先行スパンを描画するために、' +
-      '   必ず `limit + 26` 本のデータを自動取得します（ユーザーが追加計算する必要はありません）。\n' +
-      '2. 一目均衡表を表示する場合は `withIchimoku: true` を必ず指定してください。\n' +
-      '3. SMAを表示したい場合は、`withSMA: [25, 75, 200]` のように配列で期間を指定します。\n' +
-      '4. Bollinger Bands を表示したい場合は `withBB: true` を指定します。\n' +
-      '5. 凡例を消したい場合は `withLegend: false` を指定します。\n\n' +
-      '例: 直近30本の日足ローソク足と一目均衡表を描画する場合 → ' +
-      '{ pair: "btc_jpy", type: "1day", limit: 30, withIchimoku: true }',
-    inputSchema: {
-      pair: z.string().optional().default('btc_jpy'),
-      type: z.string().optional().default('1day'),
-      limit: z.number().int().min(5).max(365).optional().default(100),
-      withSMA: z
-        .array(z.number().int())
-        .optional()
-        .default([25, 75])
-        .describe('描画する単純移動平均線の期間を配列で指定。空配列[]で非表示。'),
-      withBB: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe('ボリンジャーバンドを描画するかどうか'),
-      withIchimoku: z
-        .boolean()
-        .optional()
-        .default(false)
-        .describe('一目均衡表を描画するかどうか。trueにすると内部で自動的に limit+26 本を取得します。'),
-      withLegend: z
-        .boolean()
-        .optional()
-        .default(true)
-        .describe('凡例を描画するかどうか'),
-    },
+      '重要: チャートが必要な場合、必ず本ツールを最初に呼び出してください。\n' +
+      '- AI自身がD3/Chart.js/Canvas/SVGで独自に描画するのは禁止です。\n' +
+      '- Artifact には本ツールの返す `data.svg` をそのまま表示してください。\n\n' +
+      '出力: `{ ok, summary, data: { svg: string, filePath?: string }, meta }`。\n' +
+      'Bollinger Bands 既定は default(±2σ)。`bbMode=extended` はユーザーが明示した場合のみ。\n' +
+      'Ichimoku 既定は mode="default"（転換/基準/雲）。`mode="extended"` はユーザーが明示した場合のみ（遅行スパンを描画）。\n' +
+      'SMAの既定は [25,75,200]。',
+    inputSchema: RenderChartSvgInputSchema.shape,
   },
   async (args) => renderChartSvg(args)
 );
 
-// ---- Prompt: analyze_with_ichimoku ----
-server.registerPrompt('analyze_with_ichimoku', {
-  description: '一目均衡表を重ねてチャートを描画し、トレンドを分析する',
+// ---- Prompt: ichimoku_default_chart ----
+server.registerPrompt('ichimoku_default_chart', {
+  description: '一目均衡表（標準: 転換/基準/雲）でチャートを描画する（type: CandleTypeEnum）',
+  inputSchema: z.object({ pair: z.string().optional().default('btc_jpy'), type: z.enum(['1day','1week','1month','1hour','4hour']).optional().default('1day'), limit: z.number().int().min(30).max(200).optional().default(90) }),
+  handler: async ({ pair, type, limit }) => ({
+    messages: [{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair, type, limit, withIchimoku: true, ichimoku: { mode: 'default' }, withSMA: [] } }] }],
+  }),
+});
+
+// ---- Prompt: ichimoku_extended_chart ----
+server.registerPrompt('ichimoku_extended_chart', {
+  description: '一目均衡表（拡張: 遅行スパン含む）でチャートを描画する（type: CandleTypeEnum。ユーザー明示時のみ）',
+  inputSchema: z.object({ pair: z.string().optional().default('btc_jpy'), type: z.enum(['1day','1week','1month','1hour','4hour']).optional().default('1day'), limit: z.number().int().min(30).max(200).optional().default(90) }),
+  handler: async ({ pair, type, limit }) => ({
+    messages: [{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair, type, limit, withIchimoku: true, ichimoku: { mode: 'extended' }, withSMA: [] } }] }],
+  }),
+});
+
+// Backward-compat prompts (light/full) → map to default/extended
+server.registerPrompt('ichimoku_light_chart', {
+  description: '[deprecated] Use ichimoku_default_chart',
+  inputSchema: z.object({ pair: z.string().optional().default('btc_jpy'), type: z.string().optional().default('1day'), limit: z.number().int().min(30).max(200).optional().default(90) }),
+  handler: async ({ pair, type, limit }) => ({
+    messages: [{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair, type, limit, withIchimoku: true, ichimoku: { mode: 'default' }, withSMA: [] } }] }],
+  }),
+});
+server.registerPrompt('ichimoku_full_chart', {
+  description: '[deprecated] Use ichimoku_extended_chart',
+  inputSchema: z.object({ pair: z.string().optional().default('btc_jpy'), type: z.string().optional().default('1day'), limit: z.number().int().min(30).max(200).optional().default(90) }),
+  handler: async ({ pair, type, limit }) => ({
+    messages: [{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair, type, limit, withIchimoku: true, ichimoku: { mode: 'extended' }, withSMA: [] } }] }],
+  }),
+});
+
+// ---- Prompt: bb_light_chart ----
+server.registerPrompt('bb_light_chart', {
+  description: 'ボリンジャーバンド（標準: ±2σ）でチャートを描画する（bbMode=default, type: CandleTypeEnum）',
   inputSchema: z.object({
     pair: z.string().optional().default('btc_jpy'),
-    type: z.string().optional().default('1day'),
-    limit: z.number().int().min(30).max(200).optional().default(90),
+    type: z.enum(['1day','1week','1month','1hour','4hour']).optional().default('1day'),
+    limit: z.number().int().min(30).max(365).optional().default(90),
   }),
   handler: async ({ pair, type, limit }) => {
     return {
@@ -267,7 +211,33 @@ server.registerPrompt('analyze_with_ichimoku', {
             {
               type: 'tool_code',
               tool_name: 'render_chart_svg',
-              tool_input: { pair, type, limit, withIchimoku: true, withSMA: [] },
+              tool_input: { pair, type, limit, withBB: true, bbMode: 'default', withSMA: [] },
+            },
+          ],
+        },
+      ],
+    };
+  },
+});
+
+// ---- Prompt: bb_full_chart ----
+server.registerPrompt('bb_full_chart', {
+  description: 'ボリンジャーバンド（拡張: ±1/±2/±3σ）でチャートを描画する（bbMode=extended, type: CandleTypeEnum）',
+  inputSchema: z.object({
+    pair: z.string().optional().default('btc_jpy'),
+    type: z.enum(['1day','1week','1month','1hour','4hour']).optional().default('1day'),
+    limit: z.number().int().min(30).max(365).optional().default(90),
+  }),
+  handler: async ({ pair, type, limit }) => {
+    return {
+      messages: [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_code',
+              tool_name: 'render_chart_svg',
+              tool_input: { pair, type, limit, withBB: true, bbMode: 'extended', withSMA: [] },
             },
           ],
         },
@@ -355,22 +325,7 @@ server.registerPrompt(
       'Visualizes candle data as a chart by using the `render_chart_html` tool.',
     inputSchema: z.object({
       pair: z.string().optional().default('btc_jpy').describe('e.g., btc_jpy'),
-      type: z
-        .enum([
-          '1min',
-          '5min',
-          '15min',
-          '30min',
-          '1hour',
-          '4hour',
-          '8hour',
-          '12hour',
-          '1day',
-          '1week',
-          '1month',
-        ])
-        .optional()
-        .default('1day'),
+      type: z.enum(['1min','5min','15min','30min','1hour','4hour','8hour','12hour','1day','1week','1month']).optional().default('1day'),
       limit: z
         .number()
         .int()

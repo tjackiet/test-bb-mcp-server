@@ -1,0 +1,41 @@
+# Cursor Rules for bitbank-mcp-server
+
+## チャート生成に関するAI利用ポリシー
+
+- 重要: チャート描画は必ず `tools/render_chart_svg.js` を使用すること。
+  - AI（Claude/GPT）は独自に可視化コード（D3/Chart.js/Canvas/SVG等）を生成してはいけない。
+  - Artifact は「ツールの出力（SVG文字列）」をそのまま表示する用途に限定する。
+  - インタラクティブ可視化や独自JSの生成は本プロジェクトでは禁止。
+
+## ボリンジャーバンドの描画仕様
+
+- 軽量版（デフォルト）: BB ±2σ のみ描画。
+  - CLI例: `node tools/render_chart_svg_cli.mjs <pair> <type> <limit> --bb-mode=light`
+- 完全版（オプション）: BB ±1σ, ±2σ, ±3σ を描画。
+  - CLI例: `node tools/render_chart_svg_cli.mjs <pair> <type> <limit> --bb-mode=full`
+- `--no-bb` 指定時はボリンジャーバンドを描画しない。
+
+## 一目均衡表の描画仕様
+
+- 標準（default）: 転換線・基準線・雲（先行スパンA/B）のみ。
+- 拡張（extended）: 上記に加えて遅行スパンも描画（`ichimoku.mode=extended`）。
+- 指定がない場合、`withIchimoku` はオフ。
+
+## SMA の描画仕様
+
+- デフォルト: 25/75/200 を描画。
+- オプション: `--sma=5,20,50` 等で追加指定がある場合のみ描画する。
+
+## 実装原則
+
+- AI は「チャートを出す」要求に対し、内部実装や独自レンダラではなく、必ず以下の関数/CLIを呼ぶこと:
+  - Node API: `renderChartSvg(options)`
+  - CLI: `node tools/render_chart_svg_cli.mjs <pair> <type> <limit> [--flags]`
+- Artifact の内容は `renderChartSvg` の返す `data.svg` をそのまま表示すること。
+- 大きな変更を行う場合は README の該当箇所も更新すること。
+
+## 参考
+
+- BB軽量サンプル: `assets/bb_light.svg`
+- BB完全サンプル: `assets/bb_full.svg`
+- 一目均衡表サンプル: `assets/ichimoku_sample.svg`

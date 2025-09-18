@@ -1,36 +1,40 @@
-// tools/render_chart_svg.js
+// tools/render_chart_svg.ts
 import fs from 'fs/promises';
 import path from 'path';
 import getIndicators from './get_indicators.js';
 import { ok, fail } from '../lib/result.js';
 import { formatPair } from '../lib/formatter.js';
+import type { Result, Pair, CandleType, RenderChartSvgOptions, ChartPayload } from '../src/types/domain.d.ts';
 
-export default async function renderChartSvg(args = {}) {
+type RenderData = { svg?: string; filePath?: string; legend?: Record<string, string> };
+type RenderMeta = { pair: Pair; type: CandleType | string; limit?: number; indicators?: string[]; bbMode: 'default' | 'extended' };
+
+export default async function renderChartSvg(args: RenderChartSvgOptions = {}): Promise<Result<RenderData, RenderMeta>> {
   // --- パラメータの解決（強制排他ルール） ---
   const withIchimoku = args.withIchimoku ?? false;
   const ichimokuOpt = args.ichimoku || {};
   // モード正規化: light→default, full→extended（後方互換）
-  const normalizeIchimokuMode = (m) => {
+  const normalizeIchimokuMode = (m: unknown): 'default' | 'extended' => {
     const s = String(m ?? '').toLowerCase();
     if (s === 'full' || s === 'extended') return 'extended';
     if (s === 'light' || s === 'default') return 'default';
     return 'default';
   };
-  const ichimokuMode = normalizeIchimokuMode(ichimokuOpt.mode || (withIchimoku ? 'default' : 'default'));
-  const drawChikou = ichimokuMode === 'extended' || ichimokuOpt.withChikou === true;
-  
+  const ichimokuMode = normalizeIchimokuMode((ichimokuOpt as any).mode || (withIchimoku ? 'default' : 'default'));
+  const drawChikou = ichimokuMode === 'extended' || (ichimokuOpt as any).withChikou === true;
+
   // デフォルト（軽量版）: SMA 25/75/200
   // オプション: SMA 5/20/50 はユーザー指定時のみ追加描画
   let withSMA = args.withSMA ?? (withIchimoku ? [] : [25, 75, 200]);
   let withBB = args.withBB ?? (withIchimoku ? false : true);
   // BBモード正規化: light→default, full→extended（後方互換）
-  const normalizeBbMode = (m) => {
+  const normalizeBbMode = (m: unknown): 'default' | 'extended' => {
     const s = String(m ?? '').toLowerCase();
     if (s === 'full' || s === 'extended') return 'extended';
     if (s === 'light' || s === 'default') return 'default';
     return 'default';
   };
-  const bbMode = normalizeBbMode(args.bbMode || 'default'); // 'default' | 'extended'
+  const bbMode: 'default' | 'extended' = normalizeBbMode(args.bbMode || 'default');
   if (withIchimoku) {
     withSMA = [];
     withBB = false;
@@ -46,12 +50,14 @@ export default async function renderChartSvg(args = {}) {
 
   // ★ データ取得はバッファ計算をgetIndicatorsに任せる
   const internalLimit = withIchimoku ? limit + 26 : limit;
-  const res = await getIndicators(pair, type, internalLimit);
-  if (!res?.ok) return res;
+  const res = await getIndicators(pair, type as any, internalLimit);
+  if (!res?.ok) {
+    return fail(res?.summary?.replace?.(/^Error: /, '') || 'failed to fetch indicators', (res as any)?.meta?.errorType || 'internal');
+  }
 
-  const chartData = res.data?.chart;
+  const chartData = res.data?.chart as ChartPayload;
   const items = chartData?.candles || [];
-  const indicators = chartData?.indicators;
+  const indicators = chartData?.indicators as Record<string, any>;
   const pastBuffer = chartData.meta?.pastBuffer ?? 0;
   const forwardShift = chartData.meta?.shift ?? 0;
   const displayItems = items.slice(pastBuffer);
@@ -61,93 +67,90 @@ export default async function renderChartSvg(args = {}) {
   }
 
   // Y軸スケール用の "きれいな" 目盛りを生成する関数
-  function niceTicks(min, max, count = 5) {
+  function niceTicks(min: number, max: number, count = 5): number[] {
     if (max < min) [min, max] = [max, min];
     const range = max - min;
     if (range === 0) return [min];
-    
+
     // stepが極小値になるのを防ぐ
     const step = Math.max(1e-9, Math.pow(10, Math.floor(Math.log10(range / count))));
     const err = (count * step) / range;
-  
-    let niceStep;
+
+    let niceStep: number;
     if (err <= 0.15) niceStep = step * 10;
     else if (err <= 0.35) niceStep = step * 5;
     else if (err <= 0.75) niceStep = step * 2;
     else niceStep = step;
-    
+
     // JSの浮動小数点誤差を吸収するため、toFixedで丸める
     const precision = Math.max(0, -Math.floor(Math.log10(niceStep)));
     const niceMin = Math.round(min / niceStep) * niceStep;
-    const ticks = [];
+    const ticks: number[] = [];
     // 無限ループ対策
     for (let v = niceMin; ticks.length < 20 && v <= max * 1.01; v += niceStep) {
       ticks.push(Number(v.toFixed(precision)));
     }
-    
+
     return ticks;
   }
 
   const xs = displayItems.map((_, i) => i);
-  const highs = displayItems.map((d) => d.high);
-  const lows = displayItems.map((d) => d.low);
+  const highs = displayItems.map((d: any) => d.high as number);
+  const lows = displayItems.map((d: any) => d.low as number);
   const xMin = 0;
   const xMax = xs.length - 1;
   // forwardShift は上部で meta.shift から取得済み
-  
+
   // Y軸の範囲を、表示されるすべての要素から計算
-  const allYValues = [
+  const allYValues: number[] = [
     ...highs,
     ...lows,
   ];
   if (withIchimoku) {
-    // インジケータのデータも表示範囲にスライスしてからY軸範囲計算に含める
-    allYValues.push(...(indicators.ICHI_tenkan?.slice(pastBuffer).filter(v => v !== null) || []));
-    allYValues.push(...(indicators.ICHI_kijun?.slice(pastBuffer).filter(v => v !== null) || []));
-    allYValues.push(...(indicators.ICHI_spanA?.slice(pastBuffer).filter(v => v !== null) || []));
-    allYValues.push(...(indicators.ICHI_spanB?.slice(pastBuffer).filter(v => v !== null) || []));
+    allYValues.push(...(indicators.ICHI_tenkan?.slice(pastBuffer).filter((v: number | null) => v !== null) || []));
+    allYValues.push(...(indicators.ICHI_kijun?.slice(pastBuffer).filter((v: number | null) => v !== null) || []));
+    allYValues.push(...(indicators.ICHI_spanA?.slice(pastBuffer).filter((v: number | null) => v !== null) || []));
+    allYValues.push(...(indicators.ICHI_spanB?.slice(pastBuffer).filter((v: number | null) => v !== null) || []));
   }
   if (withBB) {
     if (bbMode === 'extended') {
-      // ±1,2,3σ をすべて範囲に含める
-      ['BB1_upper','BB1_lower','BB2_upper','BB2_lower','BB3_upper','BB3_lower'].forEach(key => {
+      ['BB1_upper','BB1_lower','BB2_upper','BB2_lower','BB3_upper','BB3_lower'].forEach((key) => {
         const series = indicators[key]?.slice?.(pastBuffer) || [];
-        allYValues.push(...series.filter(v => v !== null));
+        allYValues.push(...series.filter((v: number | null) => v !== null));
       });
     } else {
-      // 互換キー(±2σ)のみ
-      allYValues.push(...(indicators.BB_upper?.slice(pastBuffer).filter(v => v !== null) || []));
-      allYValues.push(...(indicators.BB_lower?.slice(pastBuffer).filter(v => v !== null) || []));
+      allYValues.push(...(indicators.BB_upper?.slice(pastBuffer).filter((v: number | null) => v !== null) || []));
+      allYValues.push(...(indicators.BB_lower?.slice(pastBuffer).filter((v: number | null) => v !== null) || []));
     }
   }
   if (withSMA && withSMA.length > 0) {
-    const pickSmaSeries = (p) => {
+    const pickSmaSeries = (p: number) => {
       switch (p) {
-        case 5: return indicators.SMA_5;
-        case 20: return indicators.SMA_20;
-        case 25: return indicators.SMA_25;
-        case 50: return indicators.SMA_50;
-        case 75: return indicators.SMA_75;
-        case 200: return indicators.SMA_200;
+        case 5: return indicators.SMA_5 as number[] | undefined;
+        case 20: return indicators.SMA_20 as number[] | undefined;
+        case 25: return indicators.SMA_25 as number[] | undefined;
+        case 50: return indicators.SMA_50 as number[] | undefined;
+        case 75: return indicators.SMA_75 as number[] | undefined;
+        case 200: return indicators.SMA_200 as number[] | undefined;
         default: return undefined;
       }
     };
     withSMA.forEach((period) => {
       const series = pickSmaSeries(period) || [];
-      allYValues.push(...(series.slice(pastBuffer).filter(v => v !== null)));
+      allYValues.push(...(series.slice(pastBuffer).filter((v: number | null) => v !== null)));
     });
   }
-  
+
   const dataYMin = Math.min(...allYValues);
   const dataYMax = Math.max(...allYValues);
   const yAxisMinWithBuffer = dataYMin * 0.95;
   const yAxisMaxWithBuffer = dataYMax * 1.05;
   const yTicks = niceTicks(yAxisMinWithBuffer, yAxisMaxWithBuffer, 6);
   const yMin = yTicks[0];
-  const yMax = yTicks.at(-1);
+  const yMax = yTicks.at(-1) as number;
 
   // Y軸ラベルの最大幅に基づいてpadding.leftを動的に調整
-  const maxLabelWidth = Math.max(...yTicks.map(v => v.toLocaleString().length));
+  const maxLabelWidth = Math.max(...yTicks.map((v) => v.toLocaleString().length));
   const dynamicPaddingLeft = maxLabelWidth * 8 + 16; // 1文字8pxと仮定 + 余白
 
   // スケール計算
@@ -159,20 +162,18 @@ export default async function renderChartSvg(args = {}) {
   const plotH = h - padding.top - padding.bottom;
 
   // X座標計算: 描画ウィンドウ内での相対位置を計算
-  const x = (i) => padding.left + (i * plotW) / Math.max(1, xMax + forwardShift);
-
-  const y = (v) =>
-    h - padding.bottom - ((v - yMin) * plotH) / Math.max(1, yMax - yMin);
+  const x = (i: number) => padding.left + (i * plotW) / Math.max(1, xMax + forwardShift);
+  const y = (v: number) => h - padding.bottom - ((v - yMin) * plotH) / Math.max(1, yMax - yMin);
 
   // --- 凡例メタデータと描画レイヤーの準備 ---
-  const legendMeta = {};
+  const legendMeta: Record<string, string> = {};
   let legendLayers = '';
 
   const barW = Math.max(2, (plotW / Math.max(1, xs.length)) * 0.6);
 
   // ローソク（棒＋ヒゲ）
   const sticks = displayItems
-    .map((d, i) => {
+    .map((d: any, i: number) => {
       const cx = x(i);
       return `<line x1="${cx}" y1="${y(d.high)}" x2="${cx}" y2="${
         y(d.low)
@@ -181,7 +182,7 @@ export default async function renderChartSvg(args = {}) {
     .join('');
 
   const bodies = displayItems
-    .map((d, i) => {
+    .map((d: any, i: number) => {
       const cx = x(i) - barW / 2;
       const o = y(d.open);
       const c = y(d.close);
@@ -196,19 +197,19 @@ export default async function renderChartSvg(args = {}) {
     .join('');
 
   // --- インジケータ描画 ---
-  const smaColors = { 5: '#f472b6', 20: '#a78bfa', 25: '#3b82f6', 50: '#22d3ee', 75: '#f59e0b', 200: '#10b981' };
+  const smaColors: Record<number, string> = { 5: '#f472b6', 20: '#a78bfa', 25: '#3b82f6', 50: '#22d3ee', 75: '#f59e0b', 200: '#10b981' };
   const bbColors = {
     bandFill2: 'rgba(59, 130, 246, 0.10)', // 2σバンド塗り
     line1: '#9ca3af', // ±1σ
     line2: '#3b82f6', // ±2σ
     line3: '#f59e0b', // ±3σ
     middle: '#9ca3af',
-  };
-  
+  } as const;
+
   // 汎用的なライン描画関数
-  const createLinePath = (data, color, options = {}) => {
+  const createLinePath = (data: Array<number | null> | undefined, color: string, options: { dash?: string; width?: string; offset?: number } = {}) => {
     if (!data || data.length === 0) return '';
-    const points = [];
+    const points: string[] = [];
     const offset = options.offset || 0; // 先行(+26) / 遅行(-26)
     data.forEach((val, i) => {
       if (val !== null && typeof val === 'number') {
@@ -224,10 +225,10 @@ export default async function renderChartSvg(args = {}) {
 
   // --- 型安全なインジケータ参照ヘルパー ---
   const bbSeries = {
-    getUpper: (mode) => mode === 'extended' ? indicators?.BB2_upper : indicators?.BB_upper,
-    getMiddle: (mode) => mode === 'extended' ? indicators?.BB2_middle : indicators?.BB_middle,
-    getLower: (mode) => mode === 'extended' ? indicators?.BB2_lower : indicators?.BB_lower,
-    getBand: (sigma) => {
+    getUpper: (mode: 'default' | 'extended') => mode === 'extended' ? indicators?.BB2_upper : indicators?.BB_upper,
+    getMiddle: (mode: 'default' | 'extended') => mode === 'extended' ? indicators?.BB2_middle : indicators?.BB_middle,
+    getLower: (mode: 'default' | 'extended') => mode === 'extended' ? indicators?.BB2_lower : indicators?.BB_lower,
+    getBand: (sigma: 1 | 2 | 3) => {
       switch (sigma) {
         case 1:
           return { upper: indicators?.BB1_upper, middle: indicators?.BB1_middle, lower: indicators?.BB1_lower };
@@ -236,51 +237,40 @@ export default async function renderChartSvg(args = {}) {
         case 3:
           return { upper: indicators?.BB3_upper, middle: indicators?.BB3_middle, lower: indicators?.BB3_lower };
         default:
-          return { upper: undefined, middle: undefined, lower: undefined };
+          return { upper: undefined, middle: undefined, lower: undefined } as any;
       }
     },
-  };
+  } as const;
 
   const ichiSeries = {
-    tenkan: indicators?.ICHI_tenkan,
-    kijun: indicators?.ICHI_kijun,
-    spanA: indicators?.ICHI_spanA,
-    spanB: indicators?.ICHI_spanB,
-    chikou: indicators?.ICHI_chikou,
-  };
+    tenkan: indicators?.ICHI_tenkan as Array<number | null> | undefined,
+    kijun: indicators?.ICHI_kijun as Array<number | null> | undefined,
+    spanA: indicators?.ICHI_spanA as Array<number | null> | undefined,
+    spanB: indicators?.ICHI_spanB as Array<number | null> | undefined,
+    chikou: indicators?.ICHI_chikou as Array<number | null> | undefined,
+  } as const;
 
   // SMAレイヤー
-  const sma5 = indicators?.SMA_5 || [];
-  const sma20 = indicators?.SMA_20 || [];
-  const sma25 = indicators?.SMA_25 || [];
-  const sma50 = indicators?.SMA_50 || [];
-  const sma75 = indicators?.SMA_75 || [];
-  const sma200 = indicators?.SMA_200 || [];
+  const sma5 = (indicators?.SMA_5 || []) as Array<number | null>;
+  const sma20 = (indicators?.SMA_20 || []) as Array<number | null>;
+  const sma25 = (indicators?.SMA_25 || []) as Array<number | null>;
+  const sma50 = (indicators?.SMA_50 || []) as Array<number | null>;
+  const sma75 = (indicators?.SMA_75 || []) as Array<number | null>;
+  const sma200 = (indicators?.SMA_200 || []) as Array<number | null>;
   let smaLayers = '';
-  if (withSMA?.includes(5) && sma5.length > 0) {
-    smaLayers += createLinePath(sma5, smaColors[5]);
-  }
-  if (withSMA?.includes(20) && sma20.length > 0) {
-    smaLayers += createLinePath(sma20, smaColors[20]);
-  }
-  if (withSMA?.includes(25) && sma25.length > 0) {
-    smaLayers += createLinePath(sma25, smaColors[25]);
-  }
-  if (withSMA?.includes(50) && sma50.length > 0) {
-    smaLayers += createLinePath(sma50, smaColors[50]);
-  }
-  if (withSMA?.includes(75) && sma75.length > 0) {
-    smaLayers += createLinePath(sma75, smaColors[75]);
-  }
-  if (withSMA?.includes(200) && sma200.length > 0) {
-    smaLayers += createLinePath(sma200, smaColors[200]);
-  }
+  if (withSMA?.includes(5) && sma5.length > 0) smaLayers += createLinePath(sma5, smaColors[5]);
+  if (withSMA?.includes(20) && sma20.length > 0) smaLayers += createLinePath(sma20, smaColors[20]);
+  if (withSMA?.includes(25) && sma25.length > 0) smaLayers += createLinePath(sma25, smaColors[25]);
+  if (withSMA?.includes(50) && sma50.length > 0) smaLayers += createLinePath(sma50, smaColors[50]);
+  if (withSMA?.includes(75) && sma75.length > 0) smaLayers += createLinePath(sma75, smaColors[75]);
+  if (withSMA?.includes(200) && sma200.length > 0) smaLayers += createLinePath(sma200, smaColors[200]);
 
   // ボリンジャーバンド
   let bbLayers = '';
   if (withBB) {
-    const createPoints = (data) => {
-      const points = [];
+    type Point = { x: number; y: number };
+    const createPoints = (data?: Array<number | null>): Point[] => {
+      const points: Point[] = [];
       data?.forEach?.((val, i) => {
         if (val !== null && val !== undefined) {
           points.push({ x: x(i - pastBuffer), y: y(val) });
@@ -288,12 +278,12 @@ export default async function renderChartSvg(args = {}) {
       });
       return points;
     };
-    const createPathFromPoints = (points) => {
+    const createPathFromPoints = (points?: Point[]): string => {
       if (!points || points.length === 0) return '';
       return 'M ' + points.map((p) => `${p.x},${p.y}`).join(' L ');
     };
 
-    const makeBand = (upperSeries, lowerSeries, fill) => {
+    const makeBand = (upperSeries?: Array<number | null>, lowerSeries?: Array<number | null>) => {
       const upperPoints = createPoints(upperSeries);
       const lowerPoints = createPoints(lowerSeries);
       const upperPath = createPathFromPoints(upperPoints);
@@ -309,7 +299,7 @@ export default async function renderChartSvg(args = {}) {
 
     if (bbMode === 'extended') {
       // ±2σのバンド塗り
-      const band2 = makeBand(bbSeries.getBand(2).upper, bbSeries.getBand(2).lower, bbColors.bandFill2);
+      const band2 = makeBand(bbSeries.getBand(2).upper, bbSeries.getBand(2).lower);
       bbLayers += `
         <path d="${band2.bandPath}" fill="${bbColors.bandFill2}" stroke="none" />
       `;
@@ -338,7 +328,7 @@ export default async function renderChartSvg(args = {}) {
       `;
     } else {
       // light: 互換キー（±2σ）のみを使って従来描画
-      const band2 = makeBand(bbSeries.getUpper('default'), bbSeries.getLower('default'), bbColors.bandFill2);
+      const band2 = makeBand(bbSeries.getUpper('default'), bbSeries.getLower('default'));
       const mid2 = createPathFromPoints(createPoints(bbSeries.getMiddle('default')));
       bbLayers = `
         <path d="${band2.bandPath}" fill="${bbColors.bandFill2}" stroke="none" />
@@ -352,23 +342,19 @@ export default async function renderChartSvg(args = {}) {
   // 一目均衡表
   let ichimokuLayers = '';
   if (withIchimoku && ichiSeries.tenkan) {
-
-    // Tenkan = red, Kijun = blue
-    // bitbankアプリの配色: 転換線=青, 基準線=赤
     const tenkanPath = createLinePath(ichiSeries.tenkan, '#00a3ff', { width: '1', offset: 0 });
     const kijunPath = createLinePath(ichiSeries.kijun, '#ff4d4d', { width: '1', offset: 0 });
     const chikouPath = drawChikou ? createLinePath(ichiSeries.chikou, '#16a34a', { width: '1', dash: '2 2', offset: -26 }) : '';
-    // SpanA 上側=緑、SpanB 下側=赤（Bitbank準拠）
     const spanAPath = createLinePath(ichiSeries.spanA, '#16a34a', { width: '1', offset: 26 });
     const spanBPath = createLinePath(ichiSeries.spanB, '#ef4444', { width: '1', offset: 26 });
-    
-    // 雲の描画ロジック（交点で色切替）省略（既存）
-    const createCloudPaths = (spanA, spanB, offset) => {
+
+    // 雲の描画（交点で色切替）
+    const createCloudPaths = (spanA?: Array<number | null>, spanB?: Array<number | null>, offset?: number) => {
       let greenCloudPath = '';
       let redCloudPath = '';
-      let currentTop = [];
-      let currentBottom = [];
-      let currentIsGreen = null;
+      let currentTop: Array<{ x: number; y: number }> = [];
+      let currentBottom: Array<{ x: number; y: number }> = [];
+      let currentIsGreen: boolean | null = null;
       const pushPolygon = () => {
         if (currentTop.length < 2 || currentBottom.length < 2) return;
         const polygon = 'M ' + [...currentTop, ...currentBottom.slice().reverse()]
@@ -376,11 +362,11 @@ export default async function renderChartSvg(args = {}) {
           .join(' L ') + ' Z';
         if (currentIsGreen) greenCloudPath += polygon; else redCloudPath += polygon;
       };
-      const toPoint = (i, yVal) => ({ x: x(i - pastBuffer + (offset || 0)), y: y(yVal) });
+      const toPoint = (i: number, yVal: number) => ({ x: x(i - pastBuffer + (offset || 0)), y: y(yVal) });
       const len = Math.max(spanA?.length || 0, spanB?.length || 0);
       for (let i = 0; i < len - 1; i++) {
-        const a0 = spanA?.[i]; const b0 = spanB?.[i];
-        const a1 = spanA?.[i + 1]; const b1 = spanB?.[i + 1];
+        const a0 = spanA?.[i] as number | null; const b0 = spanB?.[i] as number | null;
+        const a1 = spanA?.[i + 1] as number | null; const b1 = spanB?.[i + 1] as number | null;
         if (a0 == null || b0 == null || a1 == null || b1 == null || !isFinite(a0) || !isFinite(b0) || !isFinite(a1) || !isFinite(b1)) {
           pushPolygon(); currentTop = []; currentBottom = []; currentIsGreen = null; continue;
         }
@@ -397,7 +383,7 @@ export default async function renderChartSvg(args = {}) {
     };
 
     const { greenCloudPath, redCloudPath } = createCloudPaths(ichiSeries.spanA, ichiSeries.spanB, 26);
-    
+
     ichimokuLayers = `
       <path d="${greenCloudPath}" fill="rgba(16, 163, 74, 0.16)" stroke="none" />
       <path d="${redCloudPath}" fill="rgba(239, 68, 68, 0.24)" stroke="none" />
@@ -411,7 +397,7 @@ export default async function renderChartSvg(args = {}) {
 
   // --- 凡例の動的構築 ---
   if (withLegend) {
-    const legendItems = [];
+    const legendItems: Array<{ text: string; color: string }> = [];
     if (withSMA?.length > 0) {
       withSMA.forEach((p) => {
         legendMeta[`SMA_${p}`] = `SMA ${p} (${smaColors[p]})`;
@@ -437,7 +423,6 @@ export default async function renderChartSvg(args = {}) {
       legendItems.push({ text: '基準線', color: '#ff4d4d' });
     }
 
-    // 凡例は上部に余白を持たせて配置
     let yOffset = Math.max(14, padding.top - 18);
     legendLayers = `<g font-size="12" fill="#e5e7eb">` + legendItems.map((item, i) => {
       const xPos = padding.left + (i * 130);
@@ -464,7 +449,7 @@ export default async function renderChartSvg(args = {}) {
     <line x1="${padding.left}" y1="${h - padding.bottom}" x2="${w - padding.right}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>
     <g font-size="12" fill="#e5e7eb">
       ${displayItems
-        .map((d, i) => {
+        .map((d: any, i: number) => {
           const step = Math.max(1, Math.floor(displayItems.length / 5));
           if (i % step !== 0) return '';
           const xPos = x(i);
@@ -478,7 +463,7 @@ export default async function renderChartSvg(args = {}) {
   `;
 
   // --- 2種類のSVGを構築 ---
-  const createSvgString = (layers) => `
+  const createSvgString = (layers: { ichimoku: string; bb: string; sma: string }) => `
     <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #1f2937; color: #e5e7eb; font-family: sans-serif;">
       <title>${formatPair(pair)} ${type} chart</title>
       <defs>
@@ -502,10 +487,9 @@ export default async function renderChartSvg(args = {}) {
       </g>
     </svg>
   `;
-  
+
   const fullSvg = createSvgString({ ichimoku: ichimokuLayers, bb: bbLayers, sma: smaLayers });
   const lightSvg = createSvgString({ ichimoku: withIchimoku ? ichimokuLayers : '', bb: bbLayers, sma: smaLayers });
-
 
   // --- SVGをファイルに保存（フォールバック付き） ---
   const filenameSuffix = withIchimoku ? '_light' : '';
@@ -514,16 +498,14 @@ export default async function renderChartSvg(args = {}) {
   const outputPath = path.join(assetsDir, filename);
 
   try {
-    // ディレクトリが存在しない場合は作成
     await fs.mkdir(assetsDir, { recursive: true });
     await fs.writeFile(outputPath, withIchimoku ? lightSvg : fullSvg);
 
-    // 保存成功時
     const summary = `${formatPair(pair)} ${type} chart saved to ${outputPath}`;
-    return ok(
+    return ok<RenderData, RenderMeta>(
       summary,
       { filePath: outputPath, svg: lightSvg, legend: legendMeta },
-      { pair, type, limit, indicators: Object.keys(legendMeta), bbMode }
+      { pair: pair as Pair, type, limit, indicators: Object.keys(legendMeta), bbMode }
     );
   } catch (err) {
     console.warn(
@@ -531,10 +513,12 @@ export default async function renderChartSvg(args = {}) {
       err
     );
     const summary = `${formatPair(pair)} ${type} chart (SVG, file save failed)`;
-  return ok(
-    summary,
+    return ok<RenderData, RenderMeta>(
+      summary,
       { svg: lightSvg, legend: legendMeta },
-      { pair, type, limit, indicators: Object.keys(legendMeta), bbMode }
-  );
+      { pair: pair as Pair, type, limit, indicators: Object.keys(legendMeta), bbMode }
+    );
+  }
 }
-}
+
+

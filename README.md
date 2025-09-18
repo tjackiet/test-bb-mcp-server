@@ -2,6 +2,8 @@
 
 本サーバーは MCP (Model Context Protocol) 対応のクライアント（例: Claude, MCP Inspector）から直接呼び出すことで、bitbank API のデータ取得やテクニカル分析を行えるツールです。
 
+> Note: AIの動作ポリシーは `.cursorrules`（開発メモ）と `.mcphostrules`（MCPホスト向けメモ）に記載しています。既定は常に default（標準）。extended はユーザーが明示した場合のみ許可します。ツールとプロンプトの正規仕様は `description.json` / `prompts.json` にもエクスポートしています。
+
 ## 主な機能
 
 - **リアルタイムデータ取得**: ティッカー（現在価格）、オーダーブック（板情報）
@@ -16,6 +18,23 @@
     - `render_chart_svg`: ローソク足チャートを静的なSVG画像として生成します。JavaScriptを使用しないため、Claudeのようなセキュリティ制約の厳しい環境でも確実な表示が保証されます。
     - `render_chart_html`: ローソク足チャートをインタラクティブなHTMLファイルとして生成します。高機能ですが、クライアント環境のセキュリティポリシー(CSP)によっては表示されない場合があります。
 
+### チャート描画の重要ポリシー（必読）
+
+- **チャートを表示する場合、必ず `tools/render_chart_svg.js`（Node API: `renderChartSvg(options)`）を使用してください。**
+  - AI/クライアント側で独自の描画ロジック（D3/Canvas/Chart.js/SVG 生生成等）を実装してはいけません。
+  - Artifact/Inspector では、本ツールの返す `data.svg` をそのまま表示してください。
+- **Bollinger Bands の描画仕様**
+  - 軽量版（既定）: ±2σ のみを描画（bbMode=`default` / `light`）。
+  - 完全版（オプション）: ±1σ, ±2σ, ±3σ を描画（bbMode=`extended` / `full`）。
+- **一目均衡表の描画仕様**
+  - 標準: 転換線・基準線・雲（先行スパンA/B）。
+  - 拡張: 上記に加え遅行スパン（`ichimoku.mode=extended` または `ichimoku.withChikou=true`）。
+- **SMA の描画仕様**
+  - 既定: 25/75/200 を描画。
+  - 一目均衡表を描画する場合（withIchimoku=true）は、SMAとBBは強制的にオフ（実装で排他制御）。
+
+CLI 例: `node tools/render_chart_svg_cli.mjs <pair> <type> <limit> --bb-mode=light` / `--bb-mode=full`
+
 ### サンプルチャート (SVG)
 
 以下は `render_chart_svg` ツールによって生成されたBTC/JPYの日足チャートです。
@@ -27,6 +46,17 @@
 ![Ichimoku Sample Chart](assets/ichimoku_sample.svg)
 
 > **Note:** `render_chart_html` はインタラクティブですが、実行環境の CSP でブロックされる場合があります。安定表示が必要な場合は `render_chart_svg` を使用してください。
+
+### プロンプトとCLIの対応表（抜粋）
+
+| Prompt 名 | 概要 | 対応CLIフラグ例 |
+|---|---|---|
+| `bb_light_chart` | BB軽量（±2σ） | `--bb-mode=light` |
+| `bb_full_chart` | BB完全（±1/±2/±3σ） | `--bb-mode=full` |
+| `ichimoku_default_chart` | 一目 標準（遅行なし） | `--with-ichimoku --ichimoku-mode=default` |
+| `ichimoku_extended_chart` | 一目 拡張（遅行スパン含む） | `--with-ichimoku --ichimoku-mode=extended` |
+
+より詳しい仕様は `description.json`（ツール）と `prompts.json`（プロンプト）を参照してください。
 
 ## 制約事項
 

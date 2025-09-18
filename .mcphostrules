@@ -1,0 +1,11 @@
+# MCP Host Rules (memo)
+
+- ツールの挙動に従ってください。AIが自前で可視化を生成・描画することは禁止です。
+- Artifact/プレビューには `render_chart_svg` の返す SVG をそのまま表示してください。
+
+- 既定の描画モード:
+  - Bollinger Bands: `bbMode=light`（±2σ）。`full` はユーザーが明示した場合のみ。
+  - Ichimoku: `ichimoku.mode=default`（転換/基準/雲）。`extended` はユーザーが明示した場合のみ（遅行スパン追加）。
+  - SMA: 既定は `[25,75,200]`。`5/20/50` はユーザーが明示した場合のみ追加。
+
+- これらのルールに反する自動判断（より良いと考えて勝手に extended を選ぶ 等）は禁止です。

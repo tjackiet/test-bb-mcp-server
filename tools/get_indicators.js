@@ -7,8 +7,14 @@ import { ensurePair, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
 import { getFetchCount } from '../lib/indicator_buffer.js';
+import { GetIndicatorsDataSchema, GetIndicatorsMetaSchema } from '../src/schemas.js';
 
 // SMA (単純移動平均線)
+/**
+ * @param {number[]} values
+ * @param {number} [period=25]
+ * @returns {import('../src/types/domain.d').NumericSeries}
+ */
 export function sma(values, period = 25) {
   const results = [];
   let sum = 0;
@@ -25,6 +31,11 @@ export function sma(values, period = 25) {
 }
 
 // RSI (時系列を返すバージョン)
+/**
+ * @param {number[]} values
+ * @param {number} [period=14]
+ * @returns {import('../src/types/domain.d').NumericSeries}
+ */
 export function rsi(values, period = 14) {
   const results = [];
   let gains = 0;
@@ -74,6 +85,12 @@ export function rsi(values, period = 14) {
 }
 
 // ボリンジャーバンド
+/**
+ * @param {number[]} values
+ * @param {number} [period=20]
+ * @param {number} [stdDev=2]
+ * @returns {{ upper: import('../src/types/domain.d').NumericSeries; middle: import('../src/types/domain.d').NumericSeries; lower: import('../src/types/domain.d').NumericSeries; }}
+ */
 export function bollingerBands(values, period = 20, stdDev = 2) {
   const upper = [];
   const middle = [];
@@ -102,6 +119,12 @@ export function bollingerBands(values, period = 20, stdDev = 2) {
 }
 
 // 一目均衡表
+/**
+ * @param {number[]} highs
+ * @param {number[]} lows
+ * @param {number[]} closes
+ * @returns {{ tenkan: import('../src/types/domain.d').NumericSeries; kijun: import('../src/types/domain.d').NumericSeries; spanA: import('../src/types/domain.d').NumericSeries; spanB: import('../src/types/domain.d').NumericSeries; chikou: import('../src/types/domain.d').NumericSeries; }}
+ */
 export function ichimokuSeries(highs, lows, closes) {
   const tenkanSen = []; // 転換線 (9)
   const kijunSen = []; // 基準線 (26)
@@ -206,6 +229,18 @@ function getRequiredDataCount(type) {
   return requirements[type] || 200;
 }
 
+/**
+ * @param {string} [pair='btc_jpy']
+ * @param {string} [type='1day']
+ * @param {number|null} [limit=null]
+ * @returns {Promise<import('../src/types/domain.d').Result<import('../src/types/domain.d').GetIndicatorsData, import('../src/types/domain.d').GetIndicatorsMeta>>}
+ */
+/**
+ * @param {string} [pair='btc_jpy']
+ * @param {import('../src/types/domain.d').CandleType | string} [type='1day']
+ * @param {number|null} [limit=null]
+ * @returns {Promise<import('../src/types/domain.d').Result<import('../src/types/domain.d').GetIndicatorsData, import('../src/types/domain.d').GetIndicatorsMeta>>}
+ */
 export default async function getIndicators(
   pair = 'btc_jpy',
   type = '1day',
@@ -322,6 +357,31 @@ export default async function getIndicators(
     displayCount
   );
 
+  // 系列長の正規化（candles 本数に合わせて null 埋め）
+  (function padSeriesLengths() {
+    const len = chartData.candles.length;
+    const seriesMap = chartData.indicators;
+    const keys = [
+      'SMA_5','SMA_20','SMA_25','SMA_50','SMA_75','SMA_200',
+      'BB_upper','BB_middle','BB_lower',
+      'BB1_upper','BB1_middle','BB1_lower',
+      'BB2_upper','BB2_middle','BB2_lower',
+      'BB3_upper','BB3_middle','BB3_lower',
+      'ICHI_tenkan','ICHI_kijun','ICHI_spanA','ICHI_spanB','ICHI_chikou',
+    ];
+    keys.forEach((k) => {
+      const arr = seriesMap[k];
+      if (!Array.isArray(arr)) return;
+      if (arr.length === len) return;
+      if (arr.length < len) {
+        const pad = new Array(len - arr.length).fill(null);
+        seriesMap[k] = [...arr, ...pad];
+      } else {
+        seriesMap[k] = arr.slice(-len);
+      }
+    });
+  })();
+
   // サマリー用の最新値取得
   const latestIndicators = {
     SMA_25: indicators.SMA_25,
@@ -360,7 +420,11 @@ export default async function getIndicators(
     warnings: warnings.length > 0 ? warnings : undefined,
   });
 
-  return ok(summary, data, meta);
+  // Zod で検証・正規化
+  const parsedData = GetIndicatorsDataSchema.parse(data);
+  const parsedMeta = GetIndicatorsMetaSchema.parse(meta);
+
+  return ok(summary, parsedData, parsedMeta);
 }
 
 // トレンド分析

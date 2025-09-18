@@ -25,6 +25,16 @@ function toLevels(arr, n) {
   return out;
 }
 
+/**
+ * @typedef {object} GetOrderbookOptions
+ * @property {number} [timeoutMs=2500]
+ */
+/**
+ * @param {string} pair
+ * @param {number} [topN=5]
+ * @param {GetOrderbookOptions} [options]
+ * @returns {Promise<import('../src/types/domain.d').Result<import('../src/types/domain.d').GetOrderbookData, import('../src/types/domain.d').GetOrderbookMeta>>}
+ */
 async function getOrderbook(pair, topN = 5, { timeoutMs = 2500 } = {}) {
   // ペアバリデーション
   const chk = ensurePair(pair);

@@ -4,10 +4,13 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.mjs",
-    "dev": "LOG_LEVEL=debug nodemon src/server.mjs",
+    "dev": "LOG_LEVEL=debug tsx src/server.ts",
     "test": "echo \"Error: no test specified\" && exit 1",
     "stat": "node tools/stat.js",
     "report": "node tools/report.js",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "ci:typecheck": "npm run gen:types && tsc --noEmit -p tsconfig.json",
+    "gen:types": "node tools/gen_types.mjs",
     "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true"
   },
   "keywords": [],
@@ -17,5 +20,11 @@
     "dotenv": "^16.4.5",
     "lightweight-charts": "^4.1.3",
     "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.0",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2",
+    "zod-to-ts": "^1.2.0"
   }
 }
