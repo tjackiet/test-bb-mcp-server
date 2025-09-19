@@ -26,7 +26,11 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   // デフォルト: 明示されない限りSMAは描画しない
   // 互換: 以前の仕様からの流入に備え、withIchimoku時は引き続きBB/SMAをオフ
   let withSMA = args.withSMA ?? [];
-  let withBB = args.withBB ?? (withIchimoku ? false : true);
+  let withBB = args.withBB ?? (withIchimoku ? false : false);
+  const svgPrecision = Math.max(0, Math.min(3, Number((args as any)?.svgPrecision ?? 0)));
+  const svgMinify = (args as any)?.svgMinify !== false;
+  const simplifyTolerance = Math.max(0, Number((args as any)?.simplifyTolerance ?? 0));
+  const viewBoxTight = (args as any)?.viewBoxTight !== false;
   // BBモード正規化: light→default, full→extended（後方互換）
   const normalizeBbMode = (m: unknown): 'default' | 'extended' => {
     const s = String(m ?? '').toLowerCase();
@@ -47,6 +51,24 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     limit = 60,
     withLegend = true,
   } = args;
+
+  // --- 事前見積もりヒューリスティクス（重そうなら candles-only にフォールバック） ---
+  const estimatedLayers = (withIchimoku ? 1 : 0) + (withBB ? (bbMode === 'extended' ? 3 : 1) : 0) + (Array.isArray(withSMA) ? withSMA.length : 0) + 1; // +1 for candles
+  let summaryNotes: string[] = [];
+  if (limit * estimatedLayers > 500) {
+    if (withBB || (withSMA && withSMA.length > 0) || withIchimoku) {
+      withBB = false;
+      withSMA = [];
+      if (withIchimoku) {
+        // keep user intent for ichimoku unless very heavy
+        if (limit * (1 + (bbMode === 'extended' ? 3 : 1)) > 800) {
+          // fallback to candles only if still heavy
+          (args as any).withIchimoku = false;
+        }
+      }
+      summaryNotes.push('heavy chart detected → fallback to candles-only to avoid oversized SVG');
+    }
+  }
 
   // ★ データ取得はバッファ計算をgetIndicatorsに任せる
   const internalLimit = withIchimoku ? limit + 26 : limit;
@@ -157,7 +179,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   const w = 860;
   const h = 420;
   // 上部に余白を多めに確保（凡例が詰まらないように）
-  const padding = { top: 48, right: 16, bottom: 40, left: dynamicPaddingLeft };
+  const padding = viewBoxTight ? { top: 36, right: 12, bottom: 32, left: dynamicPaddingLeft } : { top: 48, right: 16, bottom: 40, left: dynamicPaddingLeft };
   const plotW = w - padding.left - padding.right;
   const plotH = h - padding.top - padding.bottom;
 
@@ -206,16 +228,37 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   } as const;
 
   // 汎用的なライン描画関数
-  const createLinePath = (data: Array<number | null> | undefined, color: string, options: { dash?: string; width?: string; offset?: number } = {}) => {
+  const round = (v: number) => Number(v.toFixed(svgPrecision));
+  const createLinePath = (data: Array<number | null> | undefined, color: string, options: { dash?: string; width?: string; offset?: number; simplify?: boolean } = {}) => {
     if (!data || data.length === 0) return '';
-    const points: string[] = [];
+    type Pt = { x: number; y: number };
+    let raw: Pt[] = [];
     const offset = options.offset || 0; // 先行(+26) / 遅行(-26)
     data.forEach((val, i) => {
       if (val !== null && typeof val === 'number') {
-        points.push(`${x(i - pastBuffer + offset)},${y(val)}`);
+        raw.push({ x: x(i - pastBuffer + offset), y: y(val) });
       }
     });
-    if (points.length === 0) return '';
+    if (raw.length === 0) return '';
+    // RDP風の単純化
+    const doSimplify = options.simplify !== false && simplifyTolerance > 0 && raw.length > 2;
+    if (doSimplify) {
+      const sqTol = simplifyTolerance * simplifyTolerance;
+      const simplified: Pt[] = [];
+      const keep = (a: Pt, b: Pt, c: Pt) => {
+        // 二点直線からの距離（二乗）で判定
+        const area = Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x));
+        const dx = c.x - a.x; const dy = c.y - a.y; const len2 = dx * dx + dy * dy || 1;
+        return (area * area) / len2 >= sqTol;
+      };
+      simplified.push(raw[0]);
+      for (let i = 1; i < raw.length - 1; i++) {
+        if (keep(raw[i - 1], raw[i], raw[i + 1])) simplified.push(raw[i]);
+      }
+      simplified.push(raw[raw.length - 1]);
+      raw = simplified;
+    }
+    const points = raw.map(p => `${round(p.x)},${round(p.y)}`);
     const d = 'M ' + points.join(' L ');
     const dash = options.dash ? `stroke-dasharray="${options.dash}"` : '';
     const width = options.width || '2';
@@ -257,12 +300,13 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   const sma75 = (indicators?.SMA_75 || []) as Array<number | null>;
   const sma200 = (indicators?.SMA_200 || []) as Array<number | null>;
   let smaLayers = '';
-  if (withSMA?.includes(5) && sma5.length > 0) smaLayers += createLinePath(sma5, smaColors[5]);
-  if (withSMA?.includes(20) && sma20.length > 0) smaLayers += createLinePath(sma20, smaColors[20]);
-  if (withSMA?.includes(25) && sma25.length > 0) smaLayers += createLinePath(sma25, smaColors[25]);
-  if (withSMA?.includes(50) && sma50.length > 0) smaLayers += createLinePath(sma50, smaColors[50]);
-  if (withSMA?.includes(75) && sma75.length > 0) smaLayers += createLinePath(sma75, smaColors[75]);
-  if (withSMA?.includes(200) && sma200.length > 0) smaLayers += createLinePath(sma200, smaColors[200]);
+  // インジケーターは簡略化しない（見た目の忠実度を優先）
+  if (withSMA?.includes(5) && sma5.length > 0) smaLayers += createLinePath(sma5, smaColors[5], { simplify: false });
+  if (withSMA?.includes(20) && sma20.length > 0) smaLayers += createLinePath(sma20, smaColors[20], { simplify: false });
+  if (withSMA?.includes(25) && sma25.length > 0) smaLayers += createLinePath(sma25, smaColors[25], { simplify: false });
+  if (withSMA?.includes(50) && sma50.length > 0) smaLayers += createLinePath(sma50, smaColors[50], { simplify: false });
+  if (withSMA?.includes(75) && sma75.length > 0) smaLayers += createLinePath(sma75, smaColors[75], { simplify: false });
+  if (withSMA?.includes(200) && sma200.length > 0) smaLayers += createLinePath(sma200, smaColors[200], { simplify: false });
 
   // ボリンジャーバンド
   let bbLayers = '';
@@ -279,7 +323,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     };
     const createPathFromPoints = (points?: Point[]): string => {
       if (!points || points.length === 0) return '';
-      return 'M ' + points.map((p) => `${p.x},${p.y}`).join(' L ');
+      return 'M ' + points.map((p) => `${round(p.x)},${round(p.y)}`).join(' L ');
     };
 
     const makeBand = (upperSeries?: Array<number | null>, lowerSeries?: Array<number | null>) => {
@@ -487,8 +531,13 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     </svg>
   `;
 
-  const fullSvg = createSvgString({ ichimoku: ichimokuLayers, bb: bbLayers, sma: smaLayers });
-  const lightSvg = createSvgString({ ichimoku: withIchimoku ? ichimokuLayers : '', bb: bbLayers, sma: smaLayers });
+  let fullSvg = createSvgString({ ichimoku: ichimokuLayers, bb: bbLayers, sma: smaLayers });
+  let lightSvg = createSvgString({ ichimoku: withIchimoku ? ichimokuLayers : '', bb: bbLayers, sma: smaLayers });
+  if (svgMinify) {
+    const minify = (s: string) => s.replace(/\s{2,}/g, ' ').replace(/>\s+</g, '><');
+    fullSvg = minify(fullSvg);
+    lightSvg = minify(lightSvg);
+  }
 
   // --- SVGをファイルに保存（フォールバック付き） ---
   const filenameSuffix = withIchimoku ? '_light' : '';
@@ -498,13 +547,19 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
 
   try {
     await fs.mkdir(assetsDir, { recursive: true });
-    await fs.writeFile(outputPath, withIchimoku ? lightSvg : fullSvg);
+    const finalSvg = withIchimoku ? lightSvg : fullSvg;
+    await fs.writeFile(outputPath, finalSvg);
+    const sizeBytes = Buffer.byteLength(finalSvg, 'utf8');
+    const layerCount = estimatedLayers;
+    const maxSvgBytes = (args as any)?.maxSvgBytes as number | undefined;
+    const truncated = typeof maxSvgBytes === 'number' && sizeBytes > maxSvgBytes;
 
-    const summary = `${formatPair(pair)} ${type} chart saved to ${outputPath}`;
+    let summary = `${formatPair(pair)} ${type} chart saved to ${outputPath}`;
+    if (summaryNotes.length) summary += ` (${summaryNotes.join('; ')})`;
     return ok<RenderData, RenderMeta>(
       summary,
-      { filePath: outputPath, svg: lightSvg, legend: legendMeta },
-      { pair: pair as Pair, type, limit, indicators: Object.keys(legendMeta), bbMode }
+      { filePath: outputPath, svg: truncated ? undefined : lightSvg, legend: legendMeta },
+      { pair: pair as Pair, type, limit, indicators: Object.keys(legendMeta), bbMode, range: { start: displayItems[0]?.isoTime || '', end: displayItems.at(-1)?.isoTime || '' }, sizeBytes, layerCount, truncated, fallback: summaryNotes[0] }
     );
   } catch (err) {
     console.warn(
@@ -515,7 +570,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     return ok<RenderData, RenderMeta>(
       summary,
       { svg: lightSvg, legend: legendMeta },
-      { pair: pair as Pair, type, limit, indicators: Object.keys(legendMeta), bbMode }
+      { pair: pair as Pair, type, limit, indicators: Object.keys(legendMeta), bbMode, range: { start: displayItems[0]?.isoTime || '', end: displayItems.at(-1)?.isoTime || '' } }
     );
   }
 }

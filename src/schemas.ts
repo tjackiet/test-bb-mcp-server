@@ -22,7 +22,8 @@ export const RenderChartSvgInputSchema = z
     limit: z.number().int().min(5).max(365).optional().default(60),
     // デフォルトは描画しない（明示時のみ描画）
     withSMA: z.array(z.number().int()).optional().default([]),
-    withBB: z.boolean().optional().default(true),
+    // 既定でBBはオフ（必要時のみ指定）
+    withBB: z.boolean().optional().default(false),
     // backward-compat: accept legacy values and normalize in implementation
     bbMode: z.enum(['default', 'extended', 'light', 'full']).optional().default('default'),
     withIchimoku: z.boolean().optional().default(false),
@@ -33,7 +34,15 @@ export const RenderChartSvgInputSchema = z
         withChikou: z.boolean().optional(),
       })
       .optional(),
-    withLegend: z.boolean().optional().default(true),
+    // 軽量化のため凡例は既定でオフ
+    withLegend: z.boolean().optional().default(false),
+    // 軽量化オプション
+    svgPrecision: z.number().int().min(0).max(3).optional().default(0).describe('Coordinate rounding decimals (0-3).'),
+    svgMinify: z.boolean().optional().default(true).describe('Minify SVG text by stripping whitespace where safe.'),
+    simplifyTolerance: z.number().min(0).optional().default(0).describe('Line simplification tolerance in pixels (0 disables).'),
+    viewBoxTight: z.boolean().optional().default(true).describe('Use tighter paddings to reduce empty margins.'),
+    // サイズ制御（超過時は data.svg を省略し filePath のみ返却）
+    maxSvgBytes: z.number().int().min(1024).optional().describe('If set and svg exceeds this size (bytes), omit data.svg and return filePath only.'),
   })
   .superRefine((val, ctx) => {
     if (val.withIchimoku) {
@@ -70,6 +79,11 @@ export const RenderChartSvgOutputSchema = z.object({
       limit: z.number().optional(),
       indicators: z.array(z.string()).optional(),
       bbMode: z.enum(['default', 'extended']).optional(),
+      range: z.object({ start: z.string(), end: z.string() }).optional(),
+      sizeBytes: z.number().optional(),
+      layerCount: z.number().optional(),
+      truncated: z.boolean().optional(),
+      fallback: z.string().optional(),
     })
     .optional(),
 });
@@ -319,3 +333,39 @@ export const GetIndicatorsInputSchema = z.object({
   type: CandleTypeEnum.optional().default('1day'),
   limit: z.number().int().min(1).max(1000).optional(),
 });
+
+// === Pattern Detection ===
+export const PatternTypeEnum = z.enum([
+  'double_top',
+  'double_bottom',
+  'triple_top',
+  'triple_bottom',
+  'head_and_shoulders',
+  'inverse_head_and_shoulders',
+  'triangle',
+  'pennant',
+]);
+
+export const DetectPatternsInputSchema = z.object({
+  pair: z.string().optional().default('btc_jpy'),
+  type: CandleTypeEnum.optional().default('1day'),
+  limit: z.number().int().min(20).max(365).optional().default(90),
+  patterns: z.array(PatternTypeEnum).optional(),
+  // Heuristics
+  swingDepth: z.number().int().min(1).max(10).optional().default(3),
+  tolerancePct: z.number().min(0).max(0.1).optional().default(0.02),
+  minBarsBetweenSwings: z.number().int().min(1).max(30).optional().default(3),
+});
+
+export const DetectedPatternSchema = z.object({
+  type: PatternTypeEnum,
+  confidence: z.number().min(0).max(1),
+  range: z.object({ start: z.string(), end: z.string() }),
+  pivots: z.array(z.object({ idx: z.number().int(), price: z.number() })).optional(),
+  neckline: z.array(z.object({ x: z.number().int(), y: z.number() })).length(2).optional(),
+});
+
+export const DetectPatternsOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: z.object({ patterns: z.array(DetectedPatternSchema) }), meta: z.object({ pair: z.string(), type: CandleTypeEnum.or(z.string()), count: z.number().int() }) }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);

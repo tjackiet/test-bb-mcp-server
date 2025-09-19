@@ -42,6 +42,7 @@ async function main() {
     get_candles: { description: 'Get candles. date: 1month→YYYY, others→YYYYMMDD', input: zodToSimpleJson(GetCandlesInputSchema) },
     get_indicators: { description: 'Compute indicators (SMA/RSI/BB/Ichimoku). Use sufficient limit.', input: zodToSimpleJson(GetIndicatorsInputSchema) },
     render_chart_svg: { description: 'Render candlestick chart as SVG. Do NOT self-render; display returned SVG only.', input: zodToSimpleJson(RenderChartSvgInputSchema) },
+    detect_patterns: { description: 'Detect classic chart patterns from recent candles.', input: zodToSimpleJson((await import('../src/schemas.js')).DetectPatternsInputSchema) },
   } as const;
 
   const description = {

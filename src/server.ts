@@ -7,9 +7,11 @@ import getOrderbook from '../tools/get_orderbook.js';
 import getCandles from '../tools/get_candles.js';
 import getIndicators from '../tools/get_indicators.js';
 import renderChartSvg from '../tools/render_chart_svg.js';
+import detectPatterns from '../tools/detect_patterns.js';
 import { logToolRun, logError } from '../lib/logger.js';
 // schemas.ts を単一のソースとして参照し、型は z.infer に委譲
 import { RenderChartSvgInputSchema, RenderChartSvgOutputSchema, GetTickerInputSchema, GetOrderbookInputSchema, GetCandlesInputSchema, GetIndicatorsInputSchema } from './schemas.js';
+import { DetectPatternsInputSchema, DetectPatternsOutputSchema } from './schemas.js';
 
 const server = new McpServer({ name: 'bitbank-mcp', version: '0.3.0' });
 
@@ -99,11 +101,20 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'render_chart_svg',
-	{ description: '重要: チャートが必要な場合、必ず本ツールを最初に呼び出してください. 出力: `{ ok, summary, data: { svg: string, filePath?: string }, meta }`。Bollinger Bands 既定は default(±2σ)。Ichimoku 既定は mode="default"。SMAはデフォルトで描画しません（必要時のみ withSMA を指定）。', inputSchema: RenderChartSvgInputSchema },
+	{ description: '重要: チャートが必要な場合、必ず本ツールを最初に呼び出してください. 出力: `{ ok, summary, data: { svg: string, filePath?: string }, meta }`。既定ではローソク足のみ（SMA/BB/一目はオフ）。必要に応じて withSMA/withBB/withIchimoku を明示してください。軽量化: svgPrecision=1, svgMinify=true, simplifyTolerance=1, viewBoxTight=true。', inputSchema: RenderChartSvgInputSchema },
 	async (args: any) => {
 		const result = await renderChartSvg(args as any);
 		// スキーマで最終検証（SDK 契約の単一ソース化）
 		return RenderChartSvgOutputSchema.parse(result);
+	}
+);
+
+registerToolWithLog(
+	'detect_patterns',
+	{ description: 'Detect classic chart patterns from recent candles. Returns candidate patterns with confidence and ranges. Use after rendering the chart.', inputSchema: DetectPatternsInputSchema },
+	async ({ pair, type, limit, patterns, swingDepth, tolerancePct, minBarsBetweenSwings }: any) => {
+		const out = await detectPatterns(pair, type, limit, { patterns, swingDepth, tolerancePct, minBarsBetweenSwings });
+		return DetectPatternsOutputSchema.parse(out as any);
 	}
 );
 
@@ -122,7 +133,7 @@ function registerPromptSafe(name: string, def: { description: string; messages: 
 }
 
 registerPromptSafe('bb_light_chart', {
-    description: 'Render chart with Bollinger Bands default (±2σ).',
+	description: 'Render chart with Bollinger Bands default (±2σ).',
 	messages: [
 		{
 			role: 'system',
@@ -136,7 +147,7 @@ registerPromptSafe('bb_light_chart', {
 				{
 					type: 'tool_code',
 					tool_name: 'render_chart_svg',
-                    tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'default', withSMA: [] },
+					tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'default', withSMA: [] },
 				},
 			],
 		},
@@ -144,29 +155,29 @@ registerPromptSafe('bb_light_chart', {
 });
 
 registerPromptSafe('candles_only_chart', {
-    description: 'Render plain candlestick chart only (no indicators).',
-    messages: [
-        {
-            role: 'system',
-            content: [
-                { type: 'text', text: '追加の指標は取得・描画しないでください。ろうそく足チャートのみを描画します。必ず render_chart_svg を呼び、withBB=false, withSMA=[], withIchimoku=false を指定します。' },
-            ],
-        },
-        {
-            role: 'assistant',
-            content: [
-                {
-                    type: 'tool_code',
-                    tool_name: 'render_chart_svg',
-                    tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: false, withSMA: [], withIchimoku: false },
-                },
-            ],
-        },
-    ],
+	description: 'Render plain candlestick chart only (no indicators).',
+	messages: [
+		{
+			role: 'system',
+			content: [
+				{ type: 'text', text: '追加の指標は取得・描画しないでください。ろうそく足チャートのみを描画します。必ず render_chart_svg を呼び、withBB=false, withSMA=[], withIchimoku=false を指定します。' },
+			],
+		},
+		{
+			role: 'assistant',
+			content: [
+				{
+					type: 'tool_code',
+					tool_name: 'render_chart_svg',
+					tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: false, withSMA: [], withIchimoku: false },
+				},
+			],
+		},
+	],
 });
 
 registerPromptSafe('bb_full_chart', {
-    description: 'Render chart with Bollinger Bands extended (±1/±2/±3σ). Use only if user explicitly requests extended.',
+	description: 'Render chart with Bollinger Bands extended (±1/±2/±3σ). Use only if user explicitly requests extended.',
 	messages: [
 		{
 			role: 'system',
@@ -180,7 +191,7 @@ registerPromptSafe('bb_full_chart', {
 				{
 					type: 'tool_code',
 					tool_name: 'render_chart_svg',
-                    tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'extended', withSMA: [] },
+					tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'extended', withSMA: [] },
 				},
 			],
 		},
