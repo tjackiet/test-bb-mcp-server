@@ -54,6 +54,7 @@ CLI 例: `./node_modules/.bin/tsx tools/render_chart_svg_cli.ts <pair> <type> <l
 |---|---|---|
 | `bb_light_chart` | BB既定（±2σ） | `--bb-mode=default` |
 | `bb_full_chart` | BB拡張（±1/±2/±3σ） | `--bb-mode=extended` |
+| `candles_only_chart` | ローソク足のみ（追加指標なし） | `--candles-only` |
 | `ichimoku_default_chart` | 一目 標準（遅行なし） | `--with-ichimoku --ichimoku-mode=default` |
 | `ichimoku_extended_chart` | 一目 拡張（遅行スパン含む） | `--with-ichimoku --ichimoku-mode=extended` |
 
@@ -63,7 +64,7 @@ CLI 例: `./node_modules/.bin/tsx tools/render_chart_svg_cli.ts <pair> <type> <l
 
 Claude（MCPホスト）経由でローソク足チャートを描画する場合、
 出力サイズの制限により **30〜40本程度** が安定動作の上限です。
-それ以上の長期データを描画する場合は、CLI版 (`render_chart_svg_cli.mjs`) を利用し、
+それ以上の長期データを描画する場合は、CLI版（TSX: `render_chart_svg_cli.ts`）を利用し、
 SVGファイルとして出力してください。
 
 ## Setup
@@ -122,7 +123,7 @@ SVGファイルとして出力してください。
 
 2.  **Inspector に接続してサーバーを起動**
    ```bash
-   npx @modelcontextprotocol/inspector node src/server.mjs
+   npx @modelcontextprotocol/inspector tsx src/server.ts
    ```
    このコマンドを実行すると、サーバーが起動し、自動的にMCP Inspectorが開いて接続されます。実行ログは`.env`で指定された`LOG_DIR`（デフォルト: `./logs`）に保存されます。
 
@@ -166,10 +167,14 @@ SVGファイルとして出力してください。
 ### SVGチャート生成（TSX）
 ```bash
 # 日足チャートをSVGファイルとして出力
-./node_modules/.bin/tsx tools/render_chart_svg_cli.ts btc_jpy 1day 45 > chart.svg
+./node_modules/.bin/tsx tools/render_chart_svg_cli.ts btc_jpy 1day 45 --candles-only > chart.svg
 ```
 
 > **Note:** 移動平均線や一目均衡表などのインジケータを完全に描画するには、その計算に必要な期間（例: SMA75なら75本以上）を含んだ十分なローソク足の本数 (`limit`) を指定する必要があります。本数が不足する場合、インジケータはチャートの途中から描画されます。
+
+### get_candles の日付指定について
+- `type=1month` の場合のみ `YYYY` を指定（例: 2024）
+- それ以外（例: `1day`, `1hour` など）は `YYYYMMDD`（例: 20240511）
 
 - 初心者向け解説については、専用ツール `get_simple_trend` は廃止しました。以後は **`get_indicators` の返却値（SMA・RSI・一目均衡表など）を基にプロンプトで整形** してください。これにより、分析ロジックの一貫性が保たれ、Claude からも安定した出力が得られます。
 
@@ -189,7 +194,7 @@ SVGファイルとして出力してください。
 ## スキーマと型の一元管理（Zod → 型生成 → CI）
 
 - **単一ソース**: 契約は `src/schemas.ts` の Zod 定義が唯一のソースです。
-- **生成型**: `npm run gen:types` で `src/types/schemas.generated.d.ts` を生成します（`tools/gen_types.mjs`）。
+- **生成型**: `npm run gen:types` で `src/types/schemas.generated.d.ts` を生成します（TSX: `tools/gen_types.ts`）。
 - **CI**: GitHub Actions で `gen:types` → `typecheck` を実行し、Zod と TS 型のズレを検出します。
 - **戻り値の保証**: 各ツール（`get_ticker`, `get_orderbook`, `get_candles`, `get_indicators`, `render_chart_svg`）は、返却直前に OutputSchema で検証されます。
   - ツールは `ok()/fail()` の結果を `...OutputSchema.parse(...)` して返却。
@@ -295,7 +300,7 @@ Claude の Developer Settings > MCP Servers に以下のように登録してく
 npm run stat
 
 # 直近24時間の集計
-node tools/stat.js --last 24h
+npm run stat -- --last 24h
 ```
 
 出力指標:
@@ -305,13 +310,10 @@ node tools/stat.js --last 24h
 - Processing Time（Average/Min/Max）
 
 CI / Cron への統合案:
-- GitHub Actions のスケジュール実行で `node tools/stat.js --last 24h` を実行し、閾値超過（例: 失敗率 > 5% や Max > 10s）でジョブを失敗させ通知。
+- GitHub Actions のスケジュール実行で `npm run stat -- --last 24h` を実行し、閾値超過（例: 失敗率 > 5% や Max > 10s）でジョブを失敗させ通知。
 - もしくはサーバで cron を設定して日次集計を Slack/Webhook に送付。
 
 cron 例（毎朝09:00に直近24時間を集計しファイルに追記）:
 ```cron
-0 9 * * * cd /path/to/bb-mcp-sandbox && /usr/bin/node tools/stat.js --last 24h >> reports/$(date +\%F).log 2>&1
+0 9 * * * cd /path/to/bb-mcp-sandbox && /usr/bin/npm run stat --silent -- --last 24h >> reports/$(date +\%F).log 2>&1
 ```
-
-将来のアラート化:
-- `tools/stat.ts` で失敗率やタイムアウト率が閾値を超えた場合に非ゼロ終了コードを返すオプションを追加し、CI で検知・通知する運用に拡張予定。

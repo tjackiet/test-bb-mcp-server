@@ -22,6 +22,14 @@ const prompts = {
     description: 'Render chart with Ichimoku extended (includes Chikou). Use only if user explicitly requests extended.',
     input: { pair: 'btc_jpy', type: '1day', limit: 90 },
     messages: [{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withIchimoku: true, ichimoku: { mode: 'extended' }, withSMA: [] } }] }]
+  },
+  candles_only_chart: {
+    description: 'Render plain candlestick chart only (no indicators).',
+    input: { pair: 'btc_jpy', type: '1day', limit: 60 },
+    messages: [
+      { role: 'system', content: [{ type: 'text', text: '追加の指標は取得・描画しないでください。ろうそく足のみ。render_chart_svg を呼び、withBB=false, withSMA=[], withIchimoku=false を指定します。' }] },
+      { role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: false, withSMA: [], withIchimoku: false } }] }
+    ]
   }
 };
 

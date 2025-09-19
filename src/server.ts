@@ -143,6 +143,28 @@ registerPromptSafe('bb_light_chart', {
 	],
 });
 
+registerPromptSafe('candles_only_chart', {
+    description: 'Render plain candlestick chart only (no indicators).',
+    messages: [
+        {
+            role: 'system',
+            content: [
+                { type: 'text', text: '追加の指標は取得・描画しないでください。ろうそく足チャートのみを描画します。必ず render_chart_svg を呼び、withBB=false, withSMA=[], withIchimoku=false を指定します。' },
+            ],
+        },
+        {
+            role: 'assistant',
+            content: [
+                {
+                    type: 'tool_code',
+                    tool_name: 'render_chart_svg',
+                    tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: false, withSMA: [], withIchimoku: false },
+                },
+            ],
+        },
+    ],
+});
+
 registerPromptSafe('bb_full_chart', {
     description: 'Render chart with Bollinger Bands extended (±1/±2/±3σ). Use only if user explicitly requests extended.',
 	messages: [

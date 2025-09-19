@@ -17,6 +17,7 @@ async function main() {
 	const smaOnly = flagArgs.has('--sma-only');
 	const bbOnly = flagArgs.has('--bb-only');
 	const ichimokuOnly = flagArgs.has('--ichimoku-only');
+	const candlesOnly = flagArgs.has('--candles-only');
 
 	const options: RenderChartSvgOptions = {
 		pair: pair as any,
@@ -74,6 +75,11 @@ async function main() {
 		options.withBB = false;
 		options.withSMA = [];
 		if (!(options as any).ichimoku) (options as any).ichimoku = { mode: 'default' };
+	}
+	if (candlesOnly) {
+		options.withBB = false;
+		options.withSMA = [];
+		options.withIchimoku = false;
 	}
 
 	// --- 自動判定 ---
