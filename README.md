@@ -24,16 +24,16 @@
   - AI/クライアント側で独自の描画ロジック（D3/Canvas/Chart.js/SVG 生生成等）を実装してはいけません。
   - Artifact/Inspector では、本ツールの返す `data.svg` をそのまま表示してください。
 - **Bollinger Bands の描画仕様**
-  - 軽量版（既定）: ±2σ のみを描画（bbMode=`default` / `light`）。
-  - 完全版（オプション）: ±1σ, ±2σ, ±3σ を描画（bbMode=`extended` / `full`）。
+  - 既定: ±2σ を描画（bbMode=`default`。旧称: `light`）。
+  - 拡張（オプション）: ±1σ, ±2σ, ±3σ を描画（bbMode=`extended`。旧称: `full`）。
 - **一目均衡表の描画仕様**
   - 標準: 転換線・基準線・雲（先行スパンA/B）。
   - 拡張: 上記に加え遅行スパン（`ichimoku.mode=extended` または `ichimoku.withChikou=true`）。
 - **SMA の描画仕様**
-  - 既定: 25/75/200 を描画。
+  - 既定: 描画しない（必要な場合のみ `--sma=…` または `withSMA` を明示）。
   - 一目均衡表を描画する場合（withIchimoku=true）は、SMAとBBは強制的にオフ（実装で排他制御）。
 
-CLI 例: `node tools/render_chart_svg_cli.mjs <pair> <type> <limit> --bb-mode=light` / `--bb-mode=full`
+CLI 例: `node tools/render_chart_svg_cli.mjs <pair> <type> <limit> --bb-mode=default` / `--bb-mode=extended`
 
 ### サンプルチャート (SVG)
 
@@ -52,8 +52,8 @@ CLI 例: `node tools/render_chart_svg_cli.mjs <pair> <type> <limit> --bb-mode=li
 
 | Prompt 名 | 概要 | 対応CLIフラグ例 |
 |---|---|---|
-| `bb_light_chart` | BB軽量（±2σ） | `--bb-mode=light` |
-| `bb_full_chart` | BB完全（±1/±2/±3σ） | `--bb-mode=full` |
+| `bb_light_chart` | BB既定（±2σ） | `--bb-mode=default` |
+| `bb_full_chart` | BB拡張（±1/±2/±3σ） | `--bb-mode=extended` |
 | `ichimoku_default_chart` | 一目 標準（遅行なし） | `--with-ichimoku --ichimoku-mode=default` |
 | `ichimoku_extended_chart` | 一目 拡張（遅行スパン含む） | `--with-ichimoku --ichimoku-mode=extended` |
 
@@ -129,9 +129,23 @@ SVGファイルとして出力してください。
 ### MCP Inspector での検証ポイント
 
 - `render_chart_svg` で以下を切替し、想定通りの SVG が返ることを確認
-  - bbMode: `light`（±2σ）/ `full`（±1/±2/±3σ）
+  - bbMode: `default`（±2σ）/ `extended`（±1/±2/±3σ）
   - ichimoku.mode: `default` / `extended`
 - 自前描画は禁止。Inspector でも返却 `svg` をそのまま表示すること。
+
+補足リンク:
+- bbMode / ichimoku.mode の仕様は本ドキュメント上部「チャート描画の重要ポリシー（必読）」を参照。
+
+トラブル時のヒント:
+- タイムアウト時はリトライ、あるいはツールの `timeoutMs` を一時的に延長
+- ネットワーク（VPN/Proxy/CSP）影響を確認
+  - 実装では `lib/http.ts` の `fetchJson` がデフォルト `timeoutMs`（既定 2500ms）を使用します。`tools/get_ticker.ts` / `tools/get_orderbook.ts` / `tools/get_candles.ts` では呼び出し側で上書きしている箇所があります。
+  - 環境によって遅延が大きい場合は、該当ツールの `timeoutMs` を増やして再実行してください（例: `get_candles` は 5000ms を使用）。
+
+### Claude（実対話確認）
+
+- 既存プロンプト（例: `bb_light_chart`, `ichimoku_default_chart`）を使い、`render_chart_svg` がツール呼び出しされることを確認
+- もし自前描画が発生する場合は、プロンプトを修正し「必ずツールを使う」指示を強化
 
 ## CLIツールとしての使用方法
 
@@ -159,11 +173,13 @@ node tools/render_chart_svg_cli.mjs btc_jpy 1day 45 > chart.svg
 
 - 初心者向け解説については、専用ツール `get_simple_trend` は廃止しました。以後は **`get_indicators` の返却値（SMA・RSI・一目均衡表など）を基にプロンプトで整形** してください。これにより、分析ロジックの一貫性が保たれ、Claude からも安定した出力が得られます。
 
-インジケータの表示を制御するには、以下のフラグを追加します。
+インジケータの表示を制御するには、以下のフラグを利用します。
 
 - `--with-ichimoku`: 一目均衡表を描画（デフォルト: オフ）
-- `--no-bb`: ボリンジャーバンドを非表示（デフォルト: オン）
-- `--no-sma`: SMA（単純移動平均線）を非表示（デフォルト: オン）
+- `--bb-mode=default|extended`: ボリンジャーバンドのモード指定（default=±2σ / extended=±1/±2/±3σ）
+- `--sma=5,20,50`: SMAを明示指定（デフォルト: オフ。指定しなければ描画しません）
+- `--sma-only` / `--bb-only` / `--ichimoku-only`: 該当インジケータのみを描画するショートカット
+- `--no-bb`: ボリンジャーバンドを非表示（デフォルト: 表示）
 
 **実行例：一目均衡表のみを100日分描画**
 ```bash
@@ -197,3 +213,105 @@ npm run sync:prompts
 ```
 
 これにより `src/schemas.ts` が唯一のソースとなり、定義の「差分ゼロ」運用を保証します。
+
+## コントリビュート手順（チェックリスト）
+
+PR を送る前に、以下を順に実行してください。
+
+```bash
+npm run sync:manifest   # schemas.ts → description.json
+npm run sync:prompts    # server.ts の登録内容 → prompts.json
+npm run gen:types       # Zod → 型生成（schemas.generated.d.ts）
+npm run typecheck       # 型チェック（CI も同じ）
+```
+
+- `description.json` と `prompts.json` は直接編集しないでください。必ず同期スクリプトを実行します。
+- ツールの戻り値は OutputSchema で検証されるため、JSON 構造が変わる場合は `src/schemas.ts` を先に更新してください。
+注意: 上記4コマンドは PR 作成前の必須手順です。差分や型ズレがある場合はレビュー前に解消してください。
+
+## 検証手順（Inspector / Claude）
+
+### MCP Inspector（手動確認）
+
+1) サーバ起動
+```bash
+npx @modelcontextprotocol/inspector tsx src/server.ts
+```
+2) 以下をUIで確認
+- `render_chart_svg` の `bbMode`（light↔full）切替が SVG に反映
+- `ichimoku.mode`（default↔extended）切替が反映
+- 自前描画は禁止。返却 `svg` をそのまま表示
+
+トラブル時のヒント:
+- タイムアウト時はリトライ、あるいはツールの `timeoutMs` を一時的に延長
+- ネットワーク（VPN/Proxy/CSP）影響を確認
+
+### Claude（実対話確認）
+
+- 既存プロンプト（例: `bb_light_chart`, `ichimoku_default_chart`）を使い、`render_chart_svg` がツール呼び出しされることを確認
+- もし自前描画が発生する場合は、プロンプトを修正し「必ずツールを使う」指示を強化
+
+### Claude 用 MCP サーバー設定例（絶対パス推奨 / npx 回避）
+
+Claude の Developer Settings > MCP Servers に以下のように登録してください。
+
+推奨（tsx を直接呼び出し、ANSI無効化）:
+```json
+{
+  "command": "/Users/yourname/path/to/bb-mcp-sandbox/node_modules/.bin/tsx",
+  "args": ["/Users/yourname/path/to/bb-mcp-sandbox/src/server.ts"],
+  "workingDirectory": "/Users/yourname/path/to/bb-mcp-sandbox",
+  "env": { "LOG_LEVEL": "info", "NO_COLOR": "1" }
+}
+```
+
+代替（tsx を node 経由で実行する。shebang 相性回避用）:
+```json
+{
+  "command": "node",
+  "args": [
+    "/Users/yourname/path/to/bb-mcp-sandbox/node_modules/tsx/dist/cli.mjs",
+    "/Users/yourname/path/to/bb-mcp-sandbox/src/server.ts"
+  ],
+  "workingDirectory": "/Users/yourname/path/to/bb-mcp-sandbox",
+  "env": { "LOG_LEVEL": "info", "NO_COLOR": "1" }
+}
+```
+
+注意:
+- `npx` は標準出力に余分なメッセージを出す場合があり、MCP の stdio ハンドシェイクが失敗する原因になります。
+- `command` / `args` は双方とも絶対パスで指定してください（相対パス解決の差分を排除）。
+- Node 18+ を推奨。既存サーバープロセスが残っていると接続できない場合は停止してください。
+
+## 運用・監視（JSONL ログ集計 / 失敗率・タイムアウト監視）
+
+- 本サーバは `lib/logger.ts` により、ツール実行ログを JSONL として `./logs/YYYY-MM-DD.jsonl` に出力します。
+- 集計には `tools/stat.ts` を使用できます。
+
+使用例:
+
+```bash
+# 全期間の集計
+npm run stat
+
+# 直近24時間の集計
+node tools/stat.js --last 24h
+```
+
+出力指標:
+- Total Runs / Success / Failure / Error Rate
+- Error Types（timeout, network など）
+- Cache Hit Rate（将来拡張用）
+- Processing Time（Average/Min/Max）
+
+CI / Cron への統合案:
+- GitHub Actions のスケジュール実行で `node tools/stat.js --last 24h` を実行し、閾値超過（例: 失敗率 > 5% や Max > 10s）でジョブを失敗させ通知。
+- もしくはサーバで cron を設定して日次集計を Slack/Webhook に送付。
+
+cron 例（毎朝09:00に直近24時間を集計しファイルに追記）:
+```cron
+0 9 * * * cd /path/to/bb-mcp-sandbox && /usr/bin/node tools/stat.js --last 24h >> reports/$(date +\%F).log 2>&1
+```
+
+将来のアラート化:
+- `tools/stat.ts` で失敗率やタイムアウト率が閾値を超えた場合に非ゼロ終了コードを返すオプションを追加し、CI で検知・通知する運用に拡張予定。

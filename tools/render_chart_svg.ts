@@ -23,9 +23,9 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   const ichimokuMode = normalizeIchimokuMode((ichimokuOpt as any).mode || (withIchimoku ? 'default' : 'default'));
   const drawChikou = ichimokuMode === 'extended' || (ichimokuOpt as any).withChikou === true;
 
-  // デフォルト（軽量版）: SMA 25/75/200
-  // オプション: SMA 5/20/50 はユーザー指定時のみ追加描画
-  let withSMA = args.withSMA ?? (withIchimoku ? [] : [25, 75, 200]);
+  // デフォルト: 明示されない限りSMAは描画しない
+  // 互換: 以前の仕様からの流入に備え、withIchimoku時は引き続きBB/SMAをオフ
+  let withSMA = args.withSMA ?? [];
   let withBB = args.withBB ?? (withIchimoku ? false : true);
   // BBモード正規化: light→default, full→extended（後方互換）
   const normalizeBbMode = (m: unknown): 'default' | 'extended' => {
@@ -114,7 +114,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   }
   if (withBB) {
     if (bbMode === 'extended') {
-      ['BB1_upper','BB1_lower','BB2_upper','BB2_lower','BB3_upper','BB3_lower'].forEach((key) => {
+      ['BB1_upper', 'BB1_lower', 'BB2_upper', 'BB2_lower', 'BB3_upper', 'BB3_lower'].forEach((key) => {
         const series = indicators[key]?.slice?.(pastBuffer) || [];
         allYValues.push(...series.filter((v: number | null) => v !== null));
       });
@@ -175,9 +175,8 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   const sticks = displayItems
     .map((d: any, i: number) => {
       const cx = x(i);
-      return `<line x1="${cx}" y1="${y(d.high)}" x2="${cx}" y2="${
-        y(d.low)
-      }" stroke="#9ca3af" stroke-width="1"/>`;
+      return `<line x1="${cx}" y1="${y(d.high)}" x2="${cx}" y2="${y(d.low)
+        }" stroke="#9ca3af" stroke-width="1"/>`;
     })
     .join('');
 
@@ -438,9 +437,9 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     <line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>
     <g font-size="12" fill="#e5e7eb">
       ${yTicks.map(val => {
-        const yPos = y(val);
-        return `<text x="${padding.left - 8}" y="${yPos}" text-anchor="end" dominant-baseline="middle">${val.toLocaleString()}</text>`;
-      }).join('')}
+    const yPos = y(val);
+    return `<text x="${padding.left - 8}" y="${yPos}" text-anchor="end" dominant-baseline="middle">${val.toLocaleString()}</text>`;
+  }).join('')}
     </g>
   `;
 
@@ -449,16 +448,16 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     <line x1="${padding.left}" y1="${h - padding.bottom}" x2="${w - padding.right}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>
     <g font-size="12" fill="#e5e7eb">
       ${displayItems
-        .map((d: any, i: number) => {
-          const step = Math.max(1, Math.floor(displayItems.length / 5));
-          if (i % step !== 0) return '';
-          const xPos = x(i);
-          const date = new Date(d.isoTime || d.time || d.timestamp);
-          if (isNaN(date.getTime())) return '';
-          const label = `${date.getMonth() + 1}/${date.getDate()}`;
-          return `<text x="${xPos}" y="${h - padding.bottom + 16}" text-anchor="middle" fill="#e5e7eb" font-size="10">${label}</text>`;
-        })
-        .join('')}
+      .map((d: any, i: number) => {
+        const step = Math.max(1, Math.floor(displayItems.length / 5));
+        if (i % step !== 0) return '';
+        const xPos = x(i);
+        const date = new Date(d.isoTime || d.time || d.timestamp);
+        if (isNaN(date.getTime())) return '';
+        const label = `${date.getMonth() + 1}/${date.getDate()}`;
+        return `<text x="${xPos}" y="${h - padding.bottom + 16}" text-anchor="middle" fill="#e5e7eb" font-size="10">${label}</text>`;
+      })
+      .join('')}
     </g>
   `;
 

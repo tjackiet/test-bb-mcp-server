@@ -1,7 +1,7 @@
 {
   "prompts": {
     "bb_light_chart": {
-      "description": "Render chart with Bollinger Bands light (±2σ).",
+      "description": "Render chart with Bollinger Bands default (±2σ).",
       "input": {
         "pair": "btc_jpy",
         "type": "1day",
@@ -19,7 +19,7 @@
                 "type": "{{type}}",
                 "limit": "{{limit}}",
                 "withBB": true,
-                "bbMode": "light",
+                "bbMode": "default",
                 "withSMA": []
               }
             }
@@ -28,7 +28,7 @@
       ]
     },
     "bb_full_chart": {
-      "description": "Render chart with Bollinger Bands full (±1/±2/±3σ). Use only if user explicitly requests full.",
+      "description": "Render chart with Bollinger Bands extended (±1/±2/±3σ). Use only if user explicitly requests extended.",
       "input": {
         "pair": "btc_jpy",
         "type": "1day",
@@ -46,7 +46,7 @@
                 "type": "{{type}}",
                 "limit": "{{limit}}",
                 "withBB": true,
-                "bbMode": "full",
+                "bbMode": "extended",
                 "withSMA": []
               }
             }

@@ -1,76 +1,77 @@
 import { z } from 'zod';
 
 export const CandleTypeEnum = z.enum([
-	'1min',
-	'5min',
-	'15min',
-	'30min',
-	'1hour',
-	'4hour',
-	'8hour',
-	'12hour',
-	'1day',
-	'1week',
-	'1month',
+  '1min',
+  '5min',
+  '15min',
+  '30min',
+  '1hour',
+  '4hour',
+  '8hour',
+  '12hour',
+  '1day',
+  '1week',
+  '1month',
 ]);
 
 export const RenderChartSvgInputSchema = z
-    .object({
-        pair: z.string().optional().default('btc_jpy'),
-        type: CandleTypeEnum.optional().default('1day'),
-        // impl default is 60; align contract to tool behavior
-        limit: z.number().int().min(5).max(365).optional().default(60),
-        withSMA: z.array(z.number().int()).optional().default([25, 75, 200]),
-        withBB: z.boolean().optional().default(true),
-        // backward-compat: accept legacy values and normalize in implementation
-        bbMode: z.enum(['default', 'extended', 'light', 'full']).optional().default('default'),
-        withIchimoku: z.boolean().optional().default(false),
-        ichimoku: z
-            .object({
-                mode: z.enum(['default', 'extended']).optional().default('default'),
-                // implementation optionally respects this when true
-                withChikou: z.boolean().optional(),
-            })
-            .optional(),
-        withLegend: z.boolean().optional().default(true),
-    })
-    .superRefine((val, ctx) => {
-        if (val.withIchimoku) {
-            if (Array.isArray(val.withSMA) && val.withSMA.length > 0) {
-                ctx.addIssue({
-                    code: z.ZodIssueCode.custom,
-                    path: ['withSMA'],
-                    message: 'withIchimoku=true の場合、withSMA は空配列でなければなりません',
-                });
-            }
-            if (val.withBB === true) {
-                ctx.addIssue({
-                    code: z.ZodIssueCode.custom,
-                    path: ['withBB'],
-                    message: 'withIchimoku=true の場合、withBB は false でなければなりません',
-                });
-            }
-        }
-    });
+  .object({
+    pair: z.string().optional().default('btc_jpy'),
+    type: CandleTypeEnum.optional().default('1day'),
+    // impl default is 60; align contract to tool behavior
+    limit: z.number().int().min(5).max(365).optional().default(60),
+    // デフォルトは描画しない（明示時のみ描画）
+    withSMA: z.array(z.number().int()).optional().default([]),
+    withBB: z.boolean().optional().default(true),
+    // backward-compat: accept legacy values and normalize in implementation
+    bbMode: z.enum(['default', 'extended', 'light', 'full']).optional().default('default'),
+    withIchimoku: z.boolean().optional().default(false),
+    ichimoku: z
+      .object({
+        mode: z.enum(['default', 'extended']).optional().default('default'),
+        // implementation optionally respects this when true
+        withChikou: z.boolean().optional(),
+      })
+      .optional(),
+    withLegend: z.boolean().optional().default(true),
+  })
+  .superRefine((val, ctx) => {
+    if (val.withIchimoku) {
+      if (Array.isArray(val.withSMA) && val.withSMA.length > 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['withSMA'],
+          message: 'withIchimoku=true の場合、withSMA は空配列でなければなりません',
+        });
+      }
+      if (val.withBB === true) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['withBB'],
+          message: 'withIchimoku=true の場合、withBB は false でなければなりません',
+        });
+      }
+    }
+  });
 
 // Optional: output contract (not enforced by SDK at runtime, but useful for validation/tests)
 export const RenderChartSvgOutputSchema = z.object({
-    ok: z.literal(true).or(z.literal(false)),
-    summary: z.string(),
-    data: z.object({
-        svg: z.string().optional(),
-        filePath: z.string().optional(),
-        legend: z.record(z.string()).optional(),
-    }).or(z.object({})),
-    meta: z
-        .object({
-            pair: z.string(),
-            type: CandleTypeEnum.or(z.string()),
-            limit: z.number().optional(),
-            indicators: z.array(z.string()).optional(),
-            bbMode: z.enum(['default', 'extended']).optional(),
-        })
-        .optional(),
+  ok: z.literal(true).or(z.literal(false)),
+  summary: z.string(),
+  data: z.object({
+    svg: z.string().optional(),
+    filePath: z.string().optional(),
+    legend: z.record(z.string()).optional(),
+  }).or(z.object({})),
+  meta: z
+    .object({
+      pair: z.string(),
+      type: CandleTypeEnum.or(z.string()),
+      limit: z.number().optional(),
+      indicators: z.array(z.string()).optional(),
+      bbMode: z.enum(['default', 'extended']).optional(),
+    })
+    .optional(),
 });
 
 // === Shared output schemas (partial) ===
@@ -148,9 +149,9 @@ export const ChartPayloadSchema = z
   .superRefine((val, ctx) => {
     const len = val.candles.length;
     const seriesKeys = [
-      'SMA_5','SMA_20','SMA_25','SMA_50','SMA_75','SMA_200',
-      'BB_upper','BB_middle','BB_lower','BB1_upper','BB1_middle','BB1_lower','BB2_upper','BB2_middle','BB2_lower','BB3_upper','BB3_middle','BB3_lower',
-      'ICHI_tenkan','ICHI_kijun','ICHI_spanA','ICHI_spanB','ICHI_chikou',
+      'SMA_5', 'SMA_20', 'SMA_25', 'SMA_50', 'SMA_75', 'SMA_200',
+      'BB_upper', 'BB_middle', 'BB_lower', 'BB1_upper', 'BB1_middle', 'BB1_lower', 'BB2_upper', 'BB2_middle', 'BB2_lower', 'BB3_upper', 'BB3_middle', 'BB3_lower',
+      'ICHI_tenkan', 'ICHI_kijun', 'ICHI_spanA', 'ICHI_spanB', 'ICHI_chikou',
     ];
     for (const key of seriesKeys) {
       const arr = (val as any).indicators[key];
@@ -297,24 +298,24 @@ export const GetIndicatorsOutputSchema = z.union([
 ]);
 
 export const GetTickerInputSchema = z.object({
-	pair: z.string().optional().default('btc_jpy'),
+  pair: z.string().optional().default('btc_jpy'),
 });
 
 export const GetOrderbookInputSchema = z.object({
-	pair: z.string(),
-	opN: z.number().int().min(1).max(1000).optional().default(10),
+  pair: z.string(),
+  opN: z.number().int().min(1).max(1000).optional().default(10),
 });
 
 export const GetCandlesInputSchema = z.object({
-	pair: z.string(),
-	type: CandleTypeEnum,
-	date: z.string().describe('YYYY (1month) or YYYYMMDD (others)'),
-	limit: z.number().int().min(1).max(1000).optional().default(200),
-	view: z.enum(['full', 'items']).optional().default('full'),
+  pair: z.string(),
+  type: CandleTypeEnum,
+  date: z.string().describe('YYYY (1month) or YYYYMMDD (others)'),
+  limit: z.number().int().min(1).max(1000).optional().default(200),
+  view: z.enum(['full', 'items']).optional().default('full'),
 });
 
 export const GetIndicatorsInputSchema = z.object({
-	pair: z.string().optional().default('btc_jpy'),
-	type: CandleTypeEnum.optional().default('1day'),
-	limit: z.number().int().min(1).max(1000).optional(),
+  pair: z.string().optional().default('btc_jpy'),
+  type: CandleTypeEnum.optional().default('1day'),
+  limit: z.number().int().min(1).max(1000).optional(),
 });

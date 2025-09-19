@@ -11,6 +11,11 @@ async function main() {
   const limit = positionalArgs[2] ? parseInt(positionalArgs[2], 10) : 60;
 
   const withIchimoku = flagArgs.has('--with-ichimoku');
+  const noSma = flagArgs.has('--no-sma');
+  const noBb = flagArgs.has('--no-bb');
+  const smaOnly = flagArgs.has('--sma-only');
+  const bbOnly = flagArgs.has('--bb-only');
+  const ichimokuOnly = flagArgs.has('--ichimoku-only');
   
   // デフォルト（軽量版）: SMA 25/75/200
   // オプション: --sma=5,20,50 など指定時のみ追加描画
@@ -18,8 +23,9 @@ async function main() {
     pair,
     type,
     limit,
-    withSMA: flagArgs.has('--no-sma') ? [] : [25, 75, 200],
-    withBB: !flagArgs.has('--no-bb'),
+    // 既定はSMA描画なし（--sma-only や --sma= 指定で有効化）
+    withSMA: noSma ? [] : [],
+    withBB: !noBb,
     withIchimoku: withIchimoku,
   };
   
@@ -31,12 +37,13 @@ async function main() {
     options.withIchimoku = true; // モード指定時は自動で有効化
   }
 
-  // BollingerBands モード: --bb-mode=light|full
+  // BollingerBands モード: --bb-mode=default|extended（後方互換で light/full も受け付け）
   const bbModeFlag = args.find(a => a.startsWith('--bb-mode='));
   if (bbModeFlag) {
     const bbMode = bbModeFlag.split('=')[1];
-    if (bbMode === 'light' || bbMode === 'full') {
-      options.bbMode = bbMode;
+    const normalized = bbMode === 'light' ? 'default' : bbMode === 'full' ? 'extended' : bbMode;
+    if (normalized === 'default' || normalized === 'extended') {
+      options.bbMode = normalized;
     }
   }
 
@@ -50,6 +57,42 @@ async function main() {
         options.withSMA = periods;
       }
     }
+  }
+
+  // --- Heuristics: 単独表示を優先 ---
+  // 明示フラグ
+  if (smaOnly) {
+    options.withBB = false;
+    options.withIchimoku = false;
+  }
+  if (bbOnly) {
+    options.withBB = true;
+    options.withSMA = [];
+    options.withIchimoku = false;
+  }
+  if (ichimokuOnly) {
+    options.withIchimoku = true;
+    options.withBB = false;
+    options.withSMA = [];
+    if (!options.ichimoku) options.ichimoku = { mode: 'default' };
+  }
+
+  // 自動判定
+  const hasSmaFlag = Boolean(smaFlag);
+  const hasBbMode = Boolean(bbModeFlag);
+  if (options.withIchimoku) {
+    // 実装側でも排他するが、CLIでも明示
+    options.withBB = false;
+    options.withSMA = [];
+  } else if (hasBbMode) {
+    // BBモード指定時はSMAを自動でオフ（ユーザーが--smaや--no-smaを明示した場合は尊重）
+    if (!hasSmaFlag && !noSma) {
+      options.withSMA = [];
+    }
+    options.withBB = true;
+  } else if (hasSmaFlag && !noBb) {
+    // SMAを明示指定し、BB指定が無い場合はBBを自動オフ
+    options.withBB = false;
   }
 
   const result = await renderChartSvg(options);

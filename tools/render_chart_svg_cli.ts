@@ -12,13 +12,19 @@ async function main() {
 	const limit = positionalArgs[2] ? parseInt(positionalArgs[2], 10) : 60;
 
 	const withIchimoku = flagArgs.has('--with-ichimoku');
+	const noSma = flagArgs.has('--no-sma');
+	const noBb = flagArgs.has('--no-bb');
+	const smaOnly = flagArgs.has('--sma-only');
+	const bbOnly = flagArgs.has('--bb-only');
+	const ichimokuOnly = flagArgs.has('--ichimoku-only');
 
 	const options: RenderChartSvgOptions = {
 		pair: pair as any,
 		type: type as any,
 		limit,
-		withSMA: flagArgs.has('--no-sma') ? [] : [25, 75, 200],
-		withBB: !flagArgs.has('--no-bb'),
+		// 既定はSMA描画なし（--sma-only や --sma= 指定で有効化）
+		withSMA: noSma ? [] : [],
+		withBB: !noBb,
 		withIchimoku,
 	};
 
@@ -29,11 +35,13 @@ async function main() {
 		options.withIchimoku = true;
 	}
 
+	// BollingerBands モード: --bb-mode=default|extended（後方互換で light/full も受け付け）
 	const bbModeFlag = args.find((a) => a.startsWith('--bb-mode='));
 	if (bbModeFlag) {
 		const bbMode = bbModeFlag.split('=')[1];
-		if (bbMode === 'light' || bbMode === 'full') {
-			(options as any).bbMode = bbMode as any;
+		const normalized = bbMode === 'light' ? 'default' : bbMode === 'full' ? 'extended' : bbMode;
+		if (normalized === 'default' || normalized === 'extended') {
+			(options as any).bbMode = normalized as any;
 		}
 	}
 
@@ -49,6 +57,38 @@ async function main() {
 				options.withSMA = periods;
 			}
 		}
+	}
+
+	// --- 単独表示フラグの処理 ---
+	if (smaOnly) {
+		options.withBB = false;
+		options.withIchimoku = false;
+	}
+	if (bbOnly) {
+		options.withBB = true;
+		options.withSMA = [];
+		options.withIchimoku = false;
+	}
+	if (ichimokuOnly) {
+		options.withIchimoku = true;
+		options.withBB = false;
+		options.withSMA = [];
+		if (!(options as any).ichimoku) (options as any).ichimoku = { mode: 'default' };
+	}
+
+	// --- 自動判定 ---
+	const hasSmaFlag = Boolean(smaFlag);
+	const hasBbMode = Boolean(bbModeFlag);
+	if (options.withIchimoku) {
+		options.withBB = false;
+		options.withSMA = [];
+	} else if (hasBbMode) {
+		if (!hasSmaFlag && !noSma) {
+			options.withSMA = [];
+		}
+		options.withBB = true;
+	} else if (hasSmaFlag && !noBb) {
+		options.withBB = false;
 	}
 
 	const result = await renderChartSvg(options);

@@ -99,7 +99,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'render_chart_svg',
-	{ description: '重要: チャートが必要な場合、必ず本ツールを最初に呼び出してください. 出力: `{ ok, summary, data: { svg: string, filePath?: string }, meta }`。Bollinger Bands 既定は default(±2σ)。Ichimoku 既定は mode="default"。SMAの既定は [25,75,200]。', inputSchema: RenderChartSvgInputSchema },
+	{ description: '重要: チャートが必要な場合、必ず本ツールを最初に呼び出してください. 出力: `{ ok, summary, data: { svg: string, filePath?: string }, meta }`。Bollinger Bands 既定は default(±2σ)。Ichimoku 既定は mode="default"。SMAはデフォルトで描画しません（必要時のみ withSMA を指定）。', inputSchema: RenderChartSvgInputSchema },
 	async (args: any) => {
 		const result = await renderChartSvg(args as any);
 		// スキーマで最終検証（SDK 契約の単一ソース化）
@@ -122,15 +122,21 @@ function registerPromptSafe(name: string, def: { description: string; messages: 
 }
 
 registerPromptSafe('bb_light_chart', {
-	description: 'Render chart with Bollinger Bands light (±2σ).',
+    description: 'Render chart with Bollinger Bands default (±2σ).',
 	messages: [
+		{
+			role: 'system',
+			content: [
+				{ type: 'text', text: '重要: チャートや可視化を生成する際は、必ず最初に render_chart_svg ツールを呼び出してください。自前のSVG/Canvas/JSでの描画は行わないこと。返却 data.svg をそのまま表示します。' },
+			],
+		},
 		{
 			role: 'assistant',
 			content: [
 				{
 					type: 'tool_code',
 					tool_name: 'render_chart_svg',
-					tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'light', withSMA: [] },
+                    tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'default', withSMA: [] },
 				},
 			],
 		},
@@ -138,15 +144,21 @@ registerPromptSafe('bb_light_chart', {
 });
 
 registerPromptSafe('bb_full_chart', {
-	description: 'Render chart with Bollinger Bands full (±1/±2/±3σ). Use only if user explicitly requests full.',
+    description: 'Render chart with Bollinger Bands extended (±1/±2/±3σ). Use only if user explicitly requests extended.',
 	messages: [
+		{
+			role: 'system',
+			content: [
+				{ type: 'text', text: '重要: チャートや可視化を生成する際は、必ず最初に render_chart_svg ツールを呼び出してください。自前のSVG/Canvas/JSでの描画は行わないこと。返却 data.svg をそのまま表示します。' },
+			],
+		},
 		{
 			role: 'assistant',
 			content: [
 				{
 					type: 'tool_code',
 					tool_name: 'render_chart_svg',
-					tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'full', withSMA: [] },
+                    tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'extended', withSMA: [] },
 				},
 			],
 		},
@@ -156,6 +168,12 @@ registerPromptSafe('bb_full_chart', {
 registerPromptSafe('ichimoku_default_chart', {
 	description: 'Render chart with Ichimoku default (Tenkan/Kijun/Cloud only).',
 	messages: [
+		{
+			role: 'system',
+			content: [
+				{ type: 'text', text: '重要: チャートや可視化を生成する際は、必ず最初に render_chart_svg ツールを呼び出してください。自前のSVG/Canvas/JSでの描画は行わないこと。返却 data.svg をそのまま表示します。' },
+			],
+		},
 		{
 			role: 'assistant',
 			content: [
@@ -172,6 +190,12 @@ registerPromptSafe('ichimoku_default_chart', {
 registerPromptSafe('ichimoku_extended_chart', {
 	description: 'Render chart with Ichimoku extended (includes Chikou). Use only if user explicitly requests extended.',
 	messages: [
+		{
+			role: 'system',
+			content: [
+				{ type: 'text', text: '重要: チャートや可視化を生成する際は、必ず最初に render_chart_svg ツールを呼び出してください。自前のSVG/Canvas/JSでの描画は行わないこと。返却 data.svg をそのまま表示します。' },
+			],
+		},
 		{
 			role: 'assistant',
 			content: [
