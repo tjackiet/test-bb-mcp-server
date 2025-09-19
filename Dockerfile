@@ -1,4 +1,4 @@
-# Dockerfile (JS版 MCP Server 用)
+# Dockerfile (TS/tsx 版 MCP Server 用)
 FROM node:22-alpine
 
 WORKDIR /app
@@ -7,7 +7,7 @@ WORKDIR /app
 # This leverages Docker's build cache. `npm ci` will only run again
 # if package.json or package-lock.json has changed.
 COPY package.json package-lock.json ./
-RUN npm ci --only=production
+RUN npm ci
 
 # Copy lightweight-charts standalone js to assets folder
 RUN mkdir -p assets && \
@@ -27,4 +27,4 @@ ENV NODE_ENV=production
 # EXPOSE 1337
 
 # Define the entry point for the container
-ENTRYPOINT ["node", "src/server.mjs"]
+ENTRYPOINT ["npx", "tsx", "src/server.ts"]

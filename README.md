@@ -33,7 +33,7 @@
   - 既定: 描画しない（必要な場合のみ `--sma=…` または `withSMA` を明示）。
   - 一目均衡表を描画する場合（withIchimoku=true）は、SMAとBBは強制的にオフ（実装で排他制御）。
 
-CLI 例: `node tools/render_chart_svg_cli.mjs <pair> <type> <limit> --bb-mode=default` / `--bb-mode=extended`
+CLI 例: `./node_modules/.bin/tsx tools/render_chart_svg_cli.ts <pair> <type> <limit> --bb-mode=default` / `--bb-mode=extended`
 
 ### サンプルチャート (SVG)
 
@@ -151,22 +151,22 @@ SVGファイルとして出力してください。
 
 各ツールは、サーバーを起動せずに直接コマンドラインから実行することも可能です。
 
-### ローソク足データ取得
+### ローソク足データ取得（TSX）
 ```bash
 # 1時間足データ（YYYYMMDD形式）
-node tools/get_candles_cli.mjs btc_jpy 1hour 20240511
+./node_modules/.bin/tsx tools/get_candles_cli.ts btc_jpy 1hour 20240511
 ```
 
-### インジケーター計算
+### インジケーター計算（TSX）
 ```bash
 # 日足データでインジケーター計算
-node tools/get_indicators_cli.mjs btc_jpy 1day
+./node_modules/.bin/tsx tools/get_indicators_cli.ts btc_jpy 1day
 ```
 
-### SVGチャート生成
+### SVGチャート生成（TSX）
 ```bash
 # 日足チャートをSVGファイルとして出力
-node tools/render_chart_svg_cli.mjs btc_jpy 1day 45 > chart.svg
+./node_modules/.bin/tsx tools/render_chart_svg_cli.ts btc_jpy 1day 45 > chart.svg
 ```
 
 > **Note:** 移動平均線や一目均衡表などのインジケータを完全に描画するには、その計算に必要な期間（例: SMA75なら75本以上）を含んだ十分なローソク足の本数 (`limit`) を指定する必要があります。本数が不足する場合、インジケータはチャートの途中から描画されます。
@@ -181,9 +181,9 @@ node tools/render_chart_svg_cli.mjs btc_jpy 1day 45 > chart.svg
 - `--sma-only` / `--bb-only` / `--ichimoku-only`: 該当インジケータのみを描画するショートカット
 - `--no-bb`: ボリンジャーバンドを非表示（デフォルト: 表示）
 
-**実行例：一目均衡表のみを100日分描画**
+**実行例：一目均衡表のみを100日分描画（TSX）**
 ```bash
-node tools/render_chart_svg_cli.mjs btc_jpy 1day 100 --with-ichimoku --no-bb --no-sma > assets/ichimoku_sample.svg
+./node_modules/.bin/tsx tools/render_chart_svg_cli.ts btc_jpy 1day 100 --with-ichimoku --no-bb --no-sma > assets/ichimoku_sample.svg
 ```
 
 ## スキーマと型の一元管理（Zod → 型生成 → CI）

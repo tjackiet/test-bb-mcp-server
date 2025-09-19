@@ -1,0 +1,36 @@
+import fs from 'fs/promises';
+import path from 'path';
+
+// server.ts の定義と整合させた最小エクスポート（将来は抽出を自動化）
+const prompts = {
+  bb_light_chart: {
+    description: 'Render chart with Bollinger Bands default (±2σ).',
+    input: { pair: 'btc_jpy', type: '1day', limit: 90 },
+    messages: [{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'default', withSMA: [] } }] }]
+  },
+  bb_full_chart: {
+    description: 'Render chart with Bollinger Bands extended (±1/±2/±3σ). Use only if user explicitly requests extended.',
+    input: { pair: 'btc_jpy', type: '1day', limit: 90 },
+    messages: [{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'extended', withSMA: [] } }] }]
+  },
+  ichimoku_default_chart: {
+    description: 'Render chart with Ichimoku default (Tenkan/Kijun/Cloud only).',
+    input: { pair: 'btc_jpy', type: '1day', limit: 90 },
+    messages: [{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withIchimoku: true, ichimoku: { mode: 'default' }, withSMA: [] } }] }]
+  },
+  ichimoku_extended_chart: {
+    description: 'Render chart with Ichimoku extended (includes Chikou). Use only if user explicitly requests extended.',
+    input: { pair: 'btc_jpy', type: '1day', limit: 90 },
+    messages: [{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withIchimoku: true, ichimoku: { mode: 'extended' }, withSMA: [] } }] }]
+  }
+};
+
+async function main() {
+  const outPath = path.join(process.cwd(), 'prompts.json');
+  await fs.writeFile(outPath, JSON.stringify({ prompts }, null, 2));
+  console.log(`Updated ${path.relative(process.cwd(), outPath)}`);
+}
+
+main().catch((e) => { console.error(e); process.exit(1); });
+
+
