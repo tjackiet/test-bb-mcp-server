@@ -222,6 +222,7 @@ export interface GetOrderbookMeta {
 // Render options aligned with project rules
 export type BbMode = 'default' | 'extended';
 export type IchimokuMode = 'default' | 'extended';
+export type ChartStyle = 'candles' | 'line';
 
 export interface IchimokuOptions {
 	mode?: IchimokuMode;
@@ -231,6 +232,8 @@ export interface RenderChartSvgOptions {
 	pair?: Pair;
 	type?: CandleType | string; // gradually move to CandleType
 	limit?: number;
+	// main series style: candles (default) or line (close-only)
+	style?: ChartStyle;
 	withSMA?: number[]; // default [25,75,200]; empty when ichimoku
 	withBB?: boolean; // default true unless ichimoku
 	bbMode?: BbMode; // default 'light'

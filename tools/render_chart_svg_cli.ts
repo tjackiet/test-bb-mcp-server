@@ -36,6 +36,15 @@ async function main() {
 		options.withIchimoku = true;
 	}
 
+	// Style: --style=candles|line
+	const styleFlag = args.find((a) => a.startsWith('--style='));
+	if (styleFlag) {
+		const style = styleFlag.split('=')[1];
+		if (style === 'candles' || style === 'line') {
+			(options as any).style = style as any;
+		}
+	}
+
 	// BollingerBands モード: --bb-mode=default|extended（後方互換で light/full も受け付け）
 	const bbModeFlag = args.find((a) => a.startsWith('--bb-mode='));
 	if (bbModeFlag) {

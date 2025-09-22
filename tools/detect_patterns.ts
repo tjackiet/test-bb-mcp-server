@@ -11,15 +11,22 @@ export default async function detectPatterns(
   opts: Partial<{ swingDepth: number; tolerancePct: number; minBarsBetweenSwings: number; patterns: Array<typeof PatternTypeEnum._type> }> = {}
 ) {
   try {
-    const swingDepth = opts.swingDepth ?? 3;
-    const tolerancePct = opts.tolerancePct ?? 0.02;
-    const minDist = opts.minBarsBetweenSwings ?? 3;
+    // 厳しめデフォルト（誤検知を抑制）
+    const swingDepth = opts.swingDepth ?? 4;
+    const tolerancePct = opts.tolerancePct ?? 0.012; // 1.2%
+    const minDist = opts.minBarsBetweenSwings ?? 4;
     const want = new Set(opts.patterns || []);
+    // 'triangle' が指定された場合は3種を含む互換挙動
+    if (want.has('triangle')) {
+      want.add('triangle_ascending' as any);
+      want.add('triangle_descending' as any);
+      want.add('triangle_symmetrical' as any);
+    }
 
     const res = await getIndicators(pair, type as any, limit);
     if (!res?.ok) return DetectPatternsOutputSchema.parse(fail(res.summary || 'failed', 'internal')) as any;
 
-    const candles = res.data.chart.candles as Array<{ close: number; isoTime?: string }>;
+    const candles = res.data.chart.candles as Array<{ close: number; high: number; low: number; isoTime?: string }>;
     if (!Array.isArray(candles) || candles.length < 20) {
       return DetectPatternsOutputSchema.parse(ok('insufficient data', { patterns: [] }, { pair, type, count: 0 })) as any;
     }
@@ -41,6 +48,7 @@ export default async function detectPatterns(
 
     // helper
     const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tolerancePct;
+    const pct = (a: number, b: number) => (b - a) / (a === 0 ? 1 : a);
     const push = (arr: any[], item: any) => { arr.push(item); };
 
     const patterns: any[] = [];
@@ -79,6 +87,93 @@ export default async function detectPatterns(
           const start = candles[p0.idx].isoTime || String(p0.idx);
           const end = candles[p4.idx].isoTime || String(p4.idx);
           push(patterns, { type: 'inverse_head_and_shoulders', confidence: 0.7, range: { start, end }, pivots: [p0, p1, p2, p3, p4] });
+        }
+      }
+    }
+
+    // 4) Triangles (ascending/descending/symmetrical)
+    {
+      const wantTriangle = want.size === 0 || want.has('triangle') || want.has('triangle_ascending') || want.has('triangle_descending') || want.has('triangle_symmetrical');
+      if (wantTriangle) {
+        const highs = pivots.filter(p => p.kind === 'H');
+        const lows = pivots.filter(p => p.kind === 'L');
+        const hwin = highs.slice(-5);
+        const lwin = lows.slice(-5);
+        if (hwin.length >= 2 && lwin.length >= 2) {
+          const firstH = hwin[0], lastH = hwin[hwin.length - 1];
+          const firstL = lwin[0], lastL = lwin[lwin.length - 1];
+          const dH = pct(firstH.price, lastH.price);
+          const dL = pct(firstL.price, lastL.price);
+          const spreadStart = firstH.price - firstL.price;
+          const spreadEnd = lastH.price - lastL.price;
+          const converging = spreadEnd < spreadStart * (1 - tolerancePct * 0.8); // 収束条件を強化
+          const startIdx = Math.min(firstH.idx, firstL.idx);
+          const endIdx = Math.max(lastH.idx, lastL.idx);
+          const start = candles[startIdx].isoTime || String(startIdx);
+          const end = candles[endIdx].isoTime || String(endIdx);
+
+          // Ascending: highs ~ flat (±0.8×tol), lows rising (≥1.2×tol)
+          if ((want.size === 0 || want.has('triangle') || want.has('triangle_ascending')) && Math.abs(dH) <= tolerancePct * 0.8 && dL >= tolerancePct * 1.2 && converging) {
+            push(patterns, { type: 'triangle_ascending', confidence: 0.72, range: { start, end }, pivots: [...hwin, ...lwin].sort((a, b) => a.idx - b.idx) });
+          }
+          // Descending: lows ~ flat, highs falling
+          if ((want.size === 0 || want.has('triangle') || want.has('triangle_descending')) && Math.abs(dL) <= tolerancePct * 0.8 && dH <= -tolerancePct * 1.2 && converging) {
+            push(patterns, { type: 'triangle_descending', confidence: 0.72, range: { start, end }, pivots: [...hwin, ...lwin].sort((a, b) => a.idx - b.idx) });
+          }
+          // Symmetrical: highs falling and lows rising
+          if ((want.size === 0 || want.has('triangle') || want.has('triangle_symmetrical')) && dH <= -tolerancePct * 1.1 && dL >= tolerancePct * 1.1 && converging) {
+            push(patterns, { type: 'triangle_symmetrical', confidence: 0.7, range: { start, end }, pivots: [...hwin, ...lwin].sort((a, b) => a.idx - b.idx) });
+          }
+        }
+      }
+    }
+
+    // 5) Pennant & Flag (continuation after pole)
+    {
+      const wantPennant = want.size === 0 || want.has('pennant');
+      const wantFlag = want.size === 0 || want.has('flag');
+      const W = Math.min(20, candles.length);
+      const closes = candles.map(c => c.close);
+      const highsArr = candles.map(c => c.high);
+      const lowsArr = candles.map(c => c.low);
+      const M = Math.min(12, Math.max(6, Math.floor(W * 0.6))); // 旗竿計測をやや長めに
+      const idxEnd = candles.length - 1;
+      const idxStart = Math.max(0, idxEnd - M);
+      const poleChange = pct(closes[idxStart], closes[idxEnd]);
+      const poleUp = poleChange >= 0.08; // 8% 以上の強い値動き
+      const poleDown = poleChange <= -0.08;
+      const havePole = poleUp || poleDown;
+
+      // Consolidation window after pole start
+      const C = Math.min(14, W);
+      const winStart = Math.max(0, candles.length - C);
+      const hwin = highsArr.slice(winStart);
+      const lwin = lowsArr.slice(winStart);
+      const firstH = hwin[0];
+      const lastH = hwin[hwin.length - 1];
+      const firstL = lwin[0];
+      const lastL = lwin[lwin.length - 1];
+      const dH = pct(firstH, lastH);
+      const dL = pct(firstL, lastL);
+      const spreadStart = firstH - firstL;
+      const spreadEnd = lastH - lastL;
+      const converging = spreadEnd < spreadStart * (1 - tolerancePct * 0.8); // 収束強化
+
+      if (havePole) {
+        const start = candles[winStart].isoTime || String(winStart);
+        const end = candles[idxEnd].isoTime || String(idxEnd);
+        // Pennant: converging (symmetrical) consolidation after strong pole
+        if (wantPennant && ((dH <= 0 && dL >= 0) || (dH < 0 && dL > 0)) && converging) {
+          push(patterns, { type: 'pennant', confidence: 0.68, range: { start, end } });
+        }
+        // Flag: parallel/slight slope against pole direction
+        if (wantFlag) {
+          const slopeAgainstUp = poleUp && dH < 0 && dL < 0; // both down
+          const slopeAgainstDown = poleDown && dH > 0 && dL > 0; // both up
+          const smallRange = spreadEnd <= spreadStart * 1.02; // 並行チャネルの厳格化
+          if ((slopeAgainstUp || slopeAgainstDown) && smallRange) {
+            push(patterns, { type: 'flag', confidence: 0.66, range: { start, end } });
+          }
         }
       }
     }

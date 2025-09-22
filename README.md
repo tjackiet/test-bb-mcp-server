@@ -15,7 +15,7 @@
   - 一目均衡表
   - 自動トレンド分析
   - **チャート描画**:
-    - `render_chart_svg`: ローソク足チャートを静的なSVG画像として生成します。JavaScriptを使用しないため、Claudeのようなセキュリティ制約の厳しい環境でも確実な表示が保証されます。
+    - `render_chart_svg`: ローソク足/折れ線チャートを静的なSVG画像として生成します。JavaScriptを使用しないため、Claudeのようなセキュリティ制約の厳しい環境でも確実な表示が保証されます。
     - `render_chart_html`: （当面サポート外）インタラクティブHTML生成は運用要件外のため削除しました。SVG をご利用ください。
 
 ### チャート描画の重要ポリシー（必読）
@@ -33,11 +33,25 @@
   - 既定: 描画しない（必要な場合のみ `--sma=…` または `withSMA` を明示）。
   - 一目均衡表を描画する場合（withIchimoku=true）は、SMAとBBは強制的にオフ（実装で排他制御）。
 
+#### パターン検出時の推奨
+
+- パターン検出（`detect_patterns`）と併用する場合、チャートは原則として折れ線スタイルを優先してください。
+  - 指定方法: `style: 'line'`（CLI: `--style=line`）。
+  - 目的: ローソク足よりも情報量が絞られ、パターンの形状が視認しやすく、出力サイズも抑えられます。
+  - 追加インジケータ（SMA/BB/一目）は必要時のみ。既定ではオフのままで構いません。
+
 CLI 例: `./node_modules/.bin/tsx tools/render_chart_svg_cli.ts <pair> <type> <limit> --bb-mode=default` / `--bb-mode=extended`
+  - 折れ線スタイル: `--style=line`（デフォルトは `candles`）。折れ線時も、指定があればBB/SMA/一目を重ね描画可能です。
 
 ### サンプルチャート (SVG)
 
 以下は `render_chart_svg` ツールによって生成されたBTC/JPYの日足チャートです。
+**折れ線（終値）**
+
+```bash
+./node_modules/.bin/tsx tools/render_chart_svg_cli.ts btc_jpy 1day 60 --style=line --no-bb --no-sma
+```
+
 
 **ボリンジャーバンド**
 ![Sample Chart](assets/bb_light.svg)

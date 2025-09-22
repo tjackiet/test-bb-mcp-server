@@ -11,6 +11,7 @@ type RenderMeta = { pair: Pair; type: CandleType | string; limit?: number; indic
 
 export default async function renderChartSvg(args: RenderChartSvgOptions = {}): Promise<Result<RenderData, RenderMeta>> {
   // --- パラメータの解決（強制排他ルール） ---
+  const style = ((args as any).style === 'line' ? 'line' : 'candles') as 'candles' | 'line';
   const withIchimoku = args.withIchimoku ?? false;
   const ichimokuOpt = args.ichimoku || {};
   // モード正規化: light→default, full→extended（後方互換）
@@ -53,7 +54,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   } = args;
 
   // --- 事前見積もりヒューリスティクス（重そうなら candles-only にフォールバック） ---
-  const estimatedLayers = (withIchimoku ? 1 : 0) + (withBB ? (bbMode === 'extended' ? 3 : 1) : 0) + (Array.isArray(withSMA) ? withSMA.length : 0) + 1; // +1 for candles
+  const estimatedLayers = (withIchimoku ? 1 : 0) + (withBB ? (bbMode === 'extended' ? 3 : 1) : 0) + (Array.isArray(withSMA) ? withSMA.length : 0) + 1; // +1 for base series
   let summaryNotes: string[] = [];
   if (limit * estimatedLayers > 500) {
     if (withBB || (withSMA && withSMA.length > 0) || withIchimoku) {
@@ -193,29 +194,33 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
 
   const barW = Math.max(2, (plotW / Math.max(1, xs.length)) * 0.6);
 
-  // ローソク（棒＋ヒゲ）
-  const sticks = displayItems
-    .map((d: any, i: number) => {
-      const cx = x(i);
-      return `<line x1="${cx}" y1="${y(d.high)}" x2="${cx}" y2="${y(d.low)
-        }" stroke="#9ca3af" stroke-width="1"/>`;
-    })
-    .join('');
-
-  const bodies = displayItems
-    .map((d: any, i: number) => {
-      const cx = x(i) - barW / 2;
-      const o = y(d.open);
-      const c = y(d.close);
-      const top = Math.min(o, c);
-      const bot = Math.max(o, c);
-      const up = d.close >= d.open;
-      return `<rect x="${cx}" y="${top}" width="${barW}" height="${Math.max(
-        1,
-        bot - top
-      )}" fill="${up ? '#16a34a' : '#ef4444'}"/>`;
-    })
-    .join('');
+  // ローソク（棒＋ヒゲ） or 折れ線
+  let sticks = '';
+  let bodies = '';
+  let priceLine = '';
+  let wantPriceLine = false;
+  if (style === 'candles') {
+    sticks = displayItems
+      .map((d: any, i: number) => {
+        const cx = x(i);
+        return `<line x1="${cx}" y1="${y(d.high)}" x2="${cx}" y2="${y(d.low)}" stroke="#9ca3af" stroke-width="1"/>`;
+      })
+      .join('');
+    bodies = displayItems
+      .map((d: any, i: number) => {
+        const cx = x(i) - barW / 2;
+        const o = y(d.open);
+        const c = y(d.close);
+        const top = Math.min(o, c);
+        const bot = Math.max(o, c);
+        const up = d.close >= d.open;
+        return `<rect x="${cx}" y="${top}" width="${barW}" height="${Math.max(1, bot - top)}" fill="${up ? '#16a34a' : '#ef4444'}"/>`;
+      })
+      .join('');
+  } else {
+    // style === 'line' → 終値の折れ線（描画はヘルパー定義後に実施）
+    wantPriceLine = true;
+  }
 
   // --- インジケータ描画 ---
   const smaColors: Record<number, string> = { 5: '#f472b6', 20: '#a78bfa', 25: '#3b82f6', 50: '#22d3ee', 75: '#f59e0b', 200: '#10b981' };
@@ -264,6 +269,12 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     const width = options.width || '2';
     return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}" ${dash}/>`;
   };
+
+  // 折れ線（終値）を必要に応じて描画
+  if (wantPriceLine) {
+    const closesFull: Array<number | null> = items.map((d: any) => (typeof d.close === 'number' ? d.close : null));
+    priceLine = createLinePath(closesFull, '#e5e7eb', { width: '1.5', simplify: true, offset: 0 });
+  }
 
   // --- 型安全なインジケータ参照ヘルパー ---
   const bbSeries = {
@@ -523,6 +534,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
         ${layers.bb}
   ${sticks}
   ${bodies}
+${priceLine}
         ${layers.sma}
       </g>
       <g class="legend">

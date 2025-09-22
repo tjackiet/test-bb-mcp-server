@@ -20,6 +20,8 @@ export const RenderChartSvgInputSchema = z
     type: CandleTypeEnum.optional().default('1day'),
     // impl default is 60; align contract to tool behavior
     limit: z.number().int().min(5).max(365).optional().default(60),
+    // main series style: candles (default) or line (close-only)
+    style: z.enum(['candles', 'line']).optional().default('candles'),
     // デフォルトは描画しない（明示時のみ描画）
     withSMA: z.array(z.number().int()).optional().default([]),
     // 既定でBBはオフ（必要時のみ指定）
@@ -342,8 +344,14 @@ export const PatternTypeEnum = z.enum([
   'triple_bottom',
   'head_and_shoulders',
   'inverse_head_and_shoulders',
+  // legacy umbrella key (kept for filter-compat)
   'triangle',
+  // new explicit triangle variants
+  'triangle_ascending',
+  'triangle_descending',
+  'triangle_symmetrical',
   'pennant',
+  'flag',
 ]);
 
 export const DetectPatternsInputSchema = z.object({

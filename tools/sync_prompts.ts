@@ -28,7 +28,7 @@ const prompts = {
     input: { pair: 'btc_jpy', type: '1day', limit: 90 },
     messages: [
       { role: 'system', content: [{ type: 'text', text: '自前描画は禁止。まず render_chart_svg を実行し、続けて detect_patterns を呼び出して候補のみを解説してください。追加実行は行わず、返却 svg/filePath をそのまま表示します。' }] },
-      { role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}' } }] },
+      { role: 'assistant', content: [{ type: 'tool_code', tool_name: 'render_chart_svg', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', style: 'line' } }] },
       { role: 'assistant', content: [{ type: 'tool_code', tool_name: 'detect_patterns', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}' } }] }
     ]
   },
