@@ -99,6 +99,7 @@ SVGファイルとして出力してください。
 
 1.  **Dockerイメージをビルド**
    ```bash
+   # 任意のタグ名でOK（例1: bitbank-mcp、例2: bb-mcp:dev）
    docker build -t bitbank-mcp .
    ```
 
@@ -301,6 +302,27 @@ Claude の Developer Settings > MCP Servers に以下のように登録してく
 - `npx` は標準出力に余分なメッセージを出す場合があり、MCP の stdio ハンドシェイクが失敗する原因になります。
 - `command` / `args` は双方とも絶対パスで指定してください（相対パス解決の差分を排除）。
 - Node 18+ を推奨。既存サーバープロセスが残っていると接続できない場合は停止してください。
+
+### Inspector から“手動で”Docker経由接続する設定（UI操作）
+
+1) 先に Docker イメージをビルドしておく（上記参照。例: `bitbank-mcp` または `bb-mcp:dev`）
+
+2) MCP Inspector を起動
+```bash
+npx -y @modelcontextprotocol/inspector
+```
+
+3) 左ペインの「Add Server」で以下を設定
+- Transport Type: `STDIO`
+- Command: `docker`
+- Arguments: `run --rm -i bitbank-mcp`
+  - デバッグ多めにするなら: `run --rm -i -e LOG_LEVEL=debug bitbank-mcp`
+  - タグが `bb-mcp:dev` の場合は引数のイメージ名を置き換え
+- Connect をクリック
+
+補足:
+- Inspector 起動中は `-t` を付けず `-i` のみを使ってください（PTY を付けると stdio ハンドシェイクに失敗する場合があります）。
+- ホストの `docker` がパス解決できない場合は、Command を `/usr/local/bin/docker` や `/opt/homebrew/bin/docker` に変更してください。
 
 ## 運用・監視（JSONL ログ集計 / 失敗率・タイムアウト監視）
 
