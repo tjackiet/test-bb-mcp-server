@@ -7,7 +7,18 @@ import { formatPair } from '../lib/formatter.js';
 import type { Result, Pair, CandleType, RenderChartSvgOptions, ChartPayload } from '../src/types/domain.d.ts';
 
 type RenderData = { svg?: string; filePath?: string; legend?: Record<string, string> };
-type RenderMeta = { pair: Pair; type: CandleType | string; limit?: number; indicators?: string[]; bbMode: 'default' | 'extended' };
+type RenderMeta = {
+  pair: Pair;
+  type: CandleType | string;
+  limit?: number;
+  indicators?: string[];
+  bbMode: 'default' | 'extended';
+  range?: { start: string; end: string };
+  sizeBytes?: number;
+  layerCount?: number;
+  truncated?: boolean;
+  fallback?: string;
+};
 
 export default async function renderChartSvg(args: RenderChartSvgOptions = {}): Promise<Result<RenderData, RenderMeta>> {
   // --- パラメータの解決（強制排他ルール） ---
