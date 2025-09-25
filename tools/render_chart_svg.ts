@@ -62,7 +62,8 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     type = '1day',
     limit = 60,
     withLegend = true,
-  } = args;
+    overlays,
+  } = args as any;
 
   // --- 事前見積もりヒューリスティクス（重そうなら candles-only にフォールバック） ---
   const estimatedLayers = (withIchimoku ? 1 : 0) + (withBB ? (bbMode === 'extended' ? 3 : 1) : 0) + (Array.isArray(withSMA) ? withSMA.length : 0) + 1; // +1 for base series
@@ -93,7 +94,9 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   const items = chartData?.candles || [];
   const indicators = chartData?.indicators as Record<string, any>;
   const pastBuffer = chartData.meta?.pastBuffer ?? 0;
-  const forwardShift = chartData.meta?.shift ?? 0;
+  const forwardShiftMeta = chartData.meta?.shift ?? 0;
+  // 一目を描画しない場合は forwardShift を 0 にする（間隔が詰まるのを防ぐ）
+  const forwardShift = withIchimoku ? forwardShiftMeta : 0;
   const displayItems = items.slice(pastBuffer);
 
   if (!items?.length) {
@@ -177,8 +180,9 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
 
   const dataYMin = Math.min(...allYValues);
   const dataYMax = Math.max(...allYValues);
-  const yAxisMinWithBuffer = dataYMin * 0.95;
-  const yAxisMaxWithBuffer = dataYMax * 1.05;
+  const yPad = Math.min(0.2, Math.max(0, Number((args as any)?.yPaddingPct ?? 0.03)));
+  const yAxisMinWithBuffer = dataYMin * (1 - yPad);
+  const yAxisMaxWithBuffer = dataYMax * (1 + yPad);
   const yTicks = niceTicks(yAxisMinWithBuffer, yAxisMaxWithBuffer, 6);
   const yMin = yTicks[0];
   const yMax = yTicks.at(-1) as number;
@@ -196,14 +200,26 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   const plotH = h - padding.top - padding.bottom;
 
   // X座標計算: 描画ウィンドウ内での相対位置を計算
-  const x = (i: number) => padding.left + (i * plotW) / Math.max(1, xMax + forwardShift);
+  // Xはバー中心を(i+0.5)に置き、左右に半スロットの余白を確保して端の切れを防ぐ
+  const totalSlots = Math.max(1, xs.length + forwardShift);
+  const x = (i: number) => padding.left + ((i + 0.5) * plotW) / totalSlots;
   const y = (v: number) => h - padding.bottom - ((v - yMin) * plotH) / Math.max(1, yMax - yMin);
 
   // --- 凡例メタデータと描画レイヤーの準備 ---
   const legendMeta: Record<string, string> = {};
   let legendLayers = '';
 
-  const barW = Math.max(2, (plotW / Math.max(1, xs.length)) * 0.6);
+  // 自動調整: 未指定時は本数に応じて隙間が過剰/不足にならないよう最適化
+  let barWidthRatio = Number((args as any)?.barWidthRatio);
+  if (!Number.isFinite(barWidthRatio)) {
+    const n = xs.length;
+    if (n <= 30) barWidthRatio = 0.82; // 少本数 → 太め
+    else if (n <= 45) barWidthRatio = 0.74;
+    else if (n <= 60) barWidthRatio = 0.66;
+    else barWidthRatio = 0.6; // 多本数 → 細め
+  }
+  barWidthRatio = Math.min(0.9, Math.max(0.1, barWidthRatio));
+  const barW = Math.max(2, (plotW / Math.max(1, xs.length)) * barWidthRatio);
 
   // ローソク（棒＋ヒゲ） or 折れ線
   let sticks = '';
@@ -547,6 +563,23 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   ${bodies}
 ${priceLine}
         ${layers.sma}
+        ${(() => {
+      if (!overlays || !overlays.ranges) return '';
+      const mkRect = (startIso: string, endIso: string, color?: string, label?: string) => {
+        const findIndexByIso = (iso: string) => displayItems.findIndex((d: any) => d.isoTime === iso);
+        const i0 = findIndexByIso(startIso);
+        const i1 = findIndexByIso(endIso);
+        if (i0 < 0 || i1 < 0) return '';
+        const left = Math.min(x(i0), x(i1));
+        const right = Math.max(x(i0), x(i1));
+        const width = Math.max(0, right - left);
+        const fill = color || 'rgba(180,180,40,0.18)';
+        const rect = `<rect x="${left}" y="${padding.top}" width="${width}" height="${plotH}" fill="${fill}" />`;
+        const text = label ? `<text x="${left + 4}" y="${padding.top + 12}" fill="#e5e7eb" font-size="10">${label}</text>` : '';
+        return rect + text;
+      };
+      return overlays.ranges.map((r: any) => mkRect(r.start, r.end, r.color, r.label)).join('');
+    })()}
       </g>
       <g class="legend">
         ${legendLayers}

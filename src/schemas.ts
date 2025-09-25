@@ -43,8 +43,30 @@ export const RenderChartSvgInputSchema = z
     svgMinify: z.boolean().optional().default(true).describe('Minify SVG text by stripping whitespace where safe.'),
     simplifyTolerance: z.number().min(0).optional().default(0).describe('Line simplification tolerance in pixels (0 disables).'),
     viewBoxTight: z.boolean().optional().default(true).describe('Use tighter paddings to reduce empty margins.'),
+    barWidthRatio: z.number().min(0.1).max(0.9).optional().describe('Width ratio of each candle body (slot fraction).'),
+    yPaddingPct: z.number().min(0).max(0.2).optional().describe('Vertical padding ratio to expand y-range.'),
     // サイズ制御（超過時は data.svg を省略し filePath のみ返却）
     maxSvgBytes: z.number().int().min(1024).optional().describe('If set and svg exceeds this size (bytes), omit data.svg and return filePath only.'),
+    // Optional pattern overlays (ranges/annotations)
+    overlays: z
+      .object({
+        ranges: z
+          .array(
+            z.object({
+              start: z.string(),
+              end: z.string(),
+              color: z.string().optional(),
+              label: z.string().optional(),
+            })
+          )
+          .optional(),
+        annotations: z
+          .array(
+            z.object({ isoTime: z.string(), text: z.string() })
+          )
+          .optional(),
+      })
+      .optional(),
   })
   .superRefine((val, ctx) => {
     if (val.withIchimoku) {
@@ -374,6 +396,30 @@ export const DetectedPatternSchema = z.object({
 });
 
 export const DetectPatternsOutputSchema = z.union([
-  z.object({ ok: z.literal(true), summary: z.string(), data: z.object({ patterns: z.array(DetectedPatternSchema) }), meta: z.object({ pair: z.string(), type: CandleTypeEnum.or(z.string()), count: z.number().int() }) }),
+  z.object({
+    ok: z.literal(true),
+    summary: z.string(),
+    data: z.object({
+      patterns: z.array(DetectedPatternSchema),
+      overlays: z
+        .object({
+          ranges: z
+            .array(
+              z.object({ start: z.string(), end: z.string(), color: z.string().optional(), label: z.string().optional() })
+            )
+            .optional(),
+          annotations: z.array(z.object({ isoTime: z.string(), text: z.string() })).optional(),
+        })
+        .optional(),
+    }),
+    meta: z.object({
+      pair: z.string(),
+      type: CandleTypeEnum.or(z.string()),
+      count: z.number().int(),
+      visualization_hints: z
+        .object({ preferred_style: z.enum(['candles', 'line']).optional(), highlight_patterns: z.array(PatternTypeEnum).optional() })
+        .optional(),
+    }),
+  }),
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);

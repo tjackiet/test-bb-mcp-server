@@ -91,6 +91,22 @@ export default async function detectPatterns(
       }
     }
 
+    // 3b) Head & Shoulders (H-L-H-L-H with head higher than both shoulders)
+    if (want.size === 0 || want.has('head_and_shoulders')) {
+      for (let i = 0; i < pivots.length - 4; i++) {
+        const p0 = pivots[i], p1 = pivots[i + 1], p2 = pivots[i + 2], p3 = pivots[i + 3], p4 = pivots[i + 4];
+        if (!(p0.kind === 'H' && p1.kind === 'L' && p2.kind === 'H' && p3.kind === 'L' && p4.kind === 'H')) continue;
+        if (p1.idx - p0.idx < minDist || p2.idx - p1.idx < minDist || p3.idx - p2.idx < minDist || p4.idx - p3.idx < minDist) continue;
+        const shouldersNear = near(p0.price, p4.price);
+        const headHigher = p2.price > Math.max(p0.price, p4.price) * (1 + tolerancePct);
+        if (shouldersNear && headHigher) {
+          const start = candles[p0.idx].isoTime || String(p0.idx);
+          const end = candles[p4.idx].isoTime || String(p4.idx);
+          push(patterns, { type: 'head_and_shoulders', confidence: 0.7, range: { start, end }, pivots: [p0, p1, p2, p3, p4] });
+        }
+      }
+    }
+
     // 4) Triangles (ascending/descending/symmetrical)
     {
       const wantTriangle = want.size === 0 || want.has('triangle') || want.has('triangle_ascending') || want.has('triangle_descending') || want.has('triangle_symmetrical');
@@ -178,7 +194,48 @@ export default async function detectPatterns(
       }
     }
 
-    const out = ok('patterns detected', { patterns }, { pair, type, count: patterns.length });
+    // 6) Triple Top / Triple Bottom (厳しめの等高/等安＋等間隔に近い)
+    {
+      const wantTripleTop = want.size === 0 || want.has('triple_top');
+      const wantTripleBottom = want.size === 0 || want.has('triple_bottom');
+      if (wantTripleTop || wantTripleBottom) {
+        // 直近の同種ピボット3点を走査
+        const highsOnly = pivots.filter(p => p.kind === 'H');
+        const lowsOnly = pivots.filter(p => p.kind === 'L');
+
+        if (wantTripleTop && highsOnly.length >= 3) {
+          for (let i = 0; i <= highsOnly.length - 3; i++) {
+            const a = highsOnly[i], b = highsOnly[i + 1], c = highsOnly[i + 2];
+            if ((b.idx - a.idx) < minDist || (c.idx - b.idx) < minDist) continue;
+            const nearAll = near(a.price, b.price) && near(b.price, c.price) && near(a.price, c.price);
+            if (!nearAll) continue;
+            const start = candles[a.idx].isoTime || String(a.idx);
+            const end = candles[c.idx].isoTime || String(c.idx);
+            push(patterns, { type: 'triple_top', confidence: 0.68, range: { start, end }, pivots: [a, b, c] });
+          }
+        }
+
+        if (wantTripleBottom && lowsOnly.length >= 3) {
+          for (let i = 0; i <= lowsOnly.length - 3; i++) {
+            const a = lowsOnly[i], b = lowsOnly[i + 1], c = lowsOnly[i + 2];
+            if ((b.idx - a.idx) < minDist || (c.idx - b.idx) < minDist) continue;
+            const nearAll = near(a.price, b.price) && near(b.price, c.price) && near(a.price, c.price);
+            if (!nearAll) continue;
+            const start = candles[a.idx].isoTime || String(a.idx);
+            const end = candles[c.idx].isoTime || String(c.idx);
+            push(patterns, { type: 'triple_bottom', confidence: 0.68, range: { start, end }, pivots: [a, b, c] });
+          }
+        }
+      }
+    }
+
+    // overlays: パターン範囲をそのまま帯描画できるように提供
+    const ranges = patterns.map((p: any) => ({ start: p.range.start, end: p.range.end, label: p.type }));
+    const out = ok(
+      'patterns detected',
+      { patterns, overlays: { ranges } },
+      { pair, type, count: patterns.length, visualization_hints: { preferred_style: 'line', highlight_patterns: patterns.map((p: any) => p.type).slice(0, 3) } }
+    );
     return DetectPatternsOutputSchema.parse(out) as any;
   } catch (e: any) {
     return DetectPatternsOutputSchema.parse(fail(e?.message || 'internal error', 'internal')) as any;

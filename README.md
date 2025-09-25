@@ -149,6 +149,29 @@ SVGファイルとして出力してください。
   - ichimoku.mode: `default` / `extended`
 - 自前描画は禁止。Inspector でも返却 `svg` をそのまま表示すること。
 
+#### パターンオーバーレイ（任意機能）
+- `detect_patterns` は結果に `data.overlays.ranges`（`start/end/label/color`）と `meta.visualization_hints` を含みます。
+- これを `render_chart_svg` に `overlays` として渡すと、チャート上にパターン範囲の薄い帯とラベルを重ねて描画できます。
+
+例:
+```json
+{
+  "tool_name": "render_chart_svg",
+  "tool_input": {
+    "pair": "btc_jpy",
+    "type": "1day",
+    "limit": 150,
+    "withBB": false,
+    "withSMA": [],
+    "overlays": {
+      "ranges": [
+        { "start": "2025-08-01T00:00:00.000Z", "end": "2025-08-15T00:00:00.000Z", "label": "triangle_ascending" }
+      ]
+    }
+  }
+}
+```
+
 補足リンク:
 - bbMode / ichimoku.mode の仕様は本ドキュメント上部「チャート描画の重要ポリシー（必読）」を参照。
 
@@ -319,6 +342,15 @@ npx -y @modelcontextprotocol/inspector
   - デバッグ多めにするなら: `run --rm -i -e LOG_LEVEL=debug bitbank-mcp`
   - タグが `bb-mcp:dev` の場合は引数のイメージ名を置き換え
 - Connect をクリック
+
+UI入力例（そのまま転記OK）:
+- Transport Type: `STDIO`
+- Command: `docker`
+- Arguments: `run --rm -i -e LOG_LEVEL=debug bitbank-mcp`
+  - 画像タグが `bb-mcp:dev` の場合: `run --rm -i -e LOG_LEVEL=debug bb-mcp:dev`
+
+シンプル版（デバッグログ不要の場合）:
+- Arguments: `run --rm -i bitbank-mcp`
 
 補足:
 - Inspector 起動中は `-t` を付けず `-i` のみを使ってください（PTY を付けると stdio ハンドシェイクに失敗する場合があります）。

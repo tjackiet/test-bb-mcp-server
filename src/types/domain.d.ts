@@ -240,6 +240,13 @@ export interface RenderChartSvgOptions {
 	withIchimoku?: boolean; // default false
 	ichimoku?: IchimokuOptions; // default { mode: 'default' }
 	withLegend?: boolean; // default true
+	barWidthRatio?: number; // 0.1 - 0.9, default 0.6
+	yPaddingPct?: number; // 0-0.2, default 0.03 (縦方向バッファ率)
+	// Optional overlays for pattern visualization
+	overlays?: {
+		ranges?: Array<{ start: string; end: string; color?: string; label?: string }>;
+		annotations?: Array<{ isoTime: string; text: string }>;
+	};
 }
 
 export interface OkResult<T = Record<string, unknown>, M = Record<string, unknown>> {
