@@ -15,17 +15,17 @@
   - 一目均衡表
   - 自動トレンド分析
   - **チャート描画**:
-    - `render_chart_svg`: ローソク足/折れ線チャートを静的なSVG画像として生成します。JavaScriptを使用しないため、Claudeのようなセキュリティ制約の厳しい環境でも確実な表示が保証されます。
-    - `render_chart_html`: （当面サポート外）インタラクティブHTML生成は運用要件外のため削除しました。SVG をご利用ください。
+    - `render_chart_svg`: ローソク足/折れ線チャートを静的なSVG画像として生成します。
 
-### チャート描画の重要ポリシー（必読）
+### チャート描画のガイドライン（推奨）
 
-- **チャートを表示する場合、必ず `tools/render_chart_svg.js`（Node API: `renderChartSvg(options)`）を使用してください。**
-  - AI/クライアント側で独自の描画ロジック（D3/Canvas/Chart.js/SVG 生生成等）を実装してはいけません。
-  - Artifact/Inspector では、本ツールの返す `data.svg` をそのまま表示してください。
+- **人が利用する際のおすすめ**: チャート表示は `tools/render_chart_svg.js`（Node API: `renderChartSvg(options)`）の出力SVGをそのまま使うのが最も安定です。
+  - アプリやドキュメントでは、ツールが返す `data.svg` または `filePath` のSVGを直接表示する運用を推奨します。
+  - JSライブラリでの再描画よりも、再現性・メンテナンス性・安全性（CSP等）でメリットがあります。
+  - 独自の描画実装（D3/Canvas/Chartライブラリ等）も可能ですが、描画方法や成果物は MCP クライアントの実装に依存するため、安定した表示を保証できません。
 - **Bollinger Bands の描画仕様**
-  - 既定: ±2σ を描画（bbMode=`default`。旧称: `light`）。
-  - 拡張（オプション）: ±1σ, ±2σ, ±3σ を描画（bbMode=`extended`。旧称: `full`）。
+- 既定: ±2σ を描画（bbMode=`default`）。
+- 拡張（オプション）: ±1σ, ±2σ, ±3σ を描画（bbMode=`extended`）。
 - **一目均衡表の描画仕様**
   - 標準: 転換線・基準線・雲（先行スパンA/B）。
   - 拡張: 上記に加え遅行スパン（`ichimoku.mode=extended` または `ichimoku.withChikou=true`）。
@@ -43,43 +43,29 @@
 CLI 例: `./node_modules/.bin/tsx tools/render_chart_svg_cli.ts <pair> <type> <limit> --bb-mode=default` / `--bb-mode=extended`
   - 折れ線スタイル: `--style=line`（デフォルトは `candles`）。折れ線時も、指定があればBB/SMA/一目を重ね描画可能です。
 
-### サンプルチャート (SVG)
-
-以下は `render_chart_svg` ツールによって生成されたBTC/JPYの日足チャートです。
-**折れ線（終値）**
+### 最小サンプル（CLI）
 
 ```bash
-./node_modules/.bin/tsx tools/render_chart_svg_cli.ts btc_jpy 1day 60 --style=line --no-bb --no-sma
+# 日足チャートをSVGとして出力（折れ線・軽量）
+./node_modules/.bin/tsx tools/render_chart_svg_cli.ts btc_jpy 1day 60 --style=line --no-bb --no-sma > chart.svg
 ```
 
-
-**ボリンジャーバンド**
-![Sample Chart](assets/bb_light.svg)
-
-**一目均衡表**
-![Ichimoku Sample Chart](assets/ichimoku_sample.svg)
-
-> **Note:** `render_chart_html` はインタラクティブですが、実行環境の CSP でブロックされる場合があります。安定表示が必要な場合は `render_chart_svg` を使用してください。
-> 追記: `render_chart_html` は当面サポート外につき削除済みです。
 
 ### プロンプトとCLIの対応表（抜粋）
 
 | Prompt 名 | 概要 | 対応CLIフラグ例 |
 |---|---|---|
-| `bb_light_chart` | BB既定（±2σ） | `--bb-mode=default` |
-| `bb_full_chart` | BB拡張（±1/±2/±3σ） | `--bb-mode=extended` |
+| `bb_default_chart` | BB既定（±2σ） | `--bb-mode=default` |
+| `bb_extended_chart` | BB拡張（±1/±2/±3σ） | `--bb-mode=extended` |
 | `candles_only_chart` | ローソク足のみ（追加指標なし） | `--candles-only` |
 | `ichimoku_default_chart` | 一目 標準（遅行なし） | `--with-ichimoku --ichimoku-mode=default` |
 | `ichimoku_extended_chart` | 一目 拡張（遅行スパン含む） | `--with-ichimoku --ichimoku-mode=extended` |
 
-より詳しい仕様は `description.json`（ツール）と `prompts.json`（プロンプト）を参照してください。
+より詳しい仕様は `description.json`（ツール）と `prompts.json`（プロンプト）を参照してください。開発者向け手順は `CONTRIBUTING.md`、運用は `docs/ops.md` を参照。
 
-## 制約事項
+## 注意事項
 
-Claude（MCPホスト）経由でローソク足チャートを描画する場合、
-出力サイズの制限により **30〜40本程度** が安定動作の上限です。
-それ以上の長期データを描画する場合は、CLI版（TSX: `render_chart_svg_cli.ts`）を利用し、
-SVGファイルとして出力してください。
+Claude（MCPホスト）経由でローソク足チャートを描画する場合、出力サイズの制限により **30〜40本程度** が安定動作の目安です。長期データは CLI で SVG を出力する運用をおすすめします。
 
 ## Setup
 
@@ -97,80 +83,24 @@ SVGファイルとして出力してください。
 
 ### Docker を利用する場合（推奨）
 
-1.  **Dockerイメージをビルド**
-   ```bash
-   # 任意のタグ名でOK（例1: bitbank-mcp、例2: bb-mcp:dev）
-   docker build -t bitbank-mcp .
-   ```
-
-2.  **コンテナを起動し、Inspectorに接続**
-   ```bash
-   npx @modelcontextprotocol/inspector docker run -i --rm bitbank-mcp
-   ```
-   上記コマンドを実行すると、コンテナが起動し、自動的にブラウザでMCP Inspectorが開きサーバーに接続されます。
-
-   **Note: 実行ログの保存**
-   
-   コンテナ内で実行されたツールのログを、ホストマシン（あなたのPC）の`./logs`ディレクトリに保存したい場合は、`-v`オプション（ボリュームマウント）を追加してコンテナを起動してください。
-
-   ```bash
-   npx @modelcontextprotocol/inspector docker run -i --rm -v "$(pwd)/logs:/app/logs" bitbank-mcp
-   ```
-
-3.  **ログの確認手順**
-   
-   `-v`オプション付きでコンテナを起動し、Inspectorからツールをいくつか実行した後、**別のターミナル**から以下のコマンドでログを確認できます。
-
-   ```bash
-   # ログファイルが作成されているか確認
-   ls logs/
-
-   # ログファイルの中身を確認
-   cat logs/$(date +%F).jsonl
-   ```
+```bash
+# Build
+docker build -t bitbank-mcp .
+# Run via Inspector
+npx @modelcontextprotocol/inspector docker run -i --rm bitbank-mcp
+```
 
 ### ローカル環境で直接実行する場合
 
-1.  **依存パッケージのインストール**
-   ```bash
-   npm install
-   ```
-
-2.  **Inspector に接続してサーバーを起動**
-   ```bash
-   npx @modelcontextprotocol/inspector tsx src/server.ts
-   ```
-   このコマンドを実行すると、サーバーが起動し、自動的にMCP Inspectorが開いて接続されます。実行ログは`.env`で指定された`LOG_DIR`（デフォルト: `./logs`）に保存されます。
-
-### MCP Inspector での検証ポイント
-
-- `render_chart_svg` で以下を切替し、想定通りの SVG が返ることを確認
-  - bbMode: `default`（±2σ）/ `extended`（±1/±2/±3σ）
-  - ichimoku.mode: `default` / `extended`
-- 自前描画は禁止。Inspector でも返却 `svg` をそのまま表示すること。
-
-#### パターンオーバーレイ（任意機能）
-- `detect_patterns` は結果に `data.overlays.ranges`（`start/end/label/color`）と `meta.visualization_hints` を含みます。
-- これを `render_chart_svg` に `overlays` として渡すと、チャート上にパターン範囲の薄い帯とラベルを重ねて描画できます。
-
-例:
-```json
-{
-  "tool_name": "render_chart_svg",
-  "tool_input": {
-    "pair": "btc_jpy",
-    "type": "1day",
-    "limit": 150,
-    "withBB": false,
-    "withSMA": [],
-    "overlays": {
-      "ranges": [
-        { "start": "2025-08-01T00:00:00.000Z", "end": "2025-08-15T00:00:00.000Z", "label": "triangle_ascending" }
-      ]
-    }
-  }
-}
+```bash
+npm install
+npx @modelcontextprotocol/inspector tsx src/server.ts
 ```
+
+### MCP Inspector での検証ポイント（簡易）
+
+- bbMode と ichimoku.mode の切替が SVG に反映されること
+- パターン検出結果の `data.overlays.ranges` を `render_chart_svg.overlays` に渡すと帯が描画されること
 
 補足リンク:
 - bbMode / ichimoku.mode の仕様は本ドキュメント上部「チャート描画の重要ポリシー（必読）」を参照。
@@ -326,35 +256,7 @@ Claude の Developer Settings > MCP Servers に以下のように登録してく
 - `command` / `args` は双方とも絶対パスで指定してください（相対パス解決の差分を排除）。
 - Node 18+ を推奨。既存サーバープロセスが残っていると接続できない場合は停止してください。
 
-### Inspector から“手動で”Docker経由接続する設定（UI操作）
-
-1) 先に Docker イメージをビルドしておく（上記参照。例: `bitbank-mcp` または `bb-mcp:dev`）
-
-2) MCP Inspector を起動
-```bash
-npx -y @modelcontextprotocol/inspector
-```
-
-3) 左ペインの「Add Server」で以下を設定
-- Transport Type: `STDIO`
-- Command: `docker`
-- Arguments: `run --rm -i bitbank-mcp`
-  - デバッグ多めにするなら: `run --rm -i -e LOG_LEVEL=debug bitbank-mcp`
-  - タグが `bb-mcp:dev` の場合は引数のイメージ名を置き換え
-- Connect をクリック
-
-UI入力例（そのまま転記OK）:
-- Transport Type: `STDIO`
-- Command: `docker`
-- Arguments: `run --rm -i -e LOG_LEVEL=debug bitbank-mcp`
-  - 画像タグが `bb-mcp:dev` の場合: `run --rm -i -e LOG_LEVEL=debug bb-mcp:dev`
-
-シンプル版（デバッグログ不要の場合）:
-- Arguments: `run --rm -i bitbank-mcp`
-
-補足:
-- Inspector 起動中は `-t` を付けず `-i` のみを使ってください（PTY を付けると stdio ハンドシェイクに失敗する場合があります）。
-- ホストの `docker` がパス解決できない場合は、Command を `/usr/local/bin/docker` や `/opt/homebrew/bin/docker` に変更してください。
+<!-- InspectorのUI詳細手順はボリュームのため省略。必要時は issue/Docs を参照 -->
 
 ## 運用・監視（JSONL ログ集計 / 失敗率・タイムアウト監視）
 

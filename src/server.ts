@@ -132,7 +132,7 @@ function registerPromptSafe(name: string, def: { description: string; messages: 
 	}
 }
 
-registerPromptSafe('bb_light_chart', {
+registerPromptSafe('bb_default_chart', {
 	description: 'Render chart with Bollinger Bands default (±2σ).',
 	messages: [
 		{
@@ -176,7 +176,7 @@ registerPromptSafe('candles_only_chart', {
 	],
 });
 
-registerPromptSafe('bb_full_chart', {
+registerPromptSafe('bb_extended_chart', {
 	description: 'Render chart with Bollinger Bands extended (±1/±2/±3σ). Use only if user explicitly requests extended.',
 	messages: [
 		{
