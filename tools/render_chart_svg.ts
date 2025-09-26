@@ -2,6 +2,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import getIndicators from './get_indicators.js';
+import getDepth from './get_depth.js';
 import { ok, fail } from '../lib/result.js';
 import { formatPair } from '../lib/formatter.js';
 import type { Result, Pair, CandleType, RenderChartSvgOptions, ChartPayload } from '../src/types/domain.d.ts';
@@ -23,6 +24,8 @@ type RenderMeta = {
 export default async function renderChartSvg(args: RenderChartSvgOptions = {}): Promise<Result<RenderData, RenderMeta>> {
   // --- パラメータの解決（強制排他ルール） ---
   const style = ((args as any).style === 'line' ? 'line' : 'candles') as 'candles' | 'line';
+  // depth は特別扱い（ローソクを描かない）
+  const isDepth = (args as any).style === 'depth';
   const withIchimoku = args.withIchimoku ?? false;
   const ichimokuOpt = args.ichimoku || {};
   // モード正規化: light→default, full→extended（後方互換）
@@ -64,6 +67,70 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     withLegend = true,
     overlays,
   } = args as any;
+
+  // === Depth チャート（独立描画） ===
+  if (isDepth) {
+    try {
+      const depth = await getDepth(pair, { maxLevels: (args as any)?.depth?.levels ?? 200 });
+      if (!depth.ok) return fail(depth.summary.replace(/^Error: /, ''), (depth as any)?.meta?.errorType || 'internal');
+      const asks: Array<[string, string]> = depth.data.asks || [];
+      const bids: Array<[string, string]> = depth.data.bids || [];
+      // 価格レンジ
+      const minBid = Number(bids[bids.length - 1]?.[0] ?? bids[0]?.[0] ?? 0);
+      const maxAsk = Number(asks[asks.length - 1]?.[0] ?? asks[0]?.[0] ?? 0);
+      const xMinP = Math.min(minBid, Number(bids[0]?.[0] ?? minBid));
+      const xMaxP = Math.max(maxAsk, Number(asks[0]?.[0] ?? maxAsk));
+      // 累積量（左：bids 降順→小へ、右：asks 昇順→大へ）
+      const bidsSorted = [...bids].map(([p, s]) => [Number(p), Number(s)] as [number, number]).sort((a, b) => b[0] - a[0]);
+      const asksSorted = [...asks].map(([p, s]) => [Number(p), Number(s)] as [number, number]).sort((a, b) => a[0] - b[0]);
+      let cum = 0; const bidSteps: Array<[number, number]> = [];
+      for (const [p, s] of bidsSorted) { cum += s; bidSteps.push([p, cum]); }
+      cum = 0; const askSteps: Array<[number, number]> = [];
+      for (const [p, s] of asksSorted) { cum += s; askSteps.push([p, cum]); }
+      const maxQty = Math.max(bidSteps.at(-1)?.[1] || 0, askSteps.at(-1)?.[1] || 0) || 1;
+
+      // キャンバス
+      const w = 860, h = 420;
+      const padding = { top: 36, right: 12, bottom: 32, left: 64 };
+      const plotW = w - padding.left - padding.right;
+      const plotH = h - padding.top - padding.bottom;
+      const x = (price: number) => padding.left + ((price - xMinP) * plotW) / Math.max(1, xMaxP - xMinP);
+      const y = (qty: number) => h - padding.bottom - (qty * plotH) / maxQty;
+
+      // ステップパス生成
+      const toStepPath = (steps: Array<[number, number]>) => {
+        if (!steps.length) return '';
+        const pts = steps.map(([p, q]) => `${x(p)},${y(q)}`);
+        return 'M ' + pts.join(' L ');
+      };
+      const bidPath = toStepPath(bidSteps);
+      const askPath = toStepPath(askSteps);
+
+      const mid = (Number(bids[0]?.[0] ?? 0) + Number(asks[0]?.[0] ?? 0)) / 2;
+      const yAxis = `
+        <line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>
+      `;
+      const xAxis = `
+        <line x1="${padding.left}" y1="${h - padding.bottom}" x2="${w - padding.right}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>
+      `;
+      const svg = `
+      <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="background-color:#1f2937;color:#e5e7eb;font-family:sans-serif;">
+        <title>${formatPair(pair)} depth chart</title>
+        <g class="axes">${yAxis}${xAxis}</g>
+        <g class="plot-area">
+          <path d="${bidPath}" fill="none" stroke="#10b981" stroke-width="2"/>
+          <path d="${askPath}" fill="none" stroke="#f97316" stroke-width="2"/>
+          <line x1="${x(mid)}" y1="${padding.top}" x2="${x(mid)}" y2="${h - padding.bottom}" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4 4"/>
+        </g>
+      </svg>`;
+      const outputPath = path.join('assets', `depth-${pair}-${Date.now()}.svg`);
+      await fs.mkdir('assets', { recursive: true });
+      await fs.writeFile(outputPath, svg);
+      return ok<RenderData, RenderMeta>(`${formatPair(pair)} depth chart saved to ${outputPath}`, { filePath: outputPath, svg }, { pair: pair as Pair, type: 'depth', bbMode: 'default' });
+    } catch (e: any) {
+      return fail(e?.message || 'failed to render depth', 'internal');
+    }
+  }
 
   // --- 事前見積もりヒューリスティクス（重そうなら candles-only にフォールバック） ---
   const estimatedLayers = (withIchimoku ? 1 : 0) + (withBB ? (bbMode === 'extended' ? 3 : 1) : 0) + (Array.isArray(withSMA) ? withSMA.length : 0) + 1; // +1 for base series
@@ -244,9 +311,11 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
         return `<rect x="${cx}" y="${top}" width="${barW}" height="${Math.max(1, bot - top)}" fill="${up ? '#16a34a' : '#ef4444'}"/>`;
       })
       .join('');
-  } else {
+  } else if (style === 'line') {
     // style === 'line' → 終値の折れ線（描画はヘルパー定義後に実施）
     wantPriceLine = true;
+  } else if (style === 'depth') {
+    // depth は価格系列の描画を行わず、後段の overlays/axes のみ使用
   }
 
   // --- インジケータ描画 ---
@@ -579,6 +648,17 @@ ${priceLine}
         return rect + text;
       };
       return overlays.ranges.map((r: any) => mkRect(r.start, r.end, r.color, r.label)).join('');
+    })()}
+        ${(() => {
+      if (!overlays || !overlays.depth_zones) return '';
+      const mkBand = (low: number, high: number, color?: string, label?: string) => {
+        const y1 = y(high);
+        const y2 = y(low);
+        const rect = `<rect x="${padding.left}" y="${Math.min(y1, y2)}" width="${plotW}" height="${Math.abs(y2 - y1)}" fill="${color || 'rgba(34,197,94,0.08)'}" />`;
+        const text = label ? `<text x="${padding.left + 4}" y="${Math.min(y1, y2) + 12}" fill="#e5e7eb" font-size="10">${label}</text>` : '';
+        return rect + text;
+      };
+      return overlays.depth_zones.map((z: any) => mkBand(z.low, z.high, z.color, z.label)).join('');
     })()}
       </g>
       <g class="legend">

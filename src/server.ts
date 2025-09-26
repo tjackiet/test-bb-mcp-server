@@ -8,6 +8,7 @@ import getCandles from '../tools/get_candles.js';
 import getIndicators from '../tools/get_indicators.js';
 import renderChartSvg from '../tools/render_chart_svg.js';
 import detectPatterns from '../tools/detect_patterns.js';
+import getDepth from '../tools/get_depth.js';
 import { logToolRun, logError } from '../lib/logger.js';
 // schemas.ts を単一のソースとして参照し、型は z.infer に委譲
 import { RenderChartSvgInputSchema, RenderChartSvgOutputSchema, GetTickerInputSchema, GetOrderbookInputSchema, GetCandlesInputSchema, GetIndicatorsInputSchema } from './schemas.js';
@@ -95,6 +96,12 @@ registerToolWithLog(
 	'get_indicators',
 	{ description: 'Get technical indicators for a pair. For meaningful results, use a sufficient `limit` (e.g., 200 for daily candles). If `limit` is omitted, an appropriate default value will be used.', inputSchema: GetIndicatorsInputSchema },
 	async ({ pair, type, limit }) => getIndicators(pair, type, limit)
+);
+
+registerToolWithLog(
+	'get_depth',
+	{ description: 'Get raw orderbook depth for a pair (bids/asks up to 200 each).', inputSchema: z.object({ pair: z.string().default('btc_jpy') }) },
+	async ({ pair }: any) => getDepth(pair)
 );
 
 // render_chart_html は当面サポート外のため未登録
@@ -239,6 +246,23 @@ registerPromptSafe('ichimoku_extended_chart', {
 				},
 			],
 		},
+	],
+});
+
+registerPromptSafe('depth_analysis', {
+	description: 'Analyze current orderbook depth (bids/asks) and summarize liquidity/imbalance.',
+	messages: [
+		{ role: 'system', content: [{ type: 'text', text: '板情報を使う場合は必ず get_depth ツールを呼び出してください。返却データは大きくなるため、要約と着眼点（厚い板、スプレッド、偏りなど）を中心に分析してください。' }] },
+		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_depth', tool_input: { pair: '{{pair}}' } }] },
+	],
+});
+
+// alias: depth_chart（名前で探しやすいように）
+registerPromptSafe('depth_chart', {
+	description: 'Render a depth-focused analysis (calls get_depth first).',
+	messages: [
+		{ role: 'system', content: [{ type: 'text', text: '板情報を使う場合は必ず get_depth ツールを呼び出してください。返却データは大きくなるため、要約と着眼点（厚い板、スプレッド、偏りなど）を中心に分析してください。' }] },
+		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_depth', tool_input: { pair: '{{pair}}' } }] },
 	],
 });
 

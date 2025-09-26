@@ -36,13 +36,20 @@ async function main() {
 		options.withIchimoku = true;
 	}
 
-	// Style: --style=candles|line
+	// Style: --style=candles|line|depth
 	const styleFlag = args.find((a) => a.startsWith('--style='));
 	if (styleFlag) {
 		const style = styleFlag.split('=')[1];
-		if (style === 'candles' || style === 'line') {
+		if (style === 'candles' || style === 'line' || style === 'depth') {
 			(options as any).style = style as any;
 		}
+	}
+
+	// Depth options: --depth-levels=200
+	const depthLevelsFlag = args.find((a) => a.startsWith('--depth-levels='));
+	if (depthLevelsFlag) {
+		const levels = parseInt(depthLevelsFlag.split('=')[1] || '200', 10);
+		(options as any).depth = { levels } as any;
 	}
 
 	// BollingerBands モード: --bb-mode=default|extended（後方互換で light/full も受け付け）

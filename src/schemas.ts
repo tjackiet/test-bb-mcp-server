@@ -21,7 +21,8 @@ export const RenderChartSvgInputSchema = z
     // impl default is 60; align contract to tool behavior
     limit: z.number().int().min(5).max(365).optional().default(60),
     // main series style: candles (default) or line (close-only)
-    style: z.enum(['candles', 'line']).optional().default('candles'),
+    style: z.enum(['candles', 'line', 'depth']).optional().default('candles'),
+    depth: z.object({ levels: z.number().int().min(10).max(500).optional().default(200) }).optional(),
     // デフォルトは描画しない（明示時のみ描画）
     withSMA: z.array(z.number().int()).optional().default([]),
     // 既定でBBはオフ（必要時のみ指定）
@@ -63,6 +64,11 @@ export const RenderChartSvgInputSchema = z
         annotations: z
           .array(
             z.object({ isoTime: z.string(), text: z.string() })
+          )
+          .optional(),
+        depth_zones: z
+          .array(
+            z.object({ low: z.number(), high: z.number(), color: z.string().optional(), label: z.string().optional() })
           )
           .optional(),
       })
@@ -332,6 +338,26 @@ export const GetCandlesOutputSchema = z.union([
 // Indicators
 export const GetIndicatorsOutputSchema = z.union([
   z.object({ ok: z.literal(true), summary: z.string(), data: GetIndicatorsDataSchema, meta: GetIndicatorsMetaSchema }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+
+// Depth (raw depth for analysis/visualization)
+export const DepthLevelTupleSchema = z.tuple([z.string(), z.string()]);
+export const GetDepthDataSchemaOut = z.object({
+  asks: z.array(DepthLevelTupleSchema),
+  bids: z.array(DepthLevelTupleSchema),
+  asks_over: z.string().optional(),
+  asks_under: z.string().optional(),
+  bids_over: z.string().optional(),
+  bids_under: z.string().optional(),
+  ask_market: z.string().optional(),
+  bid_market: z.string().optional(),
+  timestamp: z.number().int(),
+  sequenceId: z.number().int().optional(),
+});
+export const GetDepthMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string() });
+export const GetDepthOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: GetDepthDataSchemaOut, meta: GetDepthMetaSchemaOut }),
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);
 

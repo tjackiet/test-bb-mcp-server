@@ -61,6 +61,32 @@
       "input": {
         "type": "unknown"
       }
+    },
+    "detect_patterns": {
+      "description": "Detect classic chart patterns from recent candles.",
+      "input": {
+        "pair": {
+          "type": "unknown"
+        },
+        "type": {
+          "type": "unknown"
+        },
+        "limit": {
+          "type": "unknown"
+        },
+        "patterns": {
+          "type": "unknown"
+        },
+        "swingDepth": {
+          "type": "unknown"
+        },
+        "tolerancePct": {
+          "type": "unknown"
+        },
+        "minBarsBetweenSwings": {
+          "type": "unknown"
+        }
+      }
     }
   }
 }

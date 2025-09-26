@@ -222,7 +222,7 @@ export interface GetOrderbookMeta {
 // Render options aligned with project rules
 export type BbMode = 'default' | 'extended';
 export type IchimokuMode = 'default' | 'extended';
-export type ChartStyle = 'candles' | 'line';
+export type ChartStyle = 'candles' | 'line' | 'depth';
 
 export interface IchimokuOptions {
 	mode?: IchimokuMode;
