@@ -50,6 +50,14 @@ CLI 例: `./node_modules/.bin/tsx tools/render_chart_svg_cli.ts <pair> <type> <l
 ./node_modules/.bin/tsx tools/render_chart_svg_cli.ts btc_jpy 1day 60 --style=line --no-bb --no-sma > chart.svg
 ```
 
+### 参考画像
+
+- ボリンジャーバンド（±2σ）
+![Sample Chart](assets/bb_light.svg)
+
+- 一目均衡表
+![Ichimoku Sample Chart](assets/ichimoku_sample.svg)
+
 
 ### プロンプトとCLIの対応表（抜粋）
 
