@@ -354,6 +354,11 @@ export const GetDepthDataSchemaOut = z.object({
   bid_market: z.string().optional(),
   timestamp: z.number().int(),
   sequenceId: z.number().int().optional(),
+  overlays: z
+    .object({
+      depth_zones: z.array(z.object({ low: z.number(), high: z.number(), color: z.string().optional(), label: z.string().optional() }))
+    })
+    .optional(),
 });
 export const GetDepthMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string() });
 export const GetDepthOutputSchema = z.union([

@@ -29,6 +29,24 @@ export default async function getDepth(
       extra: `levels: bids=${bids.length} asks=${asks.length}`,
     });
 
+    // ゾーン自動推定（簡易）：各サイドの上位Nレベルで閾値以上を帯にする
+    function estimateZones(levels: Array<[number, number]>, side: 'bid' | 'ask'): Array<{ low: number; high: number; label: string; color?: string }> {
+      if (!levels.length) return [];
+      const qtys = levels.map(([, s]) => s);
+      const avg = qtys.reduce((a, b) => a + b, 0) / qtys.length;
+      const stdev = Math.sqrt(qtys.reduce((a, b) => a + Math.pow(b - avg, 2), 0) / qtys.length) || 0;
+      const thr = avg + stdev * 2; // 強めの閾値
+      const zones: Array<{ low: number; high: number; label: string; color?: string }> = [];
+      for (const [p, s] of levels) {
+        if (s >= thr) {
+          const pad = (p as number) * 0.001; // 0.1%幅
+          if (side === 'bid') zones.push({ low: (p as number) - pad, high: (p as number) + pad, label: 'bid wall', color: 'rgba(34,197,94,0.08)' });
+          else zones.push({ low: (p as number) - pad, high: (p as number) + pad, label: 'ask wall', color: 'rgba(249,115,22,0.08)' });
+        }
+      }
+      return zones.slice(0, 5); // 多すぎないように上位数本
+    }
+
     const data = {
       asks,
       bids,
@@ -41,8 +59,14 @@ export default async function getDepth(
       timestamp: Number(d.timestamp ?? d.timestamp_ms ?? Date.now()),
       sequenceId:
         d.sequenceId != null ? Number(d.sequenceId) :
-        d.sequence_id != null ? Number(d.sequence_id) :
-        undefined,
+          d.sequence_id != null ? Number(d.sequence_id) :
+            undefined,
+      overlays: {
+        depth_zones: [
+          ...estimateZones(bids.slice(0, 50).map(([p, s]) => [Number(p), Number(s)] as [number, number]), 'bid'),
+          ...estimateZones(asks.slice(0, 50).map(([p, s]) => [Number(p), Number(s)] as [number, number]), 'ask'),
+        ],
+      },
     };
     const meta = createMeta(chk.pair);
     return GetDepthOutputSchema.parse(ok(summary, data as any, meta as any));

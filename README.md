@@ -71,6 +71,10 @@ CLI 例: `./node_modules/.bin/tsx tools/render_chart_svg_cli.ts <pair> <type> <l
 
 より詳しい仕様は `description.json`（ツール）と `prompts.json`（プロンプト）を参照してください。開発者向け手順は `CONTRIBUTING.md`、運用は `docs/ops.md` を参照。
 
+#### Depth（板情報）
+- ツール: `get_depth`（bids/asks 最大200レベル、簡易サマリ＋推定ゾーンを返却）
+- チャート: `render_chart_svg` の `style: 'depth'`（累積ステップライン）。CLI例: `--style=depth --depth-levels=200`
+
 ## 注意事項
 
 Claude（MCPホスト）経由でローソク足チャートを描画する場合、出力サイズの制限により **30〜40本程度** が安定動作の目安です。長期データは CLI で SVG を出力する運用をおすすめします。

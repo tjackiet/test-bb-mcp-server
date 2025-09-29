@@ -106,6 +106,22 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
       const bidPath = toStepPath(bidSteps);
       const askPath = toStepPath(askSteps);
 
+      // 塗りつぶし（ステップ下を半透明で）
+      const toFillPath = (steps: Array<[number, number]>, side: 'bid' | 'ask') => {
+        if (!steps.length) return '';
+        const head = steps[0];
+        const tail = steps[steps.length - 1];
+        const baseY = y(0);
+        const poly = ['M', `${x(head[0])},${baseY}`, 'L']
+          .concat(steps.map(([p, q]) => `${x(p)},${y(q)}`))
+          .concat(['L', `${x(tail[0])},${baseY}`, 'Z'])
+          .join(' ');
+        const fill = side === 'bid' ? 'rgba(16,185,129,0.12)' : 'rgba(249,115,22,0.12)';
+        return `<path d="${poly}" fill="${fill}" stroke="none"/>`;
+      };
+      const bidFill = toFillPath(bidSteps, 'bid');
+      const askFill = toFillPath(askSteps, 'ask');
+
       const mid = (Number(bids[0]?.[0] ?? 0) + Number(asks[0]?.[0] ?? 0)) / 2;
       const yAxis = `
         <line x1="${padding.left}" y1="${padding.top}" x2="${padding.left}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>
@@ -113,11 +129,22 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
       const xAxis = `
         <line x1="${padding.left}" y1="${h - padding.bottom}" x2="${w - padding.right}" y2="${h - padding.bottom}" stroke="#4b5563" stroke-width="1"/>
       `;
+      const legendDepth = `
+        <g font-size="12" fill="#e5e7eb" transform="translate(${padding.left}, ${Math.max(14, padding.top - 18)})">
+          <rect x="0" y="-10" width="12" height="12" fill="#10b981"></rect>
+          <text x="16" y="0">買い (Bids)</text>
+          <rect x="120" y="-10" width="12" height="12" fill="#f97316"></rect>
+          <text x="136" y="0">売り (Asks)</text>
+        </g>`;
+
       const svg = `
       <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="background-color:#1f2937;color:#e5e7eb;font-family:sans-serif;">
         <title>${formatPair(pair)} depth chart</title>
+        ${legendDepth}
         <g class="axes">${yAxis}${xAxis}</g>
         <g class="plot-area">
+          ${bidFill}
+          ${askFill}
           <path d="${bidPath}" fill="none" stroke="#10b981" stroke-width="2"/>
           <path d="${askPath}" fill="none" stroke="#f97316" stroke-width="2"/>
           <line x1="${x(mid)}" y1="${padding.top}" x2="${x(mid)}" y2="${h - padding.bottom}" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4 4"/>
