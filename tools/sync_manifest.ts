@@ -43,6 +43,8 @@ async function main() {
     get_indicators: { description: 'Compute indicators (SMA/RSI/BB/Ichimoku). Use sufficient limit.', input: zodToSimpleJson(GetIndicatorsInputSchema) },
     render_chart_svg: { description: 'Render candlestick chart as SVG. Do NOT self-render; display returned SVG only.', input: zodToSimpleJson(RenderChartSvgInputSchema) },
     detect_patterns: { description: 'Detect classic chart patterns from recent candles.', input: zodToSimpleJson((await import('../src/schemas.js')).DetectPatternsInputSchema) },
+    get_transactions: { description: 'Get recent transactions (trades).', input: zodToSimpleJson((await import('../src/schemas.js')).GetTransactionsInputSchema) },
+    get_flow_metrics: { description: 'Compute flow metrics (CVD, aggressor ratio, volume spikes).', input: zodToSimpleJson((await import('../src/schemas.js')).GetFlowMetricsInputSchema) },
   } as const;
 
   const description = {

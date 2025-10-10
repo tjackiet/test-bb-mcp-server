@@ -87,6 +87,37 @@
           "type": "unknown"
         }
       }
+    },
+    "get_transactions": {
+      "description": "Get recent transactions (trades).",
+      "input": {
+        "pair": {
+          "type": "unknown"
+        },
+        "limit": {
+          "type": "unknown"
+        },
+        "date": {
+          "type": "unknown"
+        }
+      }
+    },
+    "get_flow_metrics": {
+      "description": "Compute flow metrics (CVD, aggressor ratio, volume spikes).",
+      "input": {
+        "pair": {
+          "type": "unknown"
+        },
+        "limit": {
+          "type": "unknown"
+        },
+        "date": {
+          "type": "unknown"
+        },
+        "bucketMs": {
+          "type": "unknown"
+        }
+      }
     }
   }
 }

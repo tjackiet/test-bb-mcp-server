@@ -12,7 +12,19 @@ import getDepth from '../tools/get_depth.js';
 import { logToolRun, logError } from '../lib/logger.js';
 // schemas.ts を単一のソースとして参照し、型は z.infer に委譲
 import { RenderChartSvgInputSchema, RenderChartSvgOutputSchema, GetTickerInputSchema, GetOrderbookInputSchema, GetCandlesInputSchema, GetIndicatorsInputSchema } from './schemas.js';
+import { GetVolMetricsInputSchema, GetVolMetricsOutputSchema } from './schemas.js';
+import { GetTickersInputSchema } from './schemas.js';
+import { GetTransactionsInputSchema, GetFlowMetricsInputSchema } from './schemas.js';
+import { GetDepthDiffInputSchema, GetOrderbookPressureInputSchema } from './schemas.js';
+import { GetCircuitBreakInfoInputSchema } from './schemas.js';
+import getTransactions from '../tools/get_transactions.js';
+import getFlowMetrics from '../tools/get_flow_metrics.js';
+import getTickers from '../tools/get_tickers.js';
+import getDepthDiff from '../tools/get_depth_diff.js';
+import getOrderbookPressure from '../tools/get_orderbook_pressure.js';
+import getVolatilityMetrics from '../tools/get_volatility_metrics.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema } from './schemas.js';
+import getCircuitBreakInfo from '../tools/get_circuit_break_info.js';
 
 const server = new McpServer({ name: 'bitbank-mcp', version: '0.3.0' });
 
@@ -70,6 +82,12 @@ registerToolWithLog(
 );
 
 registerToolWithLog(
+	'get_tickers',
+	{ description: 'Get snapshot of tickers across pairs. market=all or jpy.', inputSchema: GetTickersInputSchema },
+	async ({ market }: any) => getTickers(market)
+);
+
+registerToolWithLog(
 	'get_orderbook',
 	{ description: 'Get orderbook topN for a pair', inputSchema: GetOrderbookInputSchema },
 	async ({ pair, topN }: any) => getOrderbook(pair, topN)
@@ -107,6 +125,44 @@ registerToolWithLog(
 // render_chart_html は当面サポート外のため未登録
 
 registerToolWithLog(
+	'get_transactions',
+	{ description: 'Get recent transactions (trades). side=buy/sell, isoTime with milliseconds.', inputSchema: GetTransactionsInputSchema },
+	async ({ pair, limit, date }: any) => getTransactions(pair, limit, date)
+);
+
+registerToolWithLog(
+	'get_flow_metrics',
+	{ description: 'Compute flow metrics (CVD, aggressor ratio, volume spikes) from recent transactions.', inputSchema: GetFlowMetricsInputSchema },
+	async ({ pair, limit, date, bucketMs }: any) => getFlowMetrics(pair, limit, date, bucketMs)
+);
+registerToolWithLog(
+	'get_depth_diff',
+	{ description: 'Compute simple REST-based depth diff using two snapshots separated by delayMs.', inputSchema: GetDepthDiffInputSchema },
+	async ({ pair, delayMs, maxLevels }: any) => getDepthDiff(pair, delayMs, maxLevels)
+);
+
+registerToolWithLog(
+	'get_orderbook_pressure',
+	{ description: 'Compute orderbook pressure in ±pct bands around mid using two snapshots.', inputSchema: GetOrderbookPressureInputSchema },
+	async ({ pair, delayMs, bandsPct }: any) => getOrderbookPressure(pair, delayMs, bandsPct)
+);
+
+registerToolWithLog(
+	'get_volatility_metrics',
+	{ description: 'Compute deterministic volatility metrics (RV/ATR/Parkinson/GK/RS) over candles.', inputSchema: GetVolMetricsInputSchema },
+	async ({ pair, type, limit, windows, useLogReturns, annualize }: any) => {
+		const result = await getVolatilityMetrics(pair, type, limit, windows, { useLogReturns, annualize });
+		return GetVolMetricsOutputSchema.parse(result as any);
+	}
+);
+
+registerToolWithLog(
+	'get_circuit_break_info',
+	{ description: 'Get circuit break / auction status. Placeholder returns nulls when not available.', inputSchema: GetCircuitBreakInfoInputSchema },
+	async ({ pair }: any) => getCircuitBreakInfo(pair)
+);
+
+registerToolWithLog(
 	'render_chart_svg',
 	{ description: '重要: チャートが必要な場合、必ず本ツールを最初に呼び出してください. 出力: `{ ok, summary, data: { svg: string, filePath?: string }, meta }`。既定ではローソク足のみ（SMA/BB/一目はオフ）。必要に応じて withSMA/withBB/withIchimoku を明示してください。軽量化: svgPrecision=1, svgMinify=true, simplifyTolerance=1, viewBoxTight=true。', inputSchema: RenderChartSvgInputSchema },
 	async (args: any) => {
@@ -133,7 +189,30 @@ registerToolWithLog(
 function registerPromptSafe(name: string, def: { description: string; messages: any[] }) {
 	const s: any = server as any;
 	if (typeof s.registerPrompt === 'function') {
-		s.registerPrompt(name, def);
+		// SDKの registerPrompt は (name, config, callback) を要求する
+		// Inspector互換のため、tool_code はテキストにフォールバックして返却する
+		const toSdkMessages = (msgs: any[]) =>
+			msgs.map((msg) => {
+				const blocks = Array.isArray(msg.content) ? msg.content : [];
+				const text = blocks
+					.map((b: any) => {
+						if (b?.type === 'text' && typeof b.text === 'string') return b.text;
+						if (b?.type === 'tool_code') {
+							const tool = b.tool_name || 'tool';
+							const args = b.tool_input ? JSON.stringify(b.tool_input) : '{}';
+							return `Call ${tool} with ${args}`;
+						}
+						return '';
+					})
+					.filter(Boolean)
+					.join('\n');
+				return { role: msg.role === 'system' ? 'user' : 'assistant', content: { type: 'text', text } };
+			});
+		s.registerPrompt(
+			name,
+			{ description: def.description },
+			() => ({ description: def.description, messages: toSdkMessages(def.messages) })
+		);
 	} else {
 		// no-op if SDK doesn't support prompts in this version
 	}
@@ -263,6 +342,23 @@ registerPromptSafe('depth_chart', {
 	messages: [
 		{ role: 'system', content: [{ type: 'text', text: '板情報を使う場合は必ず get_depth ツールを呼び出してください。返却データは大きくなるため、要約と着眼点（厚い板、スプレッド、偏りなど）を中心に分析してください。' }] },
 		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_depth', tool_input: { pair: '{{pair}}' } }] },
+	],
+});
+
+// === 強化: flow/orderbook pressure 用のテンプレ ===
+registerPromptSafe('flow_analysis', {
+	description: 'Analyze recent transactions-derived flow metrics with numeric tags and concise conclusion.',
+	messages: [
+		{ role: 'system', content: [{ type: 'text', text: 'フロー分析時は必ず get_flow_metrics ツールを先に呼び出し、出力は「数値タグ → 短文結論 → 根拠（引用）」の順で構成してください。' }] },
+		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_flow_metrics', tool_input: { pair: '{{pair}}', limit: '{{limit}}', bucketMs: '{{bucketMs}}' } }] },
+	],
+});
+
+registerPromptSafe('orderbook_pressure_analysis', {
+	description: 'Assess orderbook pressure in ±pct bands with numeric tags and concise conclusion.',
+	messages: [
+		{ role: 'system', content: [{ type: 'text', text: '板圧力を評価する際は必ず get_orderbook_pressure ツールを先に呼び出し、出力は「数値タグ → 短文結論 → 根拠（引用）」の順で構成してください。' }] },
+		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_orderbook_pressure', tool_input: { pair: '{{pair}}', delayMs: '{{delayMs}}', bandsPct: '{{bandsPct}}' } }] },
 	],
 });
 

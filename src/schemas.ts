@@ -306,6 +306,17 @@ export const GetTickerOutputSchema = z.union([
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);
 
+// Tickers (snapshot of many pairs)
+export const TickerExtendedSchema = TickerNormalizedSchema.extend({
+  change24hPct: z.number().nullable().optional(),
+});
+export const GetTickersDataSchemaOut = z.object({ items: z.array(TickerExtendedSchema) });
+export const GetTickersMetaSchemaOut = z.object({ market: z.enum(['all', 'jpy']), fetchedAt: z.string(), count: z.number().int() });
+export const GetTickersOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: GetTickersDataSchemaOut, meta: GetTickersMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+
 // Orderbook
 export const OrderbookLevelSchema = z.object({ price: z.number(), size: z.number() });
 export const OrderbookLevelWithCumSchema = OrderbookLevelSchema.extend({ cumSize: z.number() });
@@ -366,6 +377,118 @@ export const GetDepthOutputSchema = z.union([
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);
 
+// === Depth Diff (simple REST-based) ===
+export const GetDepthDiffInputSchema = z.object({
+  pair: z.string().optional().default('btc_jpy'),
+  delayMs: z.number().int().min(100).max(5000).optional().default(1000),
+  maxLevels: z.number().int().min(10).max(500).optional().default(200),
+});
+
+const DepthDeltaSchema = z.object({ price: z.number(), delta: z.number(), from: z.number().nullable(), to: z.number().nullable() });
+const DepthSideDiffSchema = z.object({
+  added: z.array(z.object({ price: z.number(), size: z.number() })),
+  removed: z.array(z.object({ price: z.number(), size: z.number() })),
+  changed: z.array(DepthDeltaSchema),
+});
+
+export const GetDepthDiffDataSchemaOut = z.object({
+  prev: z.object({ timestamp: z.number().int(), sequenceId: z.number().int().nullable().optional() }),
+  curr: z.object({ timestamp: z.number().int(), sequenceId: z.number().int().nullable().optional() }),
+  asks: DepthSideDiffSchema,
+  bids: DepthSideDiffSchema,
+  aggregates: z.object({ bidNetDelta: z.number(), askNetDelta: z.number(), totalNetDelta: z.number() }),
+});
+export const GetDepthDiffMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string(), delayMs: z.number().int() });
+export const GetDepthDiffOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: GetDepthDiffDataSchemaOut, meta: GetDepthDiffMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+
+// === Orderbook Pressure (derived from Depth Diff) ===
+export const GetOrderbookPressureInputSchema = z.object({
+  pair: z.string().optional().default('btc_jpy'),
+  delayMs: z.number().int().min(100).max(5000).optional().default(1000),
+  bandsPct: z.array(z.number().positive()).optional().default([0.001, 0.005, 0.01]),
+});
+
+const PressureBandSchema = z.object({
+  widthPct: z.number(),
+  baseMid: z.number().nullable(),
+  baseBidSize: z.number(),
+  baseAskSize: z.number(),
+  bidDelta: z.number(),
+  askDelta: z.number(),
+  netDelta: z.number(),
+  netDeltaPct: z.number().nullable(),
+  tag: z.enum(['notice', 'warning', 'strong']).nullable(),
+});
+
+export const GetOrderbookPressureDataSchemaOut = z.object({
+  bands: z.array(PressureBandSchema),
+  aggregates: z.object({ netDelta: z.number(), strongestTag: z.enum(['notice', 'warning', 'strong']).nullable() }),
+});
+export const GetOrderbookPressureMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string(), delayMs: z.number().int() });
+export const GetOrderbookPressureOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: GetOrderbookPressureDataSchemaOut, meta: GetOrderbookPressureMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+
+// === Transactions ===
+export const TransactionItemSchema = z.object({
+  price: z.number(),
+  amount: z.number(),
+  side: z.enum(['buy', 'sell']),
+  timestampMs: z.number().int(),
+  isoTime: z.string(),
+});
+
+export const GetTransactionsDataSchemaOut = z.object({ raw: z.unknown(), normalized: z.array(TransactionItemSchema) });
+export const GetTransactionsMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string(), count: z.number().int(), source: z.enum(['latest', 'by_date']) });
+export const GetTransactionsOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: GetTransactionsDataSchemaOut, meta: GetTransactionsMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+
+// === Flow Metrics (derived from recent transactions) ===
+export const FlowBucketSchema = z.object({
+  timestampMs: z.number().int(),
+  isoTime: z.string(),
+  buyVolume: z.number(),
+  sellVolume: z.number(),
+  totalVolume: z.number(),
+  cvd: z.number(),
+  zscore: z.number().nullable().optional(),
+  spike: z.enum(['notice', 'warning', 'strong']).nullable().optional(),
+});
+
+export const GetFlowMetricsDataSchemaOut = z.object({
+  source: z.literal('transactions'),
+  params: z.object({ bucketMs: z.number().int().min(1000) }),
+  aggregates: z.object({
+    totalTrades: z.number().int(),
+    buyTrades: z.number().int(),
+    sellTrades: z.number().int(),
+    buyVolume: z.number(),
+    sellVolume: z.number(),
+    netVolume: z.number(),
+    aggressorRatio: z.number().min(0).max(1),
+    finalCvd: z.number(),
+  }),
+  series: z.object({ buckets: z.array(FlowBucketSchema) }),
+});
+
+export const GetFlowMetricsMetaSchemaOut = z.object({
+  pair: z.string(),
+  fetchedAt: z.string(),
+  count: z.number().int(),
+  bucketMs: z.number().int(),
+});
+
+export const GetFlowMetricsOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: GetFlowMetricsDataSchemaOut, meta: GetFlowMetricsMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+
 export const GetTickerInputSchema = z.object({
   pair: z.string().optional().default('btc_jpy'),
 });
@@ -374,6 +497,43 @@ export const GetOrderbookInputSchema = z.object({
   pair: z.string(),
   opN: z.number().int().min(1).max(1000).optional().default(10),
 });
+
+export const GetTransactionsInputSchema = z.object({
+  pair: z.string().optional().default('btc_jpy'),
+  limit: z.number().int().min(1).max(1000).optional().default(100),
+  date: z.string().regex(/^\d{8}$/).optional().describe('YYYYMMDD; omit for latest'),
+});
+
+export const GetFlowMetricsInputSchema = z.object({
+  pair: z.string().optional().default('btc_jpy'),
+  limit: z.number().int().min(1).max(2000).optional().default(100),
+  date: z.string().regex(/^\d{8}$/).optional().describe('YYYYMMDD; omit for latest'),
+  bucketMs: z.number().int().min(1000).max(3600_000).optional().default(60_000),
+});
+
+export const GetTickersInputSchema = z.object({
+  market: z.enum(['all', 'jpy']).optional().default('all'),
+});
+
+// === Circuit Break Info ===
+export const GetCircuitBreakInfoInputSchema = z.object({
+  pair: z.string().optional().default('btc_jpy'),
+});
+
+export const CircuitBreakInfoSchema = z.object({
+  mode: z.enum(['normal', 'halted', 'auction', 'unknown']).nullable(),
+  estimated_itayose_price: z.number().nullable().optional(),
+  estimated_itayose_amount: z.number().nullable().optional(),
+  reopen_timestamp: z.number().int().nullable().optional(),
+  reopen_isoTime: z.string().nullable().optional(),
+});
+
+export const GetCircuitBreakInfoDataSchemaOut = z.object({ info: CircuitBreakInfoSchema });
+export const GetCircuitBreakInfoMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string(), source: z.enum(['official', 'none', 'placeholder']).optional(), updatedAt: z.string().optional() });
+export const GetCircuitBreakInfoOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: GetCircuitBreakInfoDataSchemaOut, meta: GetCircuitBreakInfoMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
 
 export const GetCandlesInputSchema = z.object({
   pair: z.string(),
@@ -452,5 +612,70 @@ export const DetectPatternsOutputSchema = z.union([
         .optional(),
     }),
   }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+
+// === Volatility Metrics ===
+export const GetVolMetricsInputSchema = z.object({
+  pair: z.string(),
+  type: CandleTypeEnum,
+  limit: z.number().int().min(20).max(500).optional().default(200),
+  windows: z.array(z.number().int().min(2)).optional().default([14, 20, 30]),
+  useLogReturns: z.boolean().optional().default(true),
+  annualize: z.boolean().optional().default(true),
+  tz: z.string().optional().default('UTC'),
+  cacheTtlMs: z.number().int().optional().default(60_000),
+});
+
+export const GetVolMetricsDataSchemaOut = z.object({
+  meta: z.object({
+    pair: z.string(),
+    type: z.string(),
+    fetchedAt: z.string(),
+    baseIntervalMs: z.number(),
+    sampleSize: z.number(),
+    windows: z.array(z.number()),
+    annualize: z.boolean(),
+    useLogReturns: z.boolean(),
+    source: z.literal('bitbank:candlestick'),
+  }),
+  aggregates: z.object({
+    rv_std: z.number(),
+    rv_std_ann: z.number().optional(),
+    parkinson: z.number(),
+    garmanKlass: z.number(),
+    rogersSatchell: z.number(),
+    atr: z.number(),
+    skewness: z.number().optional(),
+    kurtosis: z.number().optional(),
+    gap_ratio: z.number().optional(),
+  }),
+  rolling: z.array(z.object({
+    window: z.number(),
+    rv_std: z.number(),
+    rv_std_ann: z.number().optional(),
+    atr: z.number().optional(),
+    parkinson: z.number().optional(),
+    garmanKlass: z.number().optional(),
+    rogersSatchell: z.number().optional(),
+  })),
+  series: z.object({
+    ts: z.array(z.number()),
+    close: z.array(z.number()),
+    ret: z.array(z.number()),
+    rv_inst: z.array(z.number()).optional(),
+  }),
+  tags: z.array(z.string()),
+});
+
+export const GetVolMetricsMetaSchemaOut = z.object({
+  pair: z.string(),
+  fetchedAt: z.string(),
+  type: CandleTypeEnum.or(z.string()),
+  count: z.number().int(),
+});
+
+export const GetVolMetricsOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: GetVolMetricsDataSchemaOut, meta: GetVolMetricsMetaSchemaOut }),
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);

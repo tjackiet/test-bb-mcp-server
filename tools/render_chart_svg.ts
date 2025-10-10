@@ -677,6 +677,24 @@ ${priceLine}
       return overlays.ranges.map((r: any) => mkRect(r.start, r.end, r.color, r.label)).join('');
     })()}
         ${(() => {
+      if (!overlays || !overlays.annotations) return '';
+      // ピン＆テキストを上部に配置し、重なりを軽減するため縦位置を交互にずらす
+      let slot = 0;
+      const mkPin = (iso: string, text: string) => {
+        const findIndexByIso = (s: string) => displayItems.findIndex((d: any) => d.isoTime === s);
+        const i = findIndexByIso(iso);
+        if (i < 0) return '';
+        const cx = x(i);
+        const y0 = padding.top + 6 + (slot++ % 2) * 12; // 交互にオフセット
+        const stemY1 = y0 + 10;
+        const circle = `<circle cx="${cx}" cy="${y0}" r="3" fill="#e5e7eb" />`;
+        const stem = `<line x1="${cx}" y1="${y0 + 3}" x2="${cx}" y2="${Math.min(padding.top + plotH - 6, stemY1)}" stroke="#9ca3af" stroke-width="1" stroke-dasharray="2 2" />`;
+        const label = `<text x="${cx + 6}" y="${y0 + 4}" fill="#e5e7eb" font-size="10">${text}</text>`;
+        return circle + stem + label;
+      };
+      return overlays.annotations.map((a: any) => mkPin(a.isoTime, a.text)).join('');
+    })()}
+        ${(() => {
       if (!overlays || !overlays.depth_zones) return '';
       const mkBand = (low: number, high: number, color?: string, label?: string) => {
         const y1 = y(high);
