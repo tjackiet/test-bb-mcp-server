@@ -679,3 +679,44 @@ export const GetVolMetricsOutputSchema = z.union([
   z.object({ ok: z.literal(true), summary: z.string(), data: GetVolMetricsDataSchemaOut, meta: GetVolMetricsMetaSchemaOut }),
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);
+
+// === Market Summary (tickers + volatility snapshot) ===
+export const MarketSummaryItemSchema = z.object({
+  pair: z.string(),
+  last: z.number().nullable(),
+  change24hPct: z.number().nullable().optional(),
+  vol24h: z.number().nullable().optional(),
+  rv_std_ann: z.number().nullable().optional(),
+  vol_bucket: z.enum(['low', 'mid', 'high']).nullable().optional(),
+  tags: z.array(z.string()).optional(),
+});
+
+export const MarketSummaryRanksSchema = z.object({
+  topGainers: z.array(z.object({ pair: z.string(), change24hPct: z.number().nullable() })).optional(),
+  topLosers: z.array(z.object({ pair: z.string(), change24hPct: z.number().nullable() })).optional(),
+  topVolatility: z.array(z.object({ pair: z.string(), rv_std_ann: z.number().nullable() })).optional(),
+});
+
+export const GetMarketSummaryDataSchemaOut = z.object({
+  items: z.array(MarketSummaryItemSchema),
+  ranks: MarketSummaryRanksSchema.optional(),
+  errors: z.array(z.object({ pair: z.string(), reason: z.string() })).optional(),
+});
+
+export const GetMarketSummaryMetaSchemaOut = z.object({
+  market: z.enum(['all', 'jpy']).optional().default('all'),
+  window: z.number().int().optional().default(30),
+  ann: z.boolean().optional().default(true),
+  fetchedAt: z.string(),
+});
+
+export const GetMarketSummaryOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: GetMarketSummaryDataSchemaOut, meta: GetMarketSummaryMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+
+export const GetMarketSummaryInputSchema = z.object({
+  market: z.enum(['all', 'jpy']).optional().default('all'),
+  window: z.number().int().min(2).max(180).optional().default(30),
+  ann: z.boolean().optional().default(true),
+});

@@ -11,6 +11,7 @@ import getCircuitBreakInfo from './get_circuit_break_info.js';
 import getDepthDiff from './get_depth_diff.js';
 import getOrderbookPressure from './get_orderbook_pressure.js';
 import getVolatilityMetrics from './get_volatility_metrics.js';
+import getMarketSummary from './get_market_summary.js';
 
 export {
   getTicker,
@@ -26,6 +27,7 @@ export {
   getDepthDiff,
   getOrderbookPressure,
   getVolatilityMetrics,
+  getMarketSummary,
 };
 
 

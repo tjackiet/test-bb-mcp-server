@@ -13,6 +13,7 @@ import { logToolRun, logError } from '../lib/logger.js';
 // schemas.ts を単一のソースとして参照し、型は z.infer に委譲
 import { RenderChartSvgInputSchema, RenderChartSvgOutputSchema, GetTickerInputSchema, GetOrderbookInputSchema, GetCandlesInputSchema, GetIndicatorsInputSchema } from './schemas.js';
 import { GetVolMetricsInputSchema, GetVolMetricsOutputSchema } from './schemas.js';
+import { GetMarketSummaryInputSchema, GetMarketSummaryOutputSchema } from './schemas.js';
 import { GetTickersInputSchema } from './schemas.js';
 import { GetTransactionsInputSchema, GetFlowMetricsInputSchema } from './schemas.js';
 import { GetDepthDiffInputSchema, GetOrderbookPressureInputSchema } from './schemas.js';
@@ -23,6 +24,7 @@ import getTickers from '../tools/get_tickers.js';
 import getDepthDiff from '../tools/get_depth_diff.js';
 import getOrderbookPressure from '../tools/get_orderbook_pressure.js';
 import getVolatilityMetrics from '../tools/get_volatility_metrics.js';
+import getMarketSummary from '../tools/get_market_summary.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema } from './schemas.js';
 import getCircuitBreakInfo from '../tools/get_circuit_break_info.js';
 
@@ -178,6 +180,15 @@ registerToolWithLog(
 	async ({ pair, type, limit, patterns, swingDepth, tolerancePct, minBarsBetweenSwings }: any) => {
 		const out = await detectPatterns(pair, type, limit, { patterns, swingDepth, tolerancePct, minBarsBetweenSwings });
 		return DetectPatternsOutputSchema.parse(out as any);
+	}
+);
+
+registerToolWithLog(
+	'get_market_summary',
+	{ description: '市場全体のサマリー（tickers + 年率化RVスナップショット）。itemsと簡易ランキングを返します。', inputSchema: GetMarketSummaryInputSchema },
+	async ({ market, window, ann }: any) => {
+		const result = await getMarketSummary(market, { window, ann });
+		return GetMarketSummaryOutputSchema.parse(result);
 	}
 );
 
