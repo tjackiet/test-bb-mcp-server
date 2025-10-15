@@ -63,8 +63,8 @@ export default async function getDepth(
             undefined,
       overlays: {
         depth_zones: [
-          ...estimateZones(bids.slice(0, 50).map(([p, s]) => [Number(p), Number(s)] as [number, number]), 'bid'),
-          ...estimateZones(asks.slice(0, 50).map(([p, s]) => [Number(p), Number(s)] as [number, number]), 'ask'),
+          ...estimateZones(bids.slice(0, 50).map(([p, s]: [unknown, unknown]) => [Number(p), Number(s)] as [number, number]), 'bid'),
+          ...estimateZones(asks.slice(0, 50).map(([p, s]: [unknown, unknown]) => [Number(p), Number(s)] as [number, number]), 'ask'),
         ],
       },
     };
