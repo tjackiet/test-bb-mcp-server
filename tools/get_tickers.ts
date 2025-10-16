@@ -1,4 +1,5 @@
 import { fetchJson } from '../lib/http.js';
+import getCandles from './get_candles.js';
 import { ALLOWED_PAIRS, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
@@ -74,16 +75,42 @@ export default async function getTickers(market: Market = 'all') {
   try {
     const pairs = pickPairs(market);
     const items = await withConcurrency(pairs, (p) => fetchTickerForPair(p));
+
+    // 24h変化率を推定: 日足終値の直近2本から計算（ticker.last が無ければ終値を使用）
+    const enriched = await withConcurrency(
+      items.map((it) => it.pair),
+      async (pair) => {
+        try {
+          const cRes: any = await getCandles(pair, '1day', undefined as any, 2);
+          const cs = (cRes?.ok ? (cRes.data?.normalized as any[]) : []) as Array<{ close: number }>;
+          const lastClose = cs.at(-1)?.close;
+          const prevClose = cs.length >= 2 ? cs[cs.length - 2].close : undefined;
+          const base = (items.find((x) => x.pair === pair)?.last ?? lastClose) as number | null;
+          let change24hPct: number | null = null;
+          if (base != null && prevClose != null && prevClose > 0) {
+            change24hPct = Number((((base - prevClose) / prevClose) * 100).toFixed(2));
+          }
+          return { pair, change24hPct };
+        } catch {
+          return { pair, change24hPct: null };
+        }
+      },
+      4
+    );
+    const changeMap = new Map<string, number | null>();
+    for (const e of enriched) changeMap.set(e.pair, e.change24hPct ?? null);
+    const itemsWithChange = items.map((it) => ({ ...it, change24hPct: changeMap.get(it.pair) ?? null }));
+
     // summary: 上位数銘柄を示唆
-    const nonNull = items.filter((x) => x.last != null) as Array<typeof items[number]>;
-    const summary = formatSummary({ pair: 'multi', latest: undefined, extra: `count=${items.length} ok=${nonNull.length}` });
+    const nonNull = itemsWithChange.filter((x) => x.last != null) as Array<typeof itemsWithChange[number]>;
+    const summary = formatSummary({ pair: 'multi', latest: undefined, extra: `count=${itemsWithChange.length} ok=${nonNull.length}` });
     const fetchedAt = Date.now();
-    cache = { market, fetchedAt, items };
+    cache = { market, fetchedAt, items: itemsWithChange };
     return GetTickersOutputSchema.parse(
       ok(
         summary,
-        { items },
-        { market, fetchedAt: new Date(fetchedAt).toISOString(), count: items.length }
+        { items: itemsWithChange },
+        { market, fetchedAt: new Date(fetchedAt).toISOString(), count: itemsWithChange.length }
       )
     ) as any;
   } catch (e: any) {

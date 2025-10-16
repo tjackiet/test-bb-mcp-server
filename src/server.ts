@@ -37,10 +37,30 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-const respond = (result: unknown): ToolReturn => ({
-	content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-	...(isPlainObject(result) ? { structuredContent: result } : {}),
-});
+const respond = (result: unknown): ToolReturn => {
+	// ルール: 画面には要約のみを出す。詳細データは structuredContent に載せる。
+	// SVGなどの巨大フィールドがテキストに出てしまうのを防止する。
+	let text = '';
+	if (isPlainObject(result) && typeof (result as any).summary === 'string') {
+		text = String((result as any).summary);
+	} else {
+		// 後方互換: 既存のツールが summary を返さない場合は、短縮版のJSONを出す
+		try {
+			const json = JSON.stringify(result, (_key, value) => {
+				// よく肥大化する既知キーは省略
+				if (typeof value === 'string' && value.length > 2000) return `…omitted (${value.length} chars)`;
+				return value;
+			}, 2);
+			text = json.length > 4000 ? json.slice(0, 4000) + '\n…(truncated)…' : json;
+		} catch {
+			text = String(result);
+		}
+	}
+	return {
+		content: [{ type: 'text', text }],
+		...(isPlainObject(result) ? { structuredContent: result } : {}),
+	};
+};
 
 function registerToolWithLog<S extends z.ZodTypeAny, R = unknown>(
 	name: string,
@@ -370,6 +390,22 @@ registerPromptSafe('orderbook_pressure_analysis', {
 	messages: [
 		{ role: 'system', content: [{ type: 'text', text: '板圧力を評価する際は必ず get_orderbook_pressure ツールを先に呼び出し、出力は「数値タグ → 短文結論 → 根拠（引用）」の順で構成してください。' }] },
 		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_orderbook_pressure', tool_input: { pair: '{{pair}}', delayMs: '{{delayMs}}', bandsPct: '{{bandsPct}}' } }] },
+	],
+});
+
+// === Multi-factor quick analysis (skip meandering inference) ===
+registerPromptSafe('multi_factor_signal', {
+	description: 'Quick multi-factor market signal: flow metrics, volatility and indicators (no chart unless asked).',
+	messages: [
+		{
+			role: 'system',
+			content: [
+				{ type: 'text', text: 'まず get_flow_metrics → get_volatility_metrics → get_indicators の順で必要最小限を取得してください。チャート描画は要求がある時のみ render_chart_svg を呼びます。要約は「数値タグ → 短文結論 → 根拠（引用）」で簡潔に。' },
+			],
+		},
+		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_flow_metrics', tool_input: { pair: '{{pair}}', limit: '{{limit}}', bucketMs: '{{bucketMs}}' } }] },
+		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_volatility_metrics', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{volLimit}}', windows: '{{windows}}', annualize: true } }] },
+		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_indicators', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{indLimit}}' } }] },
 	],
 });
 
