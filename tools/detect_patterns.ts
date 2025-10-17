@@ -31,19 +31,19 @@ export default async function detectPatterns(
       return DetectPatternsOutputSchema.parse(ok('insufficient data', { patterns: [] }, { pair, type, count: 0 })) as any;
     }
 
-    // 1) Swing points (simple local extrema)
-    const prices = candles.map(c => c.close);
+    // 1) Swing points (simple local extrema) — use High/Low based pivots
+    const highs = candles.map(c => c.high);
+    const lows = candles.map(c => c.low);
     const pivots: Array<{ idx: number; price: number; kind: 'H' | 'L' }> = [];
-    for (let i = swingDepth; i < prices.length - swingDepth; i++) {
-      const p = prices[i];
+    for (let i = swingDepth; i < candles.length - swingDepth; i++) {
       let isHigh = true, isLow = true;
       for (let k = 1; k <= swingDepth; k++) {
-        if (!(p > prices[i - k] && p > prices[i + k])) isHigh = false;
-        if (!(p < prices[i - k] && p < prices[i + k])) isLow = false;
+        if (!(highs[i] > highs[i - k] && highs[i] > highs[i + k])) isHigh = false;
+        if (!(lows[i] < lows[i - k] && lows[i] < lows[i + k])) isLow = false;
         if (!isHigh && !isLow) break;
       }
-      if (isHigh) pivots.push({ idx: i, price: p, kind: 'H' });
-      else if (isLow) pivots.push({ idx: i, price: p, kind: 'L' });
+      if (isHigh) pivots.push({ idx: i, price: highs[i], kind: 'H' });
+      else if (isLow) pivots.push({ idx: i, price: lows[i], kind: 'L' });
     }
 
     // helper
@@ -62,15 +62,15 @@ export default async function detectPatterns(
         if (b.idx - a.idx < minDist || c.idx - b.idx < minDist) continue;
         // double top: H-L-H with H~H
         if (a.kind === 'H' && b.kind === 'L' && c.kind === 'H' && near(a.price, c.price)) {
-          const start = candles[a.idx].isoTime || String(a.idx);
-          const end = candles[c.idx].isoTime || String(c.idx);
-          push(patterns, { type: 'double_top', confidence: 0.65, range: { start, end }, pivots: [a, b, c] });
+          const start = candles[a.idx].isoTime;
+          const end = candles[c.idx].isoTime;
+          if (start && end) push(patterns, { type: 'double_top', confidence: 0.65, range: { start, end }, pivots: [a, b, c] });
         }
         // double bottom: L-H-L with L~L
         if (a.kind === 'L' && b.kind === 'H' && c.kind === 'L' && near(a.price, c.price)) {
-          const start = candles[a.idx].isoTime || String(a.idx);
-          const end = candles[c.idx].isoTime || String(c.idx);
-          push(patterns, { type: 'double_bottom', confidence: 0.65, range: { start, end }, pivots: [a, b, c] });
+          const start = candles[a.idx].isoTime;
+          const end = candles[c.idx].isoTime;
+          if (start && end) push(patterns, { type: 'double_bottom', confidence: 0.65, range: { start, end }, pivots: [a, b, c] });
         }
       }
     }
@@ -84,9 +84,9 @@ export default async function detectPatterns(
         const shouldersNear = near(p0.price, p4.price);
         const headLower = p2.price < Math.min(p0.price, p4.price) * (1 - tolerancePct);
         if (shouldersNear && headLower) {
-          const start = candles[p0.idx].isoTime || String(p0.idx);
-          const end = candles[p4.idx].isoTime || String(p4.idx);
-          push(patterns, { type: 'inverse_head_and_shoulders', confidence: 0.7, range: { start, end }, pivots: [p0, p1, p2, p3, p4] });
+          const start = candles[p0.idx].isoTime;
+          const end = candles[p4.idx].isoTime;
+          if (start && end) push(patterns, { type: 'inverse_head_and_shoulders', confidence: 0.7, range: { start, end }, pivots: [p0, p1, p2, p3, p4] });
         }
       }
     }
@@ -100,9 +100,9 @@ export default async function detectPatterns(
         const shouldersNear = near(p0.price, p4.price);
         const headHigher = p2.price > Math.max(p0.price, p4.price) * (1 + tolerancePct);
         if (shouldersNear && headHigher) {
-          const start = candles[p0.idx].isoTime || String(p0.idx);
-          const end = candles[p4.idx].isoTime || String(p4.idx);
-          push(patterns, { type: 'head_and_shoulders', confidence: 0.7, range: { start, end }, pivots: [p0, p1, p2, p3, p4] });
+          const start = candles[p0.idx].isoTime;
+          const end = candles[p4.idx].isoTime;
+          if (start && end) push(patterns, { type: 'head_and_shoulders', confidence: 0.7, range: { start, end }, pivots: [p0, p1, p2, p3, p4] });
         }
       }
     }
@@ -125,20 +125,22 @@ export default async function detectPatterns(
           const converging = spreadEnd < spreadStart * (1 - tolerancePct * 0.8); // 収束条件を強化
           const startIdx = Math.min(firstH.idx, firstL.idx);
           const endIdx = Math.max(lastH.idx, lastL.idx);
-          const start = candles[startIdx].isoTime || String(startIdx);
-          const end = candles[endIdx].isoTime || String(endIdx);
+          const start = candles[startIdx].isoTime;
+          const end = candles[endIdx].isoTime;
 
           // Ascending: highs ~ flat (±0.8×tol), lows rising (≥1.2×tol)
-          if ((want.size === 0 || want.has('triangle') || want.has('triangle_ascending')) && Math.abs(dH) <= tolerancePct * 0.8 && dL >= tolerancePct * 1.2 && converging) {
-            push(patterns, { type: 'triangle_ascending', confidence: 0.72, range: { start, end }, pivots: [...hwin, ...lwin].sort((a, b) => a.idx - b.idx) });
-          }
-          // Descending: lows ~ flat, highs falling
-          if ((want.size === 0 || want.has('triangle') || want.has('triangle_descending')) && Math.abs(dL) <= tolerancePct * 0.8 && dH <= -tolerancePct * 1.2 && converging) {
-            push(patterns, { type: 'triangle_descending', confidence: 0.72, range: { start, end }, pivots: [...hwin, ...lwin].sort((a, b) => a.idx - b.idx) });
-          }
-          // Symmetrical: highs falling and lows rising
-          if ((want.size === 0 || want.has('triangle') || want.has('triangle_symmetrical')) && dH <= -tolerancePct * 1.1 && dL >= tolerancePct * 1.1 && converging) {
-            push(patterns, { type: 'triangle_symmetrical', confidence: 0.7, range: { start, end }, pivots: [...hwin, ...lwin].sort((a, b) => a.idx - b.idx) });
+          if (start && end) {
+            if ((want.size === 0 || want.has('triangle') || want.has('triangle_ascending')) && Math.abs(dH) <= tolerancePct * 0.8 && dL >= tolerancePct * 1.2 && converging) {
+              push(patterns, { type: 'triangle_ascending', confidence: 0.72, range: { start, end }, pivots: [...hwin, ...lwin].sort((a, b) => a.idx - b.idx) });
+            }
+            // Descending: lows ~ flat, highs falling
+            if ((want.size === 0 || want.has('triangle') || want.has('triangle_descending')) && Math.abs(dL) <= tolerancePct * 0.8 && dH <= -tolerancePct * 1.2 && converging) {
+              push(patterns, { type: 'triangle_descending', confidence: 0.72, range: { start, end }, pivots: [...hwin, ...lwin].sort((a, b) => a.idx - b.idx) });
+            }
+            // Symmetrical: highs falling and lows rising
+            if ((want.size === 0 || want.has('triangle') || want.has('triangle_symmetrical')) && dH <= -tolerancePct * 1.1 && dL >= tolerancePct * 1.1 && converging) {
+              push(patterns, { type: 'triangle_symmetrical', confidence: 0.7, range: { start, end }, pivots: [...hwin, ...lwin].sort((a, b) => a.idx - b.idx) });
+            }
           }
         }
       }
@@ -176,19 +178,21 @@ export default async function detectPatterns(
       const converging = spreadEnd < spreadStart * (1 - tolerancePct * 0.8); // 収束強化
 
       if (havePole) {
-        const start = candles[winStart].isoTime || String(winStart);
-        const end = candles[idxEnd].isoTime || String(idxEnd);
-        // Pennant: converging (symmetrical) consolidation after strong pole
-        if (wantPennant && ((dH <= 0 && dL >= 0) || (dH < 0 && dL > 0)) && converging) {
-          push(patterns, { type: 'pennant', confidence: 0.68, range: { start, end } });
-        }
-        // Flag: parallel/slight slope against pole direction
-        if (wantFlag) {
-          const slopeAgainstUp = poleUp && dH < 0 && dL < 0; // both down
-          const slopeAgainstDown = poleDown && dH > 0 && dL > 0; // both up
-          const smallRange = spreadEnd <= spreadStart * 1.02; // 並行チャネルの厳格化
-          if ((slopeAgainstUp || slopeAgainstDown) && smallRange) {
-            push(patterns, { type: 'flag', confidence: 0.66, range: { start, end } });
+        const start = candles[winStart].isoTime;
+        const end = candles[idxEnd].isoTime;
+        if (start && end) {
+          // Pennant: converging (symmetrical) consolidation after strong pole
+          if (wantPennant && ((dH <= 0 && dL >= 0) || (dH < 0 && dL > 0)) && converging) {
+            push(patterns, { type: 'pennant', confidence: 0.68, range: { start, end } });
+          }
+          // Flag: parallel/slight slope against pole direction
+          if (wantFlag) {
+            const slopeAgainstUp = poleUp && dH < 0 && dL < 0; // both down
+            const slopeAgainstDown = poleDown && dH > 0 && dL > 0; // both up
+            const smallRange = spreadEnd <= spreadStart * 1.02; // 並行チャネルの厳格化
+            if ((slopeAgainstUp || slopeAgainstDown) && smallRange) {
+              push(patterns, { type: 'flag', confidence: 0.66, range: { start, end } });
+            }
           }
         }
       }
@@ -209,9 +213,9 @@ export default async function detectPatterns(
             if ((b.idx - a.idx) < minDist || (c.idx - b.idx) < minDist) continue;
             const nearAll = near(a.price, b.price) && near(b.price, c.price) && near(a.price, c.price);
             if (!nearAll) continue;
-            const start = candles[a.idx].isoTime || String(a.idx);
-            const end = candles[c.idx].isoTime || String(c.idx);
-            push(patterns, { type: 'triple_top', confidence: 0.68, range: { start, end }, pivots: [a, b, c] });
+            const start = candles[a.idx].isoTime;
+            const end = candles[c.idx].isoTime;
+            if (start && end) push(patterns, { type: 'triple_top', confidence: 0.68, range: { start, end }, pivots: [a, b, c] });
           }
         }
 
@@ -221,9 +225,9 @@ export default async function detectPatterns(
             if ((b.idx - a.idx) < minDist || (c.idx - b.idx) < minDist) continue;
             const nearAll = near(a.price, b.price) && near(b.price, c.price) && near(a.price, c.price);
             if (!nearAll) continue;
-            const start = candles[a.idx].isoTime || String(a.idx);
-            const end = candles[c.idx].isoTime || String(c.idx);
-            push(patterns, { type: 'triple_bottom', confidence: 0.68, range: { start, end }, pivots: [a, b, c] });
+            const start = candles[a.idx].isoTime;
+            const end = candles[c.idx].isoTime;
+            if (start && end) push(patterns, { type: 'triple_bottom', confidence: 0.68, range: { start, end }, pivots: [a, b, c] });
           }
         }
       }

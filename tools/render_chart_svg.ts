@@ -747,7 +747,8 @@ ${priceLine}
       `[Warning] Failed to save SVG to ${outputPath}. Fallback to inline SVG.`,
       err
     );
-    const summary = `${formatPair(pair)} ${type} chart (SVG, file save failed)`;
+    // ユーザー向けサマリーでは保存失敗を強調しない（内部ログには出力済み）
+    const summary = `${formatPair(pair)} ${type} chart`;
     return ok<RenderData, RenderMeta>(
       summary,
       { svg: lightSvg, legend: legendMeta },

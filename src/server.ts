@@ -25,8 +25,11 @@ import getDepthDiff from '../tools/get_depth_diff.js';
 import getOrderbookPressure from '../tools/get_orderbook_pressure.js';
 import getVolatilityMetrics from '../tools/get_volatility_metrics.js';
 import getMarketSummary from '../tools/get_market_summary.js';
+import analyzeMarketSignal from '../tools/analyze_market_signal.js';
+import detectMacdCross from '../tools/detect_macd_cross.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema } from './schemas.js';
 import getCircuitBreakInfo from '../tools/get_circuit_break_info.js';
+import { AnalyzeMarketSignalInputSchema, AnalyzeMarketSignalOutputSchema } from './schemas.js';
 
 const server = new McpServer({ name: 'bitbank-mcp', version: '0.3.0' });
 
@@ -210,6 +213,21 @@ registerToolWithLog(
 		const result = await getMarketSummary(market, { window, ann });
 		return GetMarketSummaryOutputSchema.parse(result);
 	}
+);
+
+registerToolWithLog(
+	'analyze_market_signal',
+	{ description: 'Flow/Volatility/Indicators を合成した短期の相対強弱スコアを返します。', inputSchema: AnalyzeMarketSignalInputSchema },
+	async ({ pair, type, flowLimit, bucketMs, windows }: any) => {
+		const res = await analyzeMarketSignal(pair, { type, flowLimit, bucketMs, windows });
+		return AnalyzeMarketSignalOutputSchema.parse(res);
+	}
+);
+
+registerToolWithLog(
+	'detect_macd_cross',
+	{ description: '市場内の銘柄で直近のMACDゴールデン/デッドクロスを検出します（1day, lookback=3本）。pairsで限定可能。', inputSchema: z.object({ market: z.enum(['all', 'jpy']).default('all'), lookback: z.number().int().min(1).max(10).default(3), pairs: z.array(z.string()).optional() }) as any },
+	async ({ market, lookback, pairs }: any) => detectMacdCross(market, lookback, pairs)
 );
 
 // prompts are unchanged for TS port and can be reused or migrated later

@@ -262,6 +262,14 @@ export const IndicatorsInternalSchema = z.object({
   sma_50_series: NumericSeriesSchema.optional(),
   sma_75_series: NumericSeriesSchema.optional(),
   sma_200_series: NumericSeriesSchema.optional(),
+  // MACD latest values
+  MACD_line: z.number().nullable().optional(),
+  MACD_signal: z.number().nullable().optional(),
+  MACD_hist: z.number().nullable().optional(),
+  // series (optional)
+  macd_series: z
+    .object({ line: NumericSeriesSchema, signal: NumericSeriesSchema, hist: NumericSeriesSchema })
+    .optional(),
 });
 
 export const GetIndicatorsDataSchema = z.object({
@@ -720,3 +728,32 @@ export const GetMarketSummaryInputSchema = z.object({
   window: z.number().int().min(2).max(180).optional().default(30),
   ann: z.boolean().optional().default(true),
 });
+
+// === Analyze Market Signal ===
+export const AnalyzeMarketSignalDataSchemaOut = z.object({
+  score: z.number(),
+  recommendation: z.enum(['bullish', 'bearish', 'neutral']),
+  tags: z.array(z.string()),
+  metrics: z.object({
+    buyPressure: z.number(),
+    cvdTrend: z.number(),
+    momentumFactor: z.number(),
+    volatilityFactor: z.number(),
+    rsi: z.number().nullable(),
+    rv_std_ann: z.number(),
+    aggressorRatio: z.number(),
+    cvdSlope: z.number(),
+    horizon: z.number().int(),
+  }),
+  refs: z.object({
+    flow: z.object({ aggregates: z.unknown(), lastBuckets: z.array(z.unknown()) }),
+    volatility: z.object({ aggregates: z.unknown() }),
+    indicators: z.object({ latest: z.unknown(), trend: TrendLabelEnum }),
+  }),
+});
+export const AnalyzeMarketSignalMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string(), type: CandleTypeEnum.or(z.string()), windows: z.array(z.number()), bucketMs: z.number().int(), flowLimit: z.number().int() });
+export const AnalyzeMarketSignalOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: AnalyzeMarketSignalDataSchemaOut, meta: AnalyzeMarketSignalMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+export const AnalyzeMarketSignalInputSchema = z.object({ pair: z.string().optional().default('btc_jpy'), type: CandleTypeEnum.optional().default('1day'), flowLimit: z.number().int().optional().default(300), bucketMs: z.number().int().optional().default(60_000), windows: z.array(z.number().int()).optional().default([14, 20, 30]) });

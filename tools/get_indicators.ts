@@ -102,6 +102,46 @@ export function bollingerBands(
   return { upper, middle, lower };
 }
 
+// Exponential Moving Average
+export function ema(values: number[], period: number): NumericSeries {
+  const out: NumericSeries = [];
+  if (period <= 1) return values.map((v) => (v != null ? Number(v.toFixed(2)) : null));
+  const k = 2 / (period + 1);
+  let prev: number | null = null;
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (v == null || !Number.isFinite(v)) { out.push(null); continue; }
+    if (prev == null) {
+      // seed with simple average once we have period samples
+      if (i < period - 1) { out.push(null); continue; }
+      const avg = values.slice(i - period + 1, i + 1).reduce((s, x) => s + x, 0) / period;
+      prev = avg;
+      out.push(Number(avg.toFixed(2)));
+    } else {
+      const cur = v * k + prev * (1 - k);
+      prev = cur;
+      out.push(Number(cur.toFixed(2)));
+    }
+  }
+  return out;
+}
+
+export function macd(values: number[], fast = 12, slow = 26, signal = 9): { line: NumericSeries; signal: NumericSeries; hist: NumericSeries } {
+  const emaFast = ema(values, fast);
+  const emaSlow = ema(values, slow);
+  const line: NumericSeries = [];
+  for (let i = 0; i < values.length; i++) {
+    const a = emaFast[i]; const b = emaSlow[i];
+    if (a == null || b == null) line.push(null);
+    else line.push(Number(((a as number) - (b as number)).toFixed(2)));
+  }
+  // signal EMA over MACD line
+  const sig = ema(line.map((v) => (v == null ? 0 : (v as number))) as number[], signal);
+  const signalSeries: NumericSeries = sig.map((v, i) => (line[i] == null ? null : v));
+  const hist: NumericSeries = line.map((v, i) => (v == null || signalSeries[i] == null ? null : Number(((v as number) - (signalSeries[i] as number)).toFixed(2))));
+  return { line, signal: signalSeries, hist };
+}
+
 export function ichimokuSeries(
   highs: number[],
   lows: number[],
@@ -271,6 +311,7 @@ export default async function getIndicators(
   const allCloses = normalized.map((c) => c.close);
 
   const rsi14_series = rsi(allCloses, 14);
+  const macdSeries = macd(allCloses, 12, 26, 9);
   const bb1 = bollingerBands(allCloses, 20, 1);
   const bb2 = bollingerBands(allCloses, 20, 2);
   const bb3 = bollingerBands(allCloses, 20, 3);
@@ -306,6 +347,7 @@ export default async function getIndicators(
     bb2_series: bb2,
     bb3_series: bb3,
     ichi_series: ichi,
+    macd_series: macdSeries,
     sma_5_series,
     sma_20_series,
     sma_25_series,
@@ -313,6 +355,11 @@ export default async function getIndicators(
     sma_75_series,
     sma_200_series,
   };
+
+  // latest MACD values
+  indicators.MACD_line = macdSeries.line.at(-1) as number | null | undefined;
+  indicators.MACD_signal = macdSeries.signal.at(-1) as number | null | undefined;
+  indicators.MACD_hist = macdSeries.hist.at(-1) as number | null | undefined;
 
   const ichiSimple = ichimoku(allHighs, allLows, allCloses);
   if (ichiSimple) {
@@ -366,6 +413,9 @@ export default async function getIndicators(
     SMA_75: indicators.SMA_75,
     SMA_200: indicators.SMA_200,
     RSI_14: indicators.RSI_14,
+    MACD_line: indicators.MACD_line,
+    MACD_signal: indicators.MACD_signal,
+    MACD_hist: indicators.MACD_hist,
   };
   if (indicators.ICHIMOKU_conversion) {
     latestIndicators.ICHIMOKU_conversion = indicators.ICHIMOKU_conversion;
