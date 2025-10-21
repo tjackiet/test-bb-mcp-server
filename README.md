@@ -98,8 +98,8 @@ Claude（MCPホスト）経由でローソク足チャートを描画する場�
 ```bash
 # Build
 docker build -t bitbank-mcp .
-# Run via Inspector
-npx @modelcontextprotocol/inspector docker run -i --rm bitbank-mcp
+# Run via Inspector（npx経由でコンテナ起動）
+npx @modelcontextprotocol/inspector docker run -i --rm -e NO_COLOR=1 -e LOG_LEVEL=info bitbank-mcp
 ```
 
 ### ローカル環境で直接実行する場合
@@ -127,6 +127,8 @@ npx @modelcontextprotocol/inspector tsx src/server.ts
 
 - 既存プロンプト（例: `bb_light_chart`, `ichimoku_default_chart`）を使い、`render_chart_svg` がツール呼び出しされることを確認
 - もし自前描画が発生する場合は、プロンプトを修正し「必ずツールを使う」指示を強化
+
+> 注意: `get_market_summary` は低解像度のスナップショットのため非推奨です。意思決定には `analyze_market_signal` か、`get_flow_metrics` / `get_volatility_metrics` / `get_indicators` の組み合わせを使用してください。全体の雰囲気把握のみ必要な場合は別名 `market_overview_snapshot` を使用できます。
 
 ## CLIツールとしての使用方法
 
@@ -170,6 +172,32 @@ npx @modelcontextprotocol/inspector tsx src/server.ts
 ```bash
 ./node_modules/.bin/tsx tools/render_chart_svg_cli.ts btc_jpy 1day 100 --with-ichimoku --no-bb --no-sma > assets/ichimoku_sample.svg
 ```
+
+## JPY建てティッカー（軽量スナップショット）
+
+### get_tickers_jpy（TSX）
+```bash
+# 単発取得
+./node_modules/.bin/tsx tools/get_tickers_jpy_cli.ts
+
+# ネットが不安定な環境向け（タイムアウト/リトライ調整）
+TICKERS_JPY_TIMEOUT_MS=3000 TICKERS_JPY_RETRIES=2 TICKERS_JPY_RETRY_WAIT_MS=500 ./node_modules/.bin/tsx tools/get_tickers_jpy_cli.ts
+```
+
+返却例（短縮）:
+```json
+{
+  "ok": true,
+  "summary": "tickers_jpy fetched in 197ms (47 items, 7506 bytes)",
+  "data": [ { "pair": "btc_jpy", "sell": "16330854", "buy": "16330853", "last": "16330854", "timestamp": 1761026224875 } ],
+  "meta": { "cache": { "hit": false, "key": "tickers_jpy" }, "ts": "...", "latencyMs": 197, "payloadBytes": 7506 }
+}
+```
+
+備考:
+- `sell`/`buy` が取引停止・薄商い時に `null` となることがあります（上流仕様）。
+- キャッシュ: TTL=10s。検証や連続呼び出しの際はヒットします。
+- テスト用にバイパス可能: コードから `getTickersJpy({ bypassCache: true })` を呼ぶと常に上流を叩きます。
 
 ## スキーマと型の一元管理（Zod → 型生成 → CI）
 
@@ -275,6 +303,36 @@ Claude の Developer Settings > MCP Servers に以下のように登録してく
 - `npx` は標準出力に余分なメッセージを出す場合があり、MCP の stdio ハンドシェイクが失敗する原因になります。
 - `command` / `args` は双方とも絶対パスで指定してください（相対パス解決の差分を排除）。
 - Node 18+ を推奨。既存サーバープロセスが残っていると接続できない場合は停止してください。
+
+## Skills の運用（Claude Skills と MCP の役割分担）
+
+- Claude Skills は「どう動くか（手順・判断）」を定義する知識層、MCP は「外部データに安全にアクセスする実行層」です。競合ではなく階層分担です。
+- 本リポジトリでは Skills を `skills/<skill_name>/SKILL.md` に置きます。MCP からは参照されません。Claude で使うにはローカルの `~/.claude/skills/<skill_name>/SKILL.md` に配置してください。
+
+### Skills の同期（フォルダごと）
+
+```bash
+npm run sync:skills
+```
+
+- `skills/<name>/` フォルダ全体を `~/.claude/skills/<name>/` に同期します（`SKILL.md` に加え、参照ドキュメントやスクリプトも含む）。
+- `SKILL.md` の frontmatter に `name:` があればそれを採用。なければフォルダ名を技能名として同期します。
+
+### 推奨アーキテクチャ
+
+```
+User Prompt
+  ↓
+Claude
+  ├── (Skill) multi_factor_signal → 分析手順・判断ルール
+  │        ↓
+  └── (MCP) bitbank-mcp → 実データ取得・チャート生成
+```
+
+### 参考 Skills
+
+- `skills/multi_factor_signal/SKILL.md`: 指標合成で結論先出し、必要時のみ深掘り
+- `skills/charting_rules/SKILL.md`: チャート描画のプロジェクト規約（必ず `render_chart_svg` を使用）
 
 <!-- InspectorのUI詳細手順はボリュームのため省略。必要時は issue/Docs を参照 -->
 

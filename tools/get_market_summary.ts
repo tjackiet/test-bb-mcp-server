@@ -1,4 +1,5 @@
 import getTickers from './get_tickers.js';
+import getTickersJpy from './get_tickers_jpy.js';
 import getVolatilityMetrics from './get_volatility_metrics.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
@@ -51,9 +52,21 @@ export default async function getMarketSummary(
   }
 
   try {
-    const tickersRes: any = await getTickers(market);
-    if (!tickersRes?.ok) return GetMarketSummaryOutputSchema.parse(fail(tickersRes?.summary || 'tickers failed', (tickersRes?.meta as any)?.errorType || 'internal')) as any;
-    const tickerItems: Array<{ pair: string; last: number | null; volume: number | null; change24hPct?: number | null }> = tickersRes?.data?.items || [];
+    let tickerItems: Array<{ pair: string; last: number | null; volume: number | null; change24hPct?: number | null }> = [];
+    if (market === 'jpy') {
+      const jpyRes: any = await getTickersJpy();
+      if (!jpyRes?.ok) return GetMarketSummaryOutputSchema.parse(fail(jpyRes?.summary || 'tickers_jpy failed', (jpyRes?.meta as any)?.errorType || 'internal')) as any;
+      const arr: Array<{ pair: string; last: string | null; vol: string | null }> = jpyRes?.data || [];
+      tickerItems = arr.map((it) => {
+        const lastNum = it.last != null ? Number(it.last) : null;
+        const volNum = it.vol != null ? Number(it.vol) : null;
+        return { pair: it.pair, last: Number.isFinite(lastNum as any) ? (lastNum as number) : null, volume: Number.isFinite(volNum as any) ? (volNum as number) : null, change24hPct: null };
+      });
+    } else {
+      const tickersRes: any = await getTickers(market);
+      if (!tickersRes?.ok) return GetMarketSummaryOutputSchema.parse(fail(tickersRes?.summary || 'tickers failed', (tickersRes?.meta as any)?.errorType || 'internal')) as any;
+      tickerItems = (tickersRes?.data?.items || []) as Array<{ pair: string; last: number | null; volume: number | null; change24hPct?: number | null }>;
+    }
 
     const pairs = pickPairs(market);
 

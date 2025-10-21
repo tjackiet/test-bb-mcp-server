@@ -36,7 +36,7 @@ export default async function getOrderbook(
   const chk = ensurePair(pair);
   if (!chk.ok) return fail(chk.error.message, chk.error.type);
 
-  const limitCheck = validateLimit(topN, 1, 50, 'topN');
+  const limitCheck = validateLimit(topN, 1, 200, 'opN');
   if (!limitCheck.ok) return fail(limitCheck.error.message, limitCheck.error.type);
 
   const url = `https://public.bitbank.cc/${chk.pair}/depth`;

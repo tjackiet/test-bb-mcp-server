@@ -26,6 +26,10 @@ import getOrderbookPressure from '../tools/get_orderbook_pressure.js';
 import getVolatilityMetrics from '../tools/get_volatility_metrics.js';
 import getMarketSummary from '../tools/get_market_summary.js';
 import analyzeMarketSignal from '../tools/analyze_market_signal.js';
+import analyzeIchimokuSnapshot from '../tools/analyze_ichimoku_snapshot.js';
+import analyzeBbSnapshot from '../tools/analyze_bb_snapshot.js';
+import analyzeSmaSnapshot from '../tools/analyze_sma_snapshot.js';
+import getTickersJpy from '../tools/get_tickers_jpy.js';
 import detectMacdCross from '../tools/detect_macd_cross.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema } from './schemas.js';
 import getCircuitBreakInfo from '../tools/get_circuit_break_info.js';
@@ -70,13 +74,20 @@ function registerToolWithLog<S extends z.ZodTypeAny, R = unknown>(
 	schema: { description: string; inputSchema: S },
 	handler: (input: z.infer<S>) => Promise<R>
 ) {
-	// server.registerTool expects ZodRawShape; extract shape from ZodObject or ZodEffects<ZodObject>
+	// server.registerTool expects ZodRawShape; unwrap Optional/Default/Effects and extract Object.shape
 	const getRawShape = (s: z.ZodTypeAny): z.ZodRawShape => {
-		const anySchema: any = s as any;
-		if (anySchema?.shape) return anySchema.shape as z.ZodRawShape;
-		const inner = anySchema?._def?.schema;
-		if (inner?.shape) return inner.shape as z.ZodRawShape;
-		throw new Error('inputSchema must be ZodObject or ZodEffects<ZodObject>');
+		let cur: any = s as any;
+		// Unwrap ZodDefault / ZodOptional / ZodEffects chains
+		for (let i = 0; i < 5; i++) {
+			if (cur?.shape) break;
+			const def = cur?._def;
+			if (!def) break;
+			if (def?.schema) { cur = def.schema; continue; }
+			if (def?.innerType) { cur = def.innerType; continue; }
+			break;
+		}
+		if (cur?.shape) return cur.shape as z.ZodRawShape;
+		throw new Error('inputSchema must be or wrap a ZodObject');
 	};
 	server.registerTool(name, { description: schema.description, inputSchema: getRawShape(schema.inputSchema) }, async (input) => {
 		const t0 = Date.now();
@@ -108,14 +119,42 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_tickers',
-	{ description: 'Get snapshot of tickers across pairs. market=all or jpy.', inputSchema: GetTickersInputSchema },
-	async ({ market }: any) => getTickers(market)
+	{ description: 'Get snapshot of tickers across pairs. market=all or jpy. view=items でアイテム一覧をテキスト表示。', inputSchema: GetTickersInputSchema },
+	async ({ market, view }: any) => {
+		const result: any = await getTickers(market);
+		if (view === 'items') {
+			const items = result?.data?.items ?? [];
+			const text = JSON.stringify(items, null, 2);
+			return { content: [{ type: 'text', text }], structuredContent: { items } as Record<string, unknown> };
+		}
+		return result;
+	}
 );
 
 registerToolWithLog(
 	'get_orderbook',
-	{ description: 'Get orderbook topN for a pair', inputSchema: GetOrderbookInputSchema },
-	async ({ pair, topN }: any) => getOrderbook(pair, topN)
+	{ description: 'Get orderbook opN(1-200) for a pair. view=summary|detailed|full。detailed以上でトップNの板明細と統計を本文に出します。', inputSchema: GetOrderbookInputSchema },
+	async ({ pair, opN, view }: any) => {
+		const res: any = await getOrderbook(pair, opN);
+		if (!res?.ok) return res;
+		if (view === 'summary') return res;
+		const ob = res?.data?.normalized;
+		const top = (levels: any[], n: number) => levels.slice(0, n).map((l) => `${l.price}: ${l.size}`).join('\n');
+		const sum = (levels: any[], n: number) => levels.slice(0, n).reduce((a, b) => a + (b.size || 0), 0);
+		const n = Number(opN ?? res?.meta?.topN ?? 10);
+		const bidVol = sum(ob?.bids ?? [], n);
+		const askVol = sum(ob?.asks ?? [], n);
+		const ratio = askVol > 0 ? (bidVol / askVol).toFixed(2) : '∞';
+		let text = `${String(pair).toUpperCase()} Orderbook (top ${n})\nBest Bid: ${ob?.bestBid} | Best Ask: ${ob?.bestAsk} | Spread: ${ob?.spread}`;
+		text += `\n\nTop ${n} Bids:\n${top(ob?.bids ?? [], n)}`;
+		text += `\n\nTop ${n} Asks:\n${top(ob?.asks ?? [], n)}`;
+		text += `\n\nTotals: bid=${bidVol.toFixed(4)} ask=${askVol.toFixed(4)} | Buy/Sell Ratio=${ratio}`;
+		if (view === 'full') {
+			const full = `\n\n--- FULL BIDS ---\n${(ob?.bids ?? []).map((l: any) => `${l.price}: ${l.size} (cum ${l.cumSize})`).join('\n')}\n\n--- FULL ASKS ---\n${(ob?.asks ?? []).map((l: any) => `${l.price}: ${l.size} (cum ${l.cumSize})`).join('\n')}`;
+			text += full;
+		}
+		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+	}
 );
 
 registerToolWithLog(
@@ -151,8 +190,28 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_transactions',
-	{ description: 'Get recent transactions (trades). side=buy/sell, isoTime with milliseconds.', inputSchema: GetTransactionsInputSchema },
-	async ({ pair, limit, date }: any) => getTransactions(pair, limit, date)
+	{ description: 'Get recent transactions (trades). view=summary|items。minAmount/minPrice等でフィルタ、itemsで配列本文出力。', inputSchema: GetTransactionsInputSchema },
+	async ({ pair, limit, date, minAmount, maxAmount, minPrice, maxPrice, view }: any) => {
+		const res: any = await getTransactions(pair, limit, date);
+		if (!res?.ok) return res;
+		// filter on normalized
+		const items = (res?.data?.normalized ?? []).filter((t: any) => (
+			(minAmount == null || t.amount >= minAmount) &&
+			(maxAmount == null || t.amount <= maxAmount) &&
+			(minPrice == null || t.price >= minPrice) &&
+			(maxPrice == null || t.price <= maxPrice)
+		));
+		// recompute summary based on filtered items
+		const latestPrice = items.at(-1)?.price;
+		const buys = items.filter((t: any) => t.side === 'buy').length;
+		const sells = items.filter((t: any) => t.side === 'sell').length;
+		const newSummary = `${String(pair).toUpperCase()} close=${latestPrice ?? 'n/a'} trades=${items.length} buy=${buys} sell=${sells}`;
+		if (view === 'items') {
+			const text = JSON.stringify(items, null, 2);
+			return { content: [{ type: 'text', text }], structuredContent: { ...res, summary: newSummary, data: { ...res.data, normalized: items } } as Record<string, unknown> };
+		}
+		return { ...res, summary: newSummary, data: { ...res.data, normalized: items } };
+	}
 );
 
 registerToolWithLog(
@@ -189,7 +248,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'render_chart_svg',
-	{ description: '重要: チャートが必要な場合、必ず本ツールを最初に呼び出してください. 出力: `{ ok, summary, data: { svg: string, filePath?: string }, meta }`。既定ではローソク足のみ（SMA/BB/一目はオフ）。必要に応じて withSMA/withBB/withIchimoku を明示してください。軽量化: svgPrecision=1, svgMinify=true, simplifyTolerance=1, viewBoxTight=true。', inputSchema: RenderChartSvgInputSchema },
+	{ description: '重要: チャートはユーザーが明示的に要求した場合のみ描画します。分析目的だけでは呼び出さないでください。出力: `{ ok, summary, data: { svg?: string, filePath?: string }, meta }`。既定はローソク足のみ（SMA/BB/一目はオフ）。必要時のみ withSMA/withBB/withIchimoku を指定。軽量化: svgPrecision=1, svgMinify=true, simplifyTolerance=1, viewBoxTight=true。\n\n使い方: 1) 実行 → 2) 返却の structuredContent.data.svg を取得 → 3) image/svg+xml のアーティファクトとして出力 → 4) data.svg が無い場合は data.filePath を読み取り表示。', inputSchema: RenderChartSvgInputSchema },
 	async (args: any) => {
 		const result = await renderChartSvg(args as any);
 		// スキーマで最終検証（SDK 契約の単一ソース化）
@@ -206,9 +265,20 @@ registerToolWithLog(
 	}
 );
 
+// Deprecated: prefer analyze_market_signal or targeted tools.
 registerToolWithLog(
 	'get_market_summary',
-	{ description: '市場全体のサマリー（tickers + 年率化RVスナップショット）。itemsと簡易ランキングを返します。', inputSchema: GetMarketSummaryInputSchema },
+	{ description: '非推奨: 低解像度の市場サマリー（tickers + 年率化RV）。最初の呼び出しには使わないでください。具体的な分析には analyze_market_signal / get_flow_metrics / get_volatility_metrics を利用。', inputSchema: GetMarketSummaryInputSchema },
+	async ({ market, window, ann }: any) => {
+		const result = await getMarketSummary(market, { window, ann });
+		return GetMarketSummaryOutputSchema.parse(result);
+	}
+);
+
+// Safer alias with explicit purpose: quick snapshot only, not for decision.
+registerToolWithLog(
+	'market_overview_snapshot',
+	{ description: 'Quick snapshot of market movers/volatility buckets. Use only as context; do not base decisions solely on this. Prefer analyze_market_signal for conclusions.', inputSchema: GetMarketSummaryInputSchema },
 	async ({ market, window, ann }: any) => {
 		const result = await getMarketSummary(market, { window, ann });
 		return GetMarketSummaryOutputSchema.parse(result);
@@ -217,10 +287,43 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'analyze_market_signal',
-	{ description: 'Flow/Volatility/Indicators を合成した短期の相対強弱スコアを返します。', inputSchema: AnalyzeMarketSignalInputSchema },
+	{ description: 'Flow/Volatility/Indicators/SMA を合成した相対強度スコアを返します（式・重み・要素寄与の内訳（rawValue, contribution, interpretation）と topContributors を同梱）。SMA関連は「SMA配置トレンド（構造）」と「短期SMA変化スコア（勢い）」を区別して説明してください。**重要: ユーザーにスコアを説明する際は、必ず(1)計算式: score = 0.35*buyPressure + 0.25*cvdTrend + 0.15*momentum + 0.10*volatility + 0.15*smaTrend、(2)各要素の内訳、(3)最も影響している要素、を明示してください。**', inputSchema: AnalyzeMarketSignalInputSchema },
 	async ({ pair, type, flowLimit, bucketMs, windows }: any) => {
 		const res = await analyzeMarketSignal(pair, { type, flowLimit, bucketMs, windows });
 		return AnalyzeMarketSignalOutputSchema.parse(res);
+	}
+);
+
+registerToolWithLog(
+	'analyze_ichimoku_snapshot',
+	{ description: '一目均衡表の数値スナップショットを返します（視覚的判定は行いません）。価格と雲の位置関係、転換線/基準線の関係、雲の傾き（spanA/Bの差分）を数値から評価します。SVGの見た目について断定しないでください。', inputSchema: (await import('./schemas.js')).AnalyzeIchimokuSnapshotInputSchema as any },
+	async ({ pair, type, limit }: any) => analyzeIchimokuSnapshot(pair, type, limit)
+);
+
+registerToolWithLog(
+	'analyze_bb_snapshot',
+	{ description: 'ボリンジャーバンドの数値スナップショット。mid/upper/lower と zScore, bandWidthPct を返します。視覚的主張は行いません。', inputSchema: (await import('./schemas.js')).AnalyzeBbSnapshotInputSchema as any },
+	async ({ pair, type, limit, mode }: any) => analyzeBbSnapshot(pair, type, limit, mode)
+);
+
+registerToolWithLog(
+	'analyze_sma_snapshot',
+	{ description: 'SMA の数値スナップショット。指定periodsの最新値、近傍のクロス（golden/dead）、整列状態（bullish/bearish/mixed）。視覚的主張は行いません。', inputSchema: (await import('./schemas.js')).AnalyzeSmaSnapshotInputSchema as any },
+	async ({ pair, type, limit, periods }: any) => analyzeSmaSnapshot(pair, type, limit, periods)
+);
+
+registerToolWithLog(
+	'get_tickers_jpy',
+	{ description: 'Public REST /tickers_jpy。contentにサンプル(先頭3件)を表示し、全件は structuredContent.data に含めます。キャッシュTTL=10s。', inputSchema: z.object({}) as any },
+	async () => {
+		const res: any = await getTickersJpy();
+		if (!res?.ok) return res;
+		const arr: any[] = Array.isArray(res?.data) ? res.data : [];
+		const top = arr.slice(0, 3)
+			.map((it) => `${it.pair.toUpperCase()}: ¥${it.last}${it.vol ? ` (24h出来高 ${it.vol})` : ''}`)
+			.join('\n');
+		const text = `${arr.length} JPYペア取得:\n${top}${arr.length > 3 ? `\n…(他${arr.length - 3}ペア)` : ''}`;
+		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
 	}
 );
 

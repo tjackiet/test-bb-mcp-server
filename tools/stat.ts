@@ -35,8 +35,15 @@ async function processLogFile(filePath: string, stats: any, startTime: Date | nu
         stats.errorTypes[errorType] = (stats.errorTypes[errorType] || 0) + 1;
       }
       const cacheStatus = log.result?.meta?.cache;
-      if (cacheStatus === 'hit') stats.cacheHits++;
-      else if (cacheStatus === 'miss') stats.cacheMisses++;
+      // support both legacy string ('hit'/'miss') and new object form ({ hit: boolean, key?: string })
+      if (cacheStatus && typeof cacheStatus === 'object') {
+        if (cacheStatus.hit === true) stats.cacheHits++;
+        else if (cacheStatus.hit === false) stats.cacheMisses++;
+      } else if (cacheStatus === 'hit') {
+        stats.cacheHits++;
+      } else if (cacheStatus === 'miss') {
+        stats.cacheMisses++;
+      }
       if (typeof log.ms === 'number') stats.durations.push(log.ms);
     } catch {
       // ignore

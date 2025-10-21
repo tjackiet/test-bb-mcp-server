@@ -1,0 +1,27 @@
+{
+  "success": 1,
+  "data": [
+    {
+      "pair": "btc_jpy",
+      "sell": "100",
+      "buy": "99",
+      "high": "110",
+      "low": "90",
+      "open": "95",
+      "last": "100",
+      "vol": "1.234",
+      "timestamp": 1760000000000
+    },
+    {
+      "pair": "mkr_jpy",
+      "sell": null,
+      "buy": null,
+      "high": "259371",
+      "low": "259371",
+      "open": "259371",
+      "last": "259371",
+      "vol": "0.0000",
+      "timestamp": 1760000000001
+    }
+  ]
+}

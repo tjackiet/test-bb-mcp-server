@@ -26,5 +26,7 @@ ENV NODE_ENV=production
 #   現状のStdioServerTransportでは不要ですが、将来的にWebサーバー化するなら必要です。
 # EXPOSE 1337
 
-# Define the entry point for the container
-ENTRYPOINT ["npx", "tsx", "src/server.ts"]
+# Define the entry point for the container (avoid npx for stdio stability)
+ENV NO_COLOR=1 \
+    LOG_LEVEL=info
+ENTRYPOINT ["node", "node_modules/tsx/dist/cli.mjs", "src/server.ts"]

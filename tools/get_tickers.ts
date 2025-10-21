@@ -101,16 +101,28 @@ export default async function getTickers(market: Market = 'all') {
     for (const e of enriched) changeMap.set(e.pair, e.change24hPct ?? null);
     const itemsWithChange = items.map((it) => ({ ...it, change24hPct: changeMap.get(it.pair) ?? null }));
 
+    // 24h出来高(円)を推定: last * volume（いずれかがnullならnull）
+    const itemsWithJpy = itemsWithChange.map((it) => {
+      const volJpy = it.last != null && it.volume != null ? Number((it.last * it.volume).toFixed(0)) : null;
+      return { ...it, vol24hJpy: volJpy } as typeof it & { vol24hJpy: number | null };
+    });
+
     // summary: 上位数銘柄を示唆
-    const nonNull = itemsWithChange.filter((x) => x.last != null) as Array<typeof itemsWithChange[number]>;
-    const summary = formatSummary({ pair: 'multi', latest: undefined, extra: `count=${itemsWithChange.length} ok=${nonNull.length}` });
+    const nonNull = itemsWithJpy.filter((x) => x.last != null) as Array<typeof itemsWithJpy[number]>;
+    // 先頭5件を要約に含める（pair: price (±chg%)）
+    const head = itemsWithJpy.slice(0, 5).map((x) => {
+      const chg = x.change24hPct == null ? 'n/a' : `${x.change24hPct > 0 ? '+' : ''}${x.change24hPct}%`;
+      const vj = x.vol24hJpy == null ? '' : ` 24h出来高¥${x.vol24hJpy}`;
+      return `${x.pair}:${x.last ?? 'n/a'}(${chg})${vj}`;
+    }).join(', ');
+    const summary = formatSummary({ pair: 'multi', latest: undefined, extra: `count=${itemsWithJpy.length} ok=${nonNull.length} [${head}]` });
     const fetchedAt = Date.now();
-    cache = { market, fetchedAt, items: itemsWithChange };
+    cache = { market, fetchedAt, items: itemsWithJpy };
     return GetTickersOutputSchema.parse(
       ok(
         summary,
-        { items: itemsWithChange },
-        { market, fetchedAt: new Date(fetchedAt).toISOString(), count: itemsWithChange.length }
+        { items: itemsWithJpy },
+        { market, fetchedAt: new Date(fetchedAt).toISOString(), count: itemsWithJpy.length }
       )
     ) as any;
   } catch (e: any) {

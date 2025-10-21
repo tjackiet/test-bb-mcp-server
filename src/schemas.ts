@@ -48,6 +48,8 @@ export const RenderChartSvgInputSchema = z
     yPaddingPct: z.number().min(0).max(0.2).optional().describe('Vertical padding ratio to expand y-range.'),
     // サイズ制御（超過時は data.svg を省略し filePath のみ返却）
     maxSvgBytes: z.number().int().min(1024).optional().describe('If set and svg exceeds this size (bytes), omit data.svg and return filePath only.'),
+    // 返却方針: true の場合は保存を最優先し、失敗時はエラーにする（inline返却にフォールバックしない）
+    preferFile: z.boolean().optional().default(false).describe('If true, prefer saving SVG to file and return error on save failure (no inline fallback).'),
     // Optional pattern overlays (ranges/annotations)
     overlays: z
       .object({
@@ -317,6 +319,7 @@ export const GetTickerOutputSchema = z.union([
 // Tickers (snapshot of many pairs)
 export const TickerExtendedSchema = TickerNormalizedSchema.extend({
   change24hPct: z.number().nullable().optional(),
+  vol24hJpy: z.number().nullable().optional(),
 });
 export const GetTickersDataSchemaOut = z.object({ items: z.array(TickerExtendedSchema) });
 export const GetTickersMetaSchemaOut = z.object({ market: z.enum(['all', 'jpy']), fetchedAt: z.string(), count: z.number().int() });
@@ -503,13 +506,19 @@ export const GetTickerInputSchema = z.object({
 
 export const GetOrderbookInputSchema = z.object({
   pair: z.string(),
-  opN: z.number().int().min(1).max(1000).optional().default(10),
+  opN: z.number().int().min(1).max(200).optional().default(10),
+  view: z.enum(['summary', 'detailed', 'full']).optional().default('summary'),
 });
 
 export const GetTransactionsInputSchema = z.object({
   pair: z.string().optional().default('btc_jpy'),
   limit: z.number().int().min(1).max(1000).optional().default(100),
   date: z.string().regex(/^\d{8}$/).optional().describe('YYYYMMDD; omit for latest'),
+  minAmount: z.number().positive().optional(),
+  maxAmount: z.number().positive().optional(),
+  minPrice: z.number().positive().optional(),
+  maxPrice: z.number().positive().optional(),
+  view: z.enum(['summary', 'items']).optional().default('summary'),
 });
 
 export const GetFlowMetricsInputSchema = z.object({
@@ -521,7 +530,25 @@ export const GetFlowMetricsInputSchema = z.object({
 
 export const GetTickersInputSchema = z.object({
   market: z.enum(['all', 'jpy']).optional().default('all'),
+  view: z.enum(['items']).optional(),
 });
+
+// === /tickers_jpy (public REST) ===
+export const TickerJpyItemSchema = z.object({
+  pair: z.string(),
+  sell: z.string().nullable(),
+  buy: z.string().nullable(),
+  high: z.string(),
+  low: z.string(),
+  open: z.string(),
+  last: z.string(),
+  vol: z.string(),
+  timestamp: z.number(),
+});
+export const GetTickersJpyOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: z.array(TickerJpyItemSchema), meta: z.object({ cache: z.object({ hit: z.boolean(), key: z.string() }).optional(), ts: z.string() }).passthrough() }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
 
 // === Circuit Break Info ===
 export const GetCircuitBreakInfoInputSchema = z.object({
@@ -734,11 +761,36 @@ export const AnalyzeMarketSignalDataSchemaOut = z.object({
   score: z.number(),
   recommendation: z.enum(['bullish', 'bearish', 'neutral']),
   tags: z.array(z.string()),
+  formula: z.string(),
+  weights: z.object({
+    buyPressure: z.number(),
+    cvdTrend: z.number(),
+    momentum: z.number(),
+    volatility: z.number(),
+    smaTrend: z.number(),
+  }),
+  contributions: z.object({
+    buyPressure: z.number(),
+    cvdTrend: z.number(),
+    momentum: z.number(),
+    volatility: z.number(),
+    smaTrend: z.number(),
+  }),
+  breakdown: z.object({
+    buyPressure: z.object({ rawValue: z.number(), weight: z.number(), contribution: z.number(), interpretation: z.enum(['weak', 'moderate', 'strong', 'neutral']) }),
+    cvdTrend: z.object({ rawValue: z.number(), weight: z.number(), contribution: z.number(), interpretation: z.enum(['weak', 'moderate', 'strong', 'neutral']) }),
+    momentum: z.object({ rawValue: z.number(), weight: z.number(), contribution: z.number(), interpretation: z.enum(['weak', 'moderate', 'strong', 'neutral']) }),
+    volatility: z.object({ rawValue: z.number(), weight: z.number(), contribution: z.number(), interpretation: z.enum(['weak', 'moderate', 'strong', 'neutral']) }),
+    smaTrend: z.object({ rawValue: z.number(), weight: z.number(), contribution: z.number(), interpretation: z.enum(['weak', 'moderate', 'strong', 'neutral']) }),
+  }),
+  topContributors: z.array(z.enum(['buyPressure', 'cvdTrend', 'momentum', 'volatility', 'smaTrend'])).min(1),
+  thresholds: z.object({ bullish: z.number(), bearish: z.number() }),
   metrics: z.object({
     buyPressure: z.number(),
     cvdTrend: z.number(),
     momentumFactor: z.number(),
     volatilityFactor: z.number(),
+    smaTrendFactor: z.number(),
     rsi: z.number().nullable(),
     rv_std_ann: z.number(),
     aggressorRatio: z.number(),
@@ -757,3 +809,85 @@ export const AnalyzeMarketSignalOutputSchema = z.union([
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);
 export const AnalyzeMarketSignalInputSchema = z.object({ pair: z.string().optional().default('btc_jpy'), type: CandleTypeEnum.optional().default('1day'), flowLimit: z.number().int().optional().default(300), bucketMs: z.number().int().optional().default(60_000), windows: z.array(z.number().int()).optional().default([14, 20, 30]) });
+
+// === Ichimoku numeric snapshot (no visual assumptions) ===
+export const AnalyzeIchimokuSnapshotInputSchema = z.object({
+  pair: z.string().optional().default('btc_jpy'),
+  type: CandleTypeEnum.optional().default('1day'),
+  limit: z.number().int().min(60).max(365).optional().default(120),
+});
+
+export const AnalyzeIchimokuSnapshotDataSchemaOut = z.object({
+  latest: z.object({
+    close: z.number().nullable(),
+    tenkan: z.number().nullable(),
+    kijun: z.number().nullable(),
+    spanA: z.number().nullable(),
+    spanB: z.number().nullable(),
+    cloudTop: z.number().nullable(),
+    cloudBottom: z.number().nullable(),
+  }),
+  assessment: z.object({
+    pricePosition: z.enum(['above_cloud', 'in_cloud', 'below_cloud', 'unknown']),
+    tenkanKijun: z.enum(['bullish', 'bearish', 'neutral', 'unknown']),
+    cloudSlope: z.enum(['rising', 'falling', 'flat', 'unknown']),
+  }),
+  tags: z.array(z.string()),
+});
+
+export const AnalyzeIchimokuSnapshotMetaSchemaOut = z.object({
+  pair: z.string(),
+  fetchedAt: z.string(),
+  type: CandleTypeEnum.or(z.string()),
+  count: z.number().int(),
+});
+
+export const AnalyzeIchimokuSnapshotOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: AnalyzeIchimokuSnapshotDataSchemaOut, meta: AnalyzeIchimokuSnapshotMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+
+// === BB snapshot ===
+export const AnalyzeBbSnapshotInputSchema = z.object({
+  pair: z.string().optional().default('btc_jpy'),
+  type: CandleTypeEnum.optional().default('1day'),
+  limit: z.number().int().min(40).max(365).optional().default(120),
+  mode: z.enum(['default', 'extended']).optional().default('default')
+});
+
+export const AnalyzeBbSnapshotDataSchemaOut = z.object({
+  latest: z.object({ close: z.number().nullable(), middle: z.number().nullable(), upper: z.number().nullable(), lower: z.number().nullable() }),
+  zScore: z.number().nullable(),
+  bandWidthPct: z.number().nullable(),
+  tags: z.array(z.string()),
+});
+
+export const AnalyzeBbSnapshotMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string(), type: CandleTypeEnum.or(z.string()), count: z.number().int(), mode: z.enum(['default', 'extended']) });
+
+export const AnalyzeBbSnapshotOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: AnalyzeBbSnapshotDataSchemaOut, meta: AnalyzeBbSnapshotMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+
+// === SMA snapshot ===
+export const AnalyzeSmaSnapshotInputSchema = z.object({
+  pair: z.string().optional().default('btc_jpy'),
+  type: CandleTypeEnum.optional().default('1day'),
+  limit: z.number().int().min(200).max(365).optional().default(220),
+  periods: z.array(z.number().int()).optional().default([25, 75, 200])
+});
+
+export const AnalyzeSmaSnapshotDataSchemaOut = z.object({
+  latest: z.object({ close: z.number().nullable() }),
+  sma: z.record(z.string(), z.number().nullable()),
+  crosses: z.array(z.object({ a: z.string(), b: z.string(), type: z.enum(['golden', 'dead']), delta: z.number() })),
+  alignment: z.enum(['bullish', 'bearish', 'mixed', 'unknown']),
+  tags: z.array(z.string()),
+});
+
+export const AnalyzeSmaSnapshotMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string(), type: CandleTypeEnum.or(z.string()), count: z.number().int(), periods: z.array(z.number().int()) });
+
+export const AnalyzeSmaSnapshotOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), data: AnalyzeSmaSnapshotDataSchemaOut, meta: AnalyzeSmaSnapshotMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);

@@ -1,4 +1,11 @@
 // tools/render_chart_svg.ts
+/**
+ * Render chart as SVG or save to file depending on options.
+ *
+ * @returns Result<
+ *   { svg?: string | null; filePath?: string | null; legend?: Record<string,string> },
+ *   { pair: string; type: string; limit?: number; indicators?: string[]; bbMode: 'default'|'extended'; range?: {start:string; end:string}; sizeBytes?: number; layerCount?: number; truncated?: boolean; }>
+ */
 import fs from 'fs/promises';
 import path from 'path';
 import getIndicators from './get_indicators.js';
@@ -150,8 +157,9 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
           <line x1="${x(mid)}" y1="${padding.top}" x2="${x(mid)}" y2="${h - padding.bottom}" stroke="#9ca3af" stroke-width="1" stroke-dasharray="4 4"/>
         </g>
       </svg>`;
-      const outputPath = path.join('assets', `depth-${pair}-${Date.now()}.svg`);
-      await fs.mkdir('assets', { recursive: true });
+      const assetsDir = path.join(process.cwd(), 'assets');
+      await fs.mkdir(assetsDir, { recursive: true });
+      const outputPath = path.join(assetsDir, `depth-${pair}-${Date.now()}.svg`);
       await fs.writeFile(outputPath, svg);
       return ok<RenderData, RenderMeta>(`${formatPair(pair)} depth chart saved to ${outputPath}`, { filePath: outputPath, svg }, { pair: pair as Pair, type: 'depth', bbMode: 'default' });
     } catch (e: any) {
@@ -720,39 +728,75 @@ ${priceLine}
     lightSvg = minify(lightSvg);
   }
 
-  // --- SVGをファイルに保存（フォールバック付き） ---
+  // --- 返却ポリシー（preferFile / maxSvgBytes） ---
+  const finalSvg = withIchimoku ? lightSvg : fullSvg;
+  const sizeBytes = Buffer.byteLength(finalSvg, 'utf8');
+  const layerCount = estimatedLayers;
+  const preferFile = Boolean((args as any)?.preferFile);
+  const maxSvgBytesRaw = (args as any)?.maxSvgBytes as number | undefined;
+  const maxSvgBytes = typeof maxSvgBytesRaw === 'number' ? maxSvgBytesRaw : Infinity;
+
+  const metaBase: RenderMeta = {
+    pair: pair as Pair,
+    type,
+    limit,
+    indicators: Object.keys(legendMeta),
+    bbMode,
+    range: { start: displayItems[0]?.isoTime || '', end: displayItems.at(-1)?.isoTime || '' },
+    sizeBytes,
+    layerCount,
+  };
+
   const filenameSuffix = withIchimoku ? '_light' : '';
   const filename = `chart-${pair}-${type}-${Date.now()}${filenameSuffix}.svg`;
-  const assetsDir = 'assets';
+  const assetsDir = path.join(process.cwd(), 'assets');
   const outputPath = path.join(assetsDir, filename);
 
+  // preferFile: 必ずファイル保存、svgは返さない
+  if (preferFile) {
+    try {
+      await fs.mkdir(assetsDir, { recursive: true });
+      await fs.writeFile(outputPath, finalSvg);
+      return ok<RenderData, RenderMeta>(
+        `${formatPair(pair)} ${type} chart saved to ${outputPath}`,
+        { filePath: outputPath, svg: undefined, legend: legendMeta },
+        metaBase
+      );
+    } catch (err) {
+      return fail(`render_chart_svg: failed to save SVG (${(err as any)?.message || 'io error'})`, 'io');
+    }
+  }
+
+  // preferFile=false: サイズが閾値以下ならinline、超える場合のみ保存
+  if (sizeBytes <= maxSvgBytes) {
+    if (summaryNotes.length) {
+      // 軽量化メモをサマリーにのみ表示
+      const summary = `${formatPair(pair)} ${type} chart rendered (${summaryNotes.join('; ')})`;
+      return ok<RenderData, RenderMeta>(summary, { svg: finalSvg, filePath: undefined, legend: legendMeta }, metaBase);
+    }
+    return ok<RenderData, RenderMeta>(`${formatPair(pair)} ${type} chart rendered`, { svg: finalSvg, filePath: undefined, legend: legendMeta }, metaBase);
+  }
+
+  // 超過 → ファイル保存し、truncated=true で返す
   try {
     await fs.mkdir(assetsDir, { recursive: true });
-    const finalSvg = withIchimoku ? lightSvg : fullSvg;
     await fs.writeFile(outputPath, finalSvg);
-    const sizeBytes = Buffer.byteLength(finalSvg, 'utf8');
-    const layerCount = estimatedLayers;
-    const maxSvgBytes = (args as any)?.maxSvgBytes as number | undefined;
-    const truncated = typeof maxSvgBytes === 'number' && sizeBytes > maxSvgBytes;
-
-    let summary = `${formatPair(pair)} ${type} chart saved to ${outputPath}`;
-    if (summaryNotes.length) summary += ` (${summaryNotes.join('; ')})`;
     return ok<RenderData, RenderMeta>(
-      summary,
-      { filePath: outputPath, svg: truncated ? undefined : lightSvg, legend: legendMeta },
-      { pair: pair as Pair, type, limit, indicators: Object.keys(legendMeta), bbMode, range: { start: displayItems[0]?.isoTime || '', end: displayItems.at(-1)?.isoTime || '' }, sizeBytes, layerCount, truncated, fallback: summaryNotes[0] }
+      `${formatPair(pair)} ${type} chart saved to ${outputPath} (truncated)`,
+      { filePath: outputPath, svg: undefined, legend: legendMeta },
+      { ...metaBase, truncated: true, fallback: summaryNotes[0] }
     );
   } catch (err) {
+    // preferFile が true の場合はフォールバックせずにエラーにする
     console.warn(
       `[Warning] Failed to save SVG to ${outputPath}. Fallback to inline SVG.`,
       err
     );
-    // ユーザー向けサマリーでは保存失敗を強調しない（内部ログには出力済み）
-    const summary = `${formatPair(pair)} ${type} chart`;
+    // 最後の手段: inline で返却（サイズ超過の可能性に注意）
     return ok<RenderData, RenderMeta>(
-      summary,
-      { svg: lightSvg, legend: legendMeta },
-      { pair: pair as Pair, type, limit, indicators: Object.keys(legendMeta), bbMode, range: { start: displayItems[0]?.isoTime || '', end: displayItems.at(-1)?.isoTime || '' } }
+      `${formatPair(pair)} ${type} chart rendered (fallback inline)`,
+      { svg: finalSvg, filePath: undefined, legend: legendMeta },
+      metaBase
     );
   }
 }
