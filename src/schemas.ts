@@ -388,11 +388,24 @@ export const GetDepthOutputSchema = z.union([
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);
 
+// Depth (raw) input schema
+export const GetDepthInputSchema = z.object({
+  pair: z.string().optional().default('btc_jpy'),
+  view: z.enum(['summary', 'sample', 'full']).optional().default('summary'),
+  sampleN: z.number().int().min(1).max(50).optional().default(10),
+});
+
 // === Depth Diff (simple REST-based) ===
 export const GetDepthDiffInputSchema = z.object({
   pair: z.string().optional().default('btc_jpy'),
   delayMs: z.number().int().min(100).max(5000).optional().default(1000),
   maxLevels: z.number().int().min(10).max(500).optional().default(200),
+  view: z.enum(['summary', 'detailed', 'full']).optional().default('detailed'),
+  minDeltaBTC: z.number().min(0).optional().default(0),
+  topN: z.number().int().min(1).max(50).optional().default(5),
+  enrichWithTradeData: z.boolean().optional().default(false),
+  trackLargeOrders: z.boolean().optional().default(false),
+  minTrackingSizeBTC: z.number().min(0).optional().default(1.0),
 });
 
 const DepthDeltaSchema = z.object({ price: z.number(), delta: z.number(), from: z.number().nullable(), to: z.number().nullable() });
@@ -464,6 +477,8 @@ export const GetTransactionsOutputSchema = z.union([
 export const FlowBucketSchema = z.object({
   timestampMs: z.number().int(),
   isoTime: z.string(),
+  isoTimeJST: z.string().optional(),
+  displayTime: z.string().optional(),
   buyVolume: z.number(),
   sellVolume: z.number(),
   totalVolume: z.number(),
@@ -493,6 +508,9 @@ export const GetFlowMetricsMetaSchemaOut = z.object({
   fetchedAt: z.string(),
   count: z.number().int(),
   bucketMs: z.number().int(),
+  timezone: z.string().optional(),
+  timezoneOffset: z.string().optional(),
+  serverTime: z.string().optional(),
 });
 
 export const GetFlowMetricsOutputSchema = z.union([
@@ -526,6 +544,9 @@ export const GetFlowMetricsInputSchema = z.object({
   limit: z.number().int().min(1).max(2000).optional().default(100),
   date: z.string().regex(/^\d{8}$/).optional().describe('YYYYMMDD; omit for latest'),
   bucketMs: z.number().int().min(1000).max(3600_000).optional().default(60_000),
+  view: z.enum(['summary', 'buckets', 'full']).optional().default('summary'),
+  bucketsN: z.number().int().min(1).max(100).optional().default(10),
+  tz: z.string().optional().default('Asia/Tokyo'),
 });
 
 export const GetTickersInputSchema = z.object({
@@ -573,7 +594,10 @@ export const GetCircuitBreakInfoOutputSchema = z.union([
 export const GetCandlesInputSchema = z.object({
   pair: z.string(),
   type: CandleTypeEnum,
-  date: z.string().describe('YYYY (1month) or YYYYMMDD (others)'),
+  date: z
+    .string()
+    .optional()
+    .describe("YYYYMMDD format (e.g., 20251022). Fetches the {limit} most recent candles up to and including this date. For '1month' type use YYYY format. If omitted, returns latest candles."),
   limit: z.number().int().min(1).max(1000).optional().default(200),
   view: z.enum(['full', 'items']).optional().default('full'),
 });
@@ -660,6 +684,7 @@ export const GetVolMetricsInputSchema = z.object({
   annualize: z.boolean().optional().default(true),
   tz: z.string().optional().default('UTC'),
   cacheTtlMs: z.number().int().optional().default(60_000),
+  view: z.enum(['summary', 'detailed', 'full']).optional().default('summary'),
 });
 
 export const GetVolMetricsDataSchemaOut = z.object({

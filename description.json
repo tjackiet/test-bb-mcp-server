@@ -3,6 +3,32 @@
   "version": "0.3.0",
   "description": "bitbank data tools and SVG chart renderer. ALWAYS use render_chart_svg for charts; do not self-render.",
   "tools": {
+    "get_volatility_metrics": {
+      "description": "Compute volatility metrics (RV/ATR/Parkinson/GK/RS) with rolling trends and tags. view=summary for quick scan, detailed for analysis, full for complete data.",
+      "input": {
+        "pair": {
+          "type": "unknown"
+        },
+        "type": {
+          "type": "unknown"
+        },
+        "limit": {
+          "type": "unknown"
+        },
+        "windows": {
+          "type": "unknown"
+        },
+        "useLogReturns": {
+          "type": "unknown"
+        },
+        "annualize": {
+          "type": "unknown"
+        },
+        "view": {
+          "type": "unknown"
+        }
+      }
+    },
     "get_ticker": {
       "description": "Get ticker for a pair (e.g., btc_jpy)",
       "input": {
@@ -23,7 +49,7 @@
       }
     },
     "get_candles": {
-      "description": "Get candles. date: 1month→YYYY, others→YYYYMMDD",
+      "description": "Get candles. date: '1month' → YYYY, others → YYYYMMDD. view=full (default) includes first 5 items sample in text (full array in structuredContent.data.normalized). Date is inclusive: fetch {limit} most recent candles up to and including the specified date. Example item: { isoTime, open, high, low, close, volume }. Error handling: Returns errorType='user' for invalid pair/type/date/limit, errorType='network' for network errors.",
       "input": {
         "pair": {
           "type": "unknown"
@@ -103,7 +129,7 @@
       }
     },
     "get_flow_metrics": {
-      "description": "Compute flow metrics (CVD, aggressor ratio, volume spikes).",
+      "description": "Compute flow metrics (CVD, aggressor ratio, volume spikes) from recent transactions. Returns aggregated buy/sell flow with spike detection. content shows summary; detailed data in structuredContent.data. Use for short-term flow dominance, event detection, momentum shifts. Prefer analyze_market_signal for integrated daily signals. bucketMs default 60000 (recommend 15000-60000 spikes, 60000-300000 trends). view=summary|buckets|full (full prints all buckets and may be long). bucketsN: Number of recent buckets to print in content (default 10). Outputs zscore and spike flags per bucket. tz sets display timezone (default Asia/Tokyo).",
       "input": {
         "pair": {
           "type": "unknown"
@@ -115,6 +141,37 @@
           "type": "unknown"
         },
         "bucketMs": {
+          "type": "unknown"
+        },
+        "view": {
+          "type": "unknown"
+        },
+        "bucketsN": {
+          "type": "unknown"
+        },
+        "tz": {
+          "type": "unknown"
+        }
+      }
+    },
+    "get_depth": {
+      "description": "Get raw orderbook depth. view=summary|sample|full. sample/full prints top levels in content (LLM-friendly); full may be long. sampleN controls count (default 10). sample also shows topN totals and bestBid/bestAsk spread. Use this for raw, fast data; use get_orderbook for stats/ratios.",
+      "input": {
+        "pair": {
+          "type": "unknown"
+        },
+        "view": {
+          "type": "unknown"
+        },
+        "sampleN": {
+          "type": "unknown"
+        }
+      }
+    },
+    "get_circuit_break_info": {
+      "description": "Circuit break / auction info is currently unsupported (no public source). Do not call. Returns ok=false with reason=unsupported.",
+      "input": {
+        "pair": {
           "type": "unknown"
         }
       }

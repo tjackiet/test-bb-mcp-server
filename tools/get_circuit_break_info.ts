@@ -13,19 +13,10 @@ export default async function getCircuitBreakInfo(pair: string = 'btc_jpy') {
   const chk = ensurePair(pair);
   if (!chk.ok) return GetCircuitBreakInfoOutputSchema.parse(fail(chk.error.message, chk.error.type)) as any;
 
-  // 公開APIの有無が不明なため、暫定のnull埋めスキーマを返す
-  const info = {
-    mode: 'unknown' as 'unknown',
-    estimated_itayose_price: null,
-    estimated_itayose_amount: null,
-    reopen_timestamp: null,
-    reopen_isoTime: null,
-  };
-
-  const summary = formatSummary({ pair: chk.pair, latest: undefined, extra: 'circuit-break info: unavailable (placeholder)' });
-  const meta = createMeta(chk.pair, { source: 'none' });
-
-  return GetCircuitBreakInfoOutputSchema.parse(ok(summary, { info } as any, meta as any)) as any;
+  // 現時点では bitbank Public API にサーキットブレイク相当の情報源がありません
+  // LLMやユーザーが誤って呼ばないよう、常に ok=false で未対応を明示します
+  const summary = 'Error: circuit break info is not available (unsupported)';
+  return GetCircuitBreakInfoOutputSchema.parse(fail(summary.replace('Error: ', ''), 'user', { reason: 'unsupported', available: false })) as any;
 }
 
 

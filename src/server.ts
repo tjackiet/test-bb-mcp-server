@@ -12,6 +12,7 @@ import getDepth from '../tools/get_depth.js';
 import { logToolRun, logError } from '../lib/logger.js';
 // schemas.ts を単一のソースとして参照し、型は z.infer に委譲
 import { RenderChartSvgInputSchema, RenderChartSvgOutputSchema, GetTickerInputSchema, GetOrderbookInputSchema, GetCandlesInputSchema, GetIndicatorsInputSchema } from './schemas.js';
+import { GetDepthInputSchema } from './schemas.js';
 import { GetVolMetricsInputSchema, GetVolMetricsOutputSchema } from './schemas.js';
 import { GetMarketSummaryInputSchema, GetMarketSummaryOutputSchema } from './schemas.js';
 import { GetTickersInputSchema } from './schemas.js';
@@ -159,9 +160,9 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_candles',
-	{ description: 'Get candles. date: 1month → YYYY, others → YYYYMMDD', inputSchema: GetCandlesInputSchema },
+	{ description: "Get candles. date: '1month' → YYYY, others → YYYYMMDD. view=full (default) includes first 5 items sample in text (full array in structuredContent.data.normalized). Date is inclusive: fetch {limit} most recent candles up to and including the specified date. Example item: { isoTime, open, high, low, close, volume }. Error handling: Returns errorType='user' for invalid pair/type/date/limit, errorType='network' for network errors.", inputSchema: GetCandlesInputSchema },
 	async ({ pair, type, date, limit, view }) => {
-		const result = await getCandles(pair, type, date, limit);
+		const result: any = await getCandles(pair, type, date, limit);
 		if (view === 'items') {
 			const items = result?.data?.normalized ?? [];
 			return {
@@ -170,20 +171,112 @@ registerToolWithLog(
 				structuredContent: { items } as Record<string, unknown>,
 			};
 		}
-		return result;
+		// view=full でもサンプル（先頭5件）を本文に含める
+		try {
+			const items = Array.isArray(result?.data?.normalized) ? result.data.normalized : [];
+			const sample = items.slice(0, 5);
+			const header = String(result?.summary ?? `${String(pair).toUpperCase()} [${String(type)}]`);
+			const text = `${header}\nSample (first ${sample.length}/${items.length}):\n${JSON.stringify(sample, null, 2)}`;
+			return { content: [{ type: 'text', text }], structuredContent: result as Record<string, unknown> };
+		} catch {
+			return result;
+		}
 	}
 );
 
 registerToolWithLog(
 	'get_indicators',
-	{ description: 'Get technical indicators for a pair. For meaningful results, use a sufficient `limit` (e.g., 200 for daily candles). If `limit` is omitted, an appropriate default value will be used.', inputSchema: GetIndicatorsInputSchema },
-	async ({ pair, type, limit }) => getIndicators(pair, type, limit)
+	{ description: 'Get technical indicators (SMA/RSI/BB/Ichimoku/MACD). content には主要指標の要点サマリーを表示します（詳細は structuredContent.data.indicators / chart に含まれます）。分析には十分な `limit` を指定してください（例: 日足は200本）。', inputSchema: GetIndicatorsInputSchema },
+	async ({ pair, type, limit }) => {
+		const res: any = await getIndicators(pair, type, limit);
+		if (!res?.ok) return res;
+		const ind: any = res?.data?.indicators ?? {};
+		const candles: any[] = Array.isArray(res?.data?.normalized) ? res.data.normalized : [];
+		const close = candles.at(-1)?.close ?? null;
+		const rsi = ind.RSI_14 ?? null;
+		const sma25 = ind.SMA_25 ?? null;
+		const sma75 = ind.SMA_75 ?? null;
+		const sma200 = ind.SMA_200 ?? null;
+		const bbMid = ind.BB_middle ?? ind.BB2_middle ?? null;
+		const bbUp = ind.BB_upper ?? ind.BB2_upper ?? null;
+		const bbLo = ind.BB_lower ?? ind.BB2_lower ?? null;
+		const sigmaZ = (close != null && bbMid != null && bbUp != null && (bbUp - bbMid) !== 0)
+			? Number((2 * (close - bbMid) / (bbUp - bbMid)).toFixed(2))
+			: null;
+		const bandWidthPct = (bbUp != null && bbLo != null && bbMid)
+			? Number((((bbUp - bbLo) / bbMid) * 100).toFixed(2))
+			: null;
+		const macdLine = ind.MACD_line ?? null;
+		const macdSignal = ind.MACD_signal ?? null;
+		const macdHist = ind.MACD_hist ?? null;
+		const spanA = ind.ICHIMOKU_spanA ?? null;
+		const spanB = ind.ICHIMOKU_spanB ?? null;
+		const cloudTop = (spanA != null && spanB != null) ? Math.max(spanA, spanB) : null;
+		const cloudBot = (spanA != null && spanB != null) ? Math.min(spanA, spanB) : null;
+		const cloudPos = (close != null && cloudTop != null && cloudBot != null)
+			? (close > cloudTop ? 'above_cloud' : (close < cloudBot ? 'below_cloud' : 'in_cloud'))
+			: 'unknown';
+		const trend = res?.data?.trend ?? 'unknown';
+		const count = res?.meta?.count ?? candles.length ?? 0;
+
+		const lines: string[] = [];
+		lines.push(`${String(pair).toUpperCase()} [${String(type)}] close=${close ?? 'n/a'} RSI=${rsi ?? 'n/a'} trend=${trend} (count=${count})`);
+		lines.push('');
+		lines.push('【モメンタム】');
+		lines.push(`  RSI(14): ${rsi ?? 'n/a'}`);
+		lines.push(`  MACD: line=${macdLine ?? 'n/a'} signal=${macdSignal ?? 'n/a'} hist=${macdHist ?? 'n/a'}`);
+		lines.push('');
+		lines.push('【トレンド】');
+		lines.push(`  SMA(25/75/200): ${sma25 ?? 'n/a'} / ${sma75 ?? 'n/a'} / ${sma200 ?? 'n/a'}`);
+		lines.push('');
+		lines.push('【ボラティリティ（BB±2σ）】');
+		lines.push(`  middle=${bbMid ?? 'n/a'} upper=${bbUp ?? 'n/a'} lower=${bbLo ?? 'n/a'}`);
+		lines.push(`  bandWidth=${bandWidthPct != null ? bandWidthPct + '%' : 'n/a'} position=${sigmaZ != null ? sigmaZ + 'σ' : 'n/a'}`);
+		// 軽い解釈（1行）: analyze_* の領域を侵さない簡易ヒント
+		if (sigmaZ != null) {
+			let hint = '';
+			if (sigmaZ <= -1) hint = '現在価格は下限付近、反発の可能性';
+			else if (sigmaZ >= 1) hint = '現在価格は上限付近、反落の可能性';
+			else hint = 'バンド中央付近で方向感弱い';
+			const bwHint = bandWidthPct != null ? (bandWidthPct < 8 ? '（収縮気味）' : (bandWidthPct > 20 ? '（拡大型）' : '')) : '';
+			lines.push(`  ${hint}${bwHint}`);
+		}
+		lines.push('');
+		lines.push('【一目均衡表】');
+		lines.push(`  spanA=${spanA ?? 'n/a'} spanB=${spanB ?? 'n/a'} cloud=${cloudPos}`);
+		lines.push('');
+		lines.push('詳細は structuredContent.data.indicators / chart を参照。必要に応じて: analyze_bb_snapshot / analyze_ichimoku_snapshot / analyze_sma_snapshot / analyze_market_signal');
+		const text = lines.join('\n');
+		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+	}
 );
 
 registerToolWithLog(
 	'get_depth',
-	{ description: 'Get raw orderbook depth for a pair (bids/asks up to 200 each).', inputSchema: z.object({ pair: z.string().default('btc_jpy') }) },
-	async ({ pair }: any) => getDepth(pair)
+	{ description: 'Get raw orderbook depth. view=summary|sample|full. sample/full outputs top levels into content for LLM analysis; full may be long. Use sampleN to control count (default 10). sample shows totals and bestBid/bestAsk spread.', inputSchema: GetDepthInputSchema },
+	async ({ pair, view, sampleN }: any) => {
+		const res: any = await getDepth(pair);
+		if (!res?.ok) return res;
+		if (view === 'summary') return res;
+		const asks: any[] = Array.isArray(res?.data?.asks) ? res.data.asks : [];
+		const bids: any[] = Array.isArray(res?.data?.bids) ? res.data.bids : [];
+		const n = Number(sampleN ?? 10);
+		const fmt = (levels: any[]) => levels.map(([p, s]) => `${Number(p).toLocaleString()} : ${Number(s)}`).join('\n');
+		const topAsks = view === 'sample' ? asks.slice(0, n) : asks;
+		const topBids = view === 'sample' ? bids.slice(0, n) : bids;
+		const sumQty = (levels: any[]) => levels.reduce((a, b) => a + Number(b?.[1] ?? 0), 0);
+		const bestAsk = topAsks[0]?.[0] != null ? Number(topAsks[0][0]) : null;
+		const bestBid = topBids[0]?.[0] != null ? Number(topBids[0][0]) : null;
+		const spread = bestAsk != null && bestBid != null ? bestAsk - bestBid : null;
+		let text = `${String(pair).toUpperCase()} Depth`;
+		if (view === 'sample') {
+			text += `\nBest Bid: ${bestBid ?? 'n/a'} | Best Ask: ${bestAsk ?? 'n/a'}${spread != null ? ` | Spread: ${spread}` : ''}`;
+			text += `\nTotals (top ${n}): bids=${sumQty(topBids).toFixed(4)} asks=${sumQty(topAsks).toFixed(4)}`;
+		}
+		text += `\n\nTop ${view === 'sample' ? n : topBids.length} Bids:\n${fmt(topBids)}`;
+		text += `\n\nTop ${view === 'sample' ? n : topAsks.length} Asks:\n${fmt(topAsks)}`;
+		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+	}
 );
 
 // render_chart_html は当面サポート外のため未登録
@@ -216,13 +309,76 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_flow_metrics',
-	{ description: 'Compute flow metrics (CVD, aggressor ratio, volume spikes) from recent transactions.', inputSchema: GetFlowMetricsInputSchema },
-	async ({ pair, limit, date, bucketMs }: any) => getFlowMetrics(pair, limit, date, bucketMs)
+	{ description: 'Compute flow metrics (CVD, aggressor ratio, volume spikes) from recent transactions. Returns aggregated buy/sell flow analysis with spike detection. content shows summary stats; detailed data in structuredContent.data. Use for: short-term flow dominance, event detection, momentum shifts. For comprehensive multi-factor analysis, prefer analyze_market_signal. bucketMs: time bucket in ms (default 60000). Recommended: 15000-60000 for spike detection, 60000-300000 for trend analysis. limit: 100-2000 (default 100). view=summary|buckets|full (full prints all buckets and may be long); bucketsN controls how many recent buckets to print (default 10). Outputs zscore and spike flags per bucket. tz sets display timezone (default Asia/Tokyo).', inputSchema: GetFlowMetricsInputSchema },
+	async ({ pair, limit, date, bucketMs, view, bucketsN, tz }: any) => {
+		const res: any = await getFlowMetrics(pair, Number(limit), date, Number(bucketMs), tz);
+		if (!res?.ok) return res;
+		if (view === 'summary') return res;
+		const agg = res?.data?.aggregates ?? {};
+		const buckets: any[] = res?.data?.series?.buckets ?? [];
+		const n = Number(bucketsN ?? 10);
+		const last = buckets.slice(-n);
+		const fmt = (b: any) => `${b.displayTime || b.isoTime}  buy=${b.buyVolume} sell=${b.sellVolume} total=${b.totalVolume} cvd=${b.cvd}${b.spike ? ` spike=${b.spike}` : ''}`;
+		let text = `${String(pair).toUpperCase()} Flow Metrics (bucketMs=${res?.data?.params?.bucketMs ?? bucketMs})\n`;
+		text += `Totals: trades=${agg.totalTrades} buyVol=${agg.buyVolume} sellVol=${agg.sellVolume} net=${agg.netVolume} buy%=${(agg.aggressorRatio * 100 || 0).toFixed(1)} CVD=${agg.finalCvd}`;
+		if (view === 'buckets') {
+			text += `\n\nRecent ${last.length} buckets:\n` + last.map(fmt).join('\n');
+			return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+		}
+		// full
+		text += `\n\nAll buckets:\n` + buckets.map(fmt).join('\n');
+		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+	}
 );
 registerToolWithLog(
 	'get_depth_diff',
-	{ description: 'Compute simple REST-based depth diff using two snapshots separated by delayMs.', inputSchema: GetDepthDiffInputSchema },
-	async ({ pair, delayMs, maxLevels }: any) => getDepthDiff(pair, delayMs, maxLevels)
+	{ description: 'Depth diff between two REST snapshots. view=summary|detailed|full. detailed/full prints major changes with price/size; filters: minDeltaBTC, topN.', inputSchema: GetDepthDiffInputSchema },
+	async ({ pair, delayMs, maxLevels, view, minDeltaBTC, topN, enrichWithTradeData, trackLargeOrders, minTrackingSizeBTC }: any) => {
+		const res: any = await getDepthDiff(pair, delayMs, maxLevels);
+		if (!res?.ok) return res;
+		if (view === 'summary') return res;
+		const agg = res?.data?.aggregates || {};
+		const asks = res?.data?.asks || {};
+		const bids = res?.data?.bids || {};
+		const abs = (n: number) => Math.abs(Number(n || 0));
+		const flt = (arr: any[], key: 'size' | 'delta') => (arr || []).filter((x) => abs(x?.[key]) >= (minDeltaBTC || 0)).sort((a, b) => abs(b[key]) - abs(a[key])).slice(0, topN || 5);
+		const fmt = (x: any, side: 'ask' | 'bid', kind: 'added' | 'removed' | 'changed') => {
+			const sign = kind === 'removed' ? '-' : (kind === 'changed' ? (x.delta >= 0 ? '+' : '') : '+');
+			const qty = kind === 'changed' ? x.delta : x.size;
+			return `${Number(x.price).toLocaleString()}円 ${sign}${Number(qty).toFixed(2)} BTC (${side})`;
+		};
+		const added = [...flt(asks.added, 'size').map((x: any) => fmt(x, 'ask', 'added')), ...flt(bids.added, 'size').map((x: any) => fmt(x, 'bid', 'added'))];
+		const removed = [...flt(asks.removed, 'size').map((x: any) => fmt(x, 'ask', 'removed')), ...flt(bids.removed, 'size').map((x: any) => fmt(x, 'bid', 'removed'))];
+		const changed = [...flt(asks.changed, 'delta').map((x: any) => fmt(x, 'ask', 'changed')), ...flt(bids.changed, 'delta').map((x: any) => fmt(x, 'bid', 'changed'))];
+		let text = `=== ${String(pair).toUpperCase()} 板変化 (${Number(delayMs) / 1000}s) ===\n`;
+		const tilt = agg.bidNetDelta - agg.askNetDelta;
+		text += `${tilt >= 0 ? '🟢 買い圧力優勢' : '🔴 売り圧力優勢'}: bid ${agg.bidNetDelta} BTC, ask ${agg.askNetDelta} BTC`;
+		text += `\n\n📊 主要な変化:`;
+		const lines = [
+			...added.map((s: string) => `[追加] ${s}`),
+			...removed.map((s: string) => `[削除] ${s}`),
+			...changed.map((s: string) => `[増減] ${s}`),
+		];
+		text += `\n` + (lines.length ? lines.join('\n') : '該当なし');
+		// optional: enrich with trades and simple tracking hints
+		if (enrichWithTradeData) {
+			text += `\n\n🧾 約定照合: （簡易）観測期間内の実約定を参照して大口変化の相関を示します（詳細は別ツール推奨）`;
+			// 提示のみ（実装は get_transactions を別途連携する拡張余地）
+		}
+		if (trackLargeOrders) {
+			text += `\n\n🛰️ 追跡対象: ${minTrackingSizeBTC}BTC 以上の大口を優先的に監視（試験的）`;
+		}
+		if (view === 'full') {
+			const dump = (title: string, arr: any[], side: 'ask' | 'bid', kind: 'added' | 'removed' | 'changed') => `\n\n--- ${title} (${side}) ---\n` + (arr || []).map((x) => fmt(x, side, kind)).join('\n');
+			text += dump('ADDED', asks.added, 'ask', 'added');
+			text += dump('REMOVED', asks.removed, 'ask', 'removed');
+			text += dump('CHANGED', asks.changed, 'ask', 'changed');
+			text += dump('ADDED', bids.added, 'bid', 'added');
+			text += dump('REMOVED', bids.removed, 'bid', 'removed');
+			text += dump('CHANGED', bids.changed, 'bid', 'changed');
+		}
+		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+	}
 );
 
 registerToolWithLog(
@@ -233,16 +389,114 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_volatility_metrics',
-	{ description: 'Compute deterministic volatility metrics (RV/ATR/Parkinson/GK/RS) over candles.', inputSchema: GetVolMetricsInputSchema },
-	async ({ pair, type, limit, windows, useLogReturns, annualize }: any) => {
-		const result = await getVolatilityMetrics(pair, type, limit, windows, { useLogReturns, annualize });
-		return GetVolMetricsOutputSchema.parse(result as any);
+	{ description: 'Compute deterministic volatility metrics (RV/ATR/Parkinson/GK/RS) over candles. content shows key aggregates and rolling trends (summary/detailed/full via view). Tags always printed. Use with analyze_market_signal for integrated judgment.', inputSchema: GetVolMetricsInputSchema },
+	async ({ pair, type, limit, windows, useLogReturns, annualize, view }: any) => {
+		const res: any = await getVolatilityMetrics(pair, type, limit, windows, { useLogReturns, annualize });
+		if (!res?.ok) return res;
+		const meta = res?.data?.meta || {};
+		const a = res?.data?.aggregates || {};
+		const roll: any[] = Array.isArray(res?.data?.rolling) ? res.data.rolling : [];
+		const closeSeries: number[] = Array.isArray(res?.data?.series?.close) ? res.data.series.close : [];
+		const lastClose = closeSeries.at(-1) ?? null;
+		const ann = !!meta.annualize;
+		const baseMs = Number(meta.baseIntervalMs ?? 0);
+		const annFactor = ann && baseMs > 0 ? Math.sqrt(365 * 24 * 3600 * 1000 / baseMs) : 1;
+		const rvAnn = a.rv_std_ann != null ? a.rv_std_ann : (a.rv_std != null ? a.rv_std * annFactor : null);
+		const pkAnn = a.parkinson != null ? a.parkinson * (ann ? annFactor : 1) : null;
+		const gkAnn = a.garmanKlass != null ? a.garmanKlass * (ann ? annFactor : 1) : null;
+		const rsAnn = a.rogersSatchell != null ? a.rogersSatchell * (ann ? annFactor : 1) : null;
+		const atrAbs = a.atr != null ? a.atr : null;
+		const atrPct = lastClose ? (atrAbs as number) / lastClose : null;
+
+		// tags: base + derived
+		const tagsBase: string[] = Array.isArray(res?.data?.tags) ? [...res.data.tags] : [];
+		const tagsDerived: string[] = [];
+		if (Array.isArray(roll) && roll.length >= 2) {
+			const minW = Math.min(...roll.map(r => r.window));
+			const maxW = Math.max(...roll.map(r => r.window));
+			const short = roll.find(r => r.window === minW);
+			const long = roll.find(r => r.window === maxW);
+			const shortVal = short ? (short.rv_std_ann ?? (short.rv_std != null ? short.rv_std * annFactor : null)) : null;
+			const longVal = long ? (long.rv_std_ann ?? (long.rv_std != null ? long.rv_std * annFactor : null)) : null;
+			if (shortVal != null && longVal != null) {
+				if (shortVal > longVal * 1.05) tagsDerived.push('expanding_vol');
+				else if (shortVal < longVal * 0.95) tagsDerived.push('contracting_vol');
+				if (shortVal > 0.4) tagsDerived.push('high_short_term_vol');
+			}
+		}
+		if (rvAnn != null) {
+			if (rvAnn > 0.5) tagsDerived.push('high_vol');
+			if (rvAnn < 0.2) tagsDerived.push('low_vol');
+		}
+		if (rvAnn != null && atrPct != null && rvAnn > 0) {
+			const diff = Math.abs(atrPct - rvAnn) / rvAnn;
+			if (diff > 0.2) tagsDerived.push('atr_divergence');
+		}
+		const tagsAll = [...new Set([...(tagsBase || []), ...tagsDerived])];
+
+		// summary view
+		if (view === 'summary') {
+			const line = `${String(pair).toUpperCase()} [${String(type)}] samples=${meta.sampleSize ?? 'n/a'} RV=${fmtPct(rvAnn)} ATR=${fmtCurrencyShort(pair, atrAbs)} PK=${fmtPct(pkAnn)} GK=${fmtPct(gkAnn)} RS=${fmtPct(rsAnn)} Tags: ${tagsAll.join(', ')}`;
+			return { content: [{ type: 'text', text: line }], structuredContent: { ...res, data: { ...res.data, tags: tagsAll } } as Record<string, unknown> };
+		}
+
+		// detailed/full
+		const windowsList = roll.map(r => r.window).join('/');
+		const header = `${String(pair).toUpperCase()} [${String(type)}] close=${lastClose != null ? Number(lastClose).toLocaleString() : 'n/a'}\n`;
+		const block1 = `【Volatility Metrics${ann ? ' (annualized)' : ''}, ${meta.sampleSize ?? 'n/a'} samples】\nRV (std): ${fmtPct(rvAnn)}\nATR: ${fmtCurrency(pair, atrAbs)}\nParkinson: ${fmtPct(pkAnn)}\nGarman-Klass: ${fmtPct(gkAnn)}\nRogers-Satchell: ${fmtPct(rsAnn)}`;
+
+		const maxW = roll.length ? Math.max(...roll.map(r => r.window)) : null;
+		const baseVal = maxW != null ? (roll.find(r => r.window === maxW)?.rv_std_ann ?? ((roll.find(r => r.window === maxW)?.rv_std ?? null) as number) * (ann ? annFactor : 1)) : null;
+		const arrowFor = (val: number | null | undefined) => {
+			if (val == null || baseVal == null) return '→';
+			if (val > baseVal * 1.05) return '⬆⬆';
+			if (val > baseVal) return '⬆';
+			if (val < baseVal * 0.95) return '⬇⬇';
+			if (val < baseVal) return '⬇';
+			return '→';
+		};
+		const trendLines = roll.map(r => {
+			const now = r.rv_std_ann ?? (r.rv_std != null ? r.rv_std * (ann ? annFactor : 1) : null);
+			return `${r.window}-day RV: ${fmtPct(now)} ${arrowFor(now)}`;
+		});
+
+		let text = header + '\n' + block1 + '\n\n' + `【Rolling Trends (${windowsList}-day windows)】\n` + trendLines.join('\n') + '\n\n' + `【Assessment】\nTags: ${tagsAll.join(', ')}`;
+		if (view === 'full') {
+			const series = res?.data?.series || {};
+			const tsArr: number[] = Array.isArray(series.ts) ? series.ts : [];
+			const firstIso = tsArr.length ? new Date(tsArr[0]).toISOString() : 'n/a';
+			const lastIso = tsArr.length ? new Date(tsArr[tsArr.length - 1]).toISOString() : 'n/a';
+			const cArr: number[] = Array.isArray(series.close) ? series.close : [];
+			const minClose = cArr.length ? Math.min(...cArr) : null;
+			const maxClose = cArr.length ? Math.max(...cArr) : null;
+			const retArr: number[] = Array.isArray(series.ret) ? series.ret : [];
+			const mean = retArr.length ? (retArr.reduce((s, v) => s + v, 0) / retArr.length) : null;
+			const std = retArr.length ? Math.sqrt(retArr.reduce((s, v) => s + Math.pow(v - (mean as number), 2), 0) / retArr.length) : null;
+			text += `\n\n【Series】\nTotal: ${meta.sampleSize ?? cArr.length} candles\nFirst: ${firstIso} , Last: ${lastIso}\nClose range: ${minClose != null ? Number(minClose).toLocaleString() : 'n/a'} - ${maxClose != null ? Number(maxClose).toLocaleString() : 'n/a'} JPY\nReturns: mean=${mean != null ? (mean * 100).toFixed(2) + '%' : 'n/a'}, std=${std != null ? (std * 100).toFixed(2) + '%' : 'n/a'}${ann ? ' (base interval)' : ''}`;
+		}
+		return { content: [{ type: 'text', text }], structuredContent: { ...res, data: { ...res.data, tags: tagsAll } } as Record<string, unknown> };
+
+		function fmtPct(x: any) { return x == null ? 'n/a' : `${Number(x * 100).toFixed(1)}%`; }
+		function fmtCurrency(p: any, v: any) {
+			if (v == null) return 'n/a';
+			const isJpy = typeof p === 'string' && p.toLowerCase().includes('jpy');
+			return isJpy ? `${Number(v).toLocaleString()} JPY` : `${Number(v).toFixed(2)}`;
+		}
+		function fmtCurrencyShort(p: any, v: any) {
+			if (v == null) return 'n/a';
+			const isJpy = typeof p === 'string' && p.toLowerCase().includes('jpy');
+			if (isJpy) {
+				const n = Number(v);
+				return n >= 1000 ? `${Math.round(n / 1000)}k JPY` : `${n.toLocaleString()} JPY`;
+			}
+			return `${Number(v).toFixed(2)}`;
+		}
 	}
 );
 
 registerToolWithLog(
 	'get_circuit_break_info',
-	{ description: 'Get circuit break / auction status. Placeholder returns nulls when not available.', inputSchema: GetCircuitBreakInfoInputSchema },
+	{ description: 'Circuit break / auction info is currently unsupported (no public source). Do not call. Returns ok=false with reason=unsupported.', inputSchema: GetCircuitBreakInfoInputSchema },
 	async ({ pair }: any) => getCircuitBreakInfo(pair)
 );
 

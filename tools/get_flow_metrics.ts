@@ -6,11 +6,25 @@ import { GetFlowMetricsOutputSchema } from '../src/schemas.js';
 
 type Tx = { price: number; amount: number; side: 'buy' | 'sell'; timestampMs: number; isoTime: string };
 
+function toIsoWithTz(ts: number, tz: string) {
+  try { return new Date(ts).toLocaleString('sv-SE', { timeZone: tz, hour12: false }).replace(' ', 'T'); } catch { return null; }
+}
+function toDisplayTime(ts: number, tz: string) {
+  try {
+    const d = new Date(ts);
+    const time = d.toLocaleTimeString('ja-JP', { timeZone: tz, hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    const date = d.toLocaleDateString('ja-JP', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
+    const tzShort = tz === 'UTC' ? 'UTC' : 'JST';
+    return `${date} ${time} ${tzShort}`;
+  } catch { return null; }
+}
+
 export default async function getFlowMetrics(
   pair: string = 'btc_jpy',
   limit: number = 100,
   date?: string,
-  bucketMs: number = 60_000
+  bucketMs: number = 60_000,
+  tz: string = 'Asia/Tokyo'
 ) {
   const chk = ensurePair(pair);
   if (!chk.ok) return GetFlowMetricsOutputSchema.parse(fail(chk.error.message, chk.error.type)) as any;
@@ -74,6 +88,8 @@ export default async function getFlowMetrics(
       outBuckets.push({
         timestampMs: ts,
         isoTime: new Date(ts).toISOString(),
+        isoTimeJST: toIsoWithTz(ts, tz) ?? undefined,
+        displayTime: toDisplayTime(ts, tz) ?? undefined,
         buyVolume: Number(b.vBuy.toFixed(8)),
         sellVolume: Number(b.vSell.toFixed(8)),
         totalVolume: Number(vol.toFixed(8)),
@@ -113,7 +129,9 @@ export default async function getFlowMetrics(
       series: { buckets: outBuckets },
     };
 
-    const meta = createMeta(chk.pair, { count: totalTrades, bucketMs });
+    const offsetMin = -new Date().getTimezoneOffset();
+    const offset = `${offsetMin >= 0 ? '+' : '-'}${String(Math.floor(Math.abs(offsetMin) / 60)).padStart(2, '0')}:${String(Math.abs(offsetMin) % 60).padStart(2, '0')}`;
+    const meta = createMeta(chk.pair, { count: totalTrades, bucketMs, timezone: tz, timezoneOffset: offset, serverTime: toIsoWithTz(Date.now(), tz) ?? undefined });
     return GetFlowMetricsOutputSchema.parse(ok(summary, data as any, meta as any)) as any;
   } catch (e: any) {
     return GetFlowMetricsOutputSchema.parse(fail(e?.message || 'internal error', 'internal')) as any;

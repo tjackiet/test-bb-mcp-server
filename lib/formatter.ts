@@ -6,7 +6,8 @@ export function formatSummary(args: { pair?: string; timeframe?: string; latest?
 	const { pair, timeframe, latest, extra } = args;
 	const p = formatPair(pair ?? '');
 	const tf = timeframe ? ` [${timeframe}]` : '';
-	const price = typeof latest === 'number' ? ` close=${latest.toLocaleString('ja-JP')}` : '';
+	const isJpy = typeof pair === 'string' && pair.toLowerCase().includes('jpy');
+	const price = typeof latest === 'number' ? ` close=${latest.toLocaleString('ja-JP')}${isJpy ? '円' : ''}` : '';
 	const tail = extra ? ` ${extra}` : '';
 	return `${p}${tf}${price}${tail}`.trim();
 }
