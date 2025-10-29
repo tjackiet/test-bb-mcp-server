@@ -1,9 +1,19 @@
 # ツール一覧と使い分け
-基本的に自由にプロンプトを投げてもらって構いません。
+自由にプロンプトを投げてもらって構いません。
+基本的には、「get_orderbook を使って〜」等、ツール名を指定する必要もありません。
 
 ## 相場の全体像分析
 - analyze_market_signal: 市場の総合スコア（-100〜+100）で強弱を即判定（寄与度・式付き）
 - detect_macd_cross: 直近の MACD クロス銘柄をスクリーニング（短期転換の把握）
+
+## データ取得（I/O レイヤ）
+- get_ticker: 単一ペアの最新価格・出来高（ティッカー）
+- get_tickers: 全ペアのスナップショット（価格・出来高・変化率）
+- get_tickers_jpy: JPY 建てペアの軽量スナップショット（高速）
+- get_candles: ローソク足（OHLCV; 任意本数）
+- get_orderbook: 板（上位 N）。詳細モードで統計付き
+- get_transactions: 約定履歴（サイド/アグレッサー）
+- get_depth: 板の生データ（全層）— 差分・圧力の元
 
 ## 詳細分析（深掘り）
 - get_flow_metrics: CVD / アグレッサー比 / スパイク検知でフロー優勢度を把握
@@ -16,15 +26,6 @@
 - analyze_sma_snapshot: SMA 整列/クロス分析（bullish/bearish/mixed）
 - orderbook_statistics: 板の厚み・流動性分布・偏りの統計
 - get_orderbook_pressure: 価格帯ごとの買い/売り圧力比
-
-## データ取得（I/O レイヤ）
-- get_ticker: 単一ペアの最新価格・出来高（ティッカー）
-- get_tickers: 全ペアのスナップショット（価格・出来高・変化率）
-- get_tickers_jpy: JPY 建てペアの軽量スナップショット（高速）
-- get_candles: ローソク足（OHLCV; 任意本数）
-- get_orderbook: 板（上位 N）。詳細モードで統計付き
-- get_transactions: 約定履歴（サイド/アグレッサー）
-- get_depth: 板の生データ（全層）— 差分・圧力の元
 
 ## 視覚化（最終提示）
 - render_chart_svg: ローソク/折れ線/一目/BB/SMA/Depth を SVG で描画
