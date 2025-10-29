@@ -35,6 +35,7 @@ function diffMaps(prev: Map<number, number>, curr: Map<number, number>) {
   return { added, removed, changed, netDelta };
 }
 
+// Deprecated: retained temporarily for reference; not exported/registered
 export default async function getDepthDiff(pair: string = 'btc_jpy', delayMs: number = 1000, maxLevels: number = 200) {
   const chk = ensurePair(pair);
   if (!chk.ok) return GetDepthDiffOutputSchema.parse(fail(chk.error.message, chk.error.type)) as any;

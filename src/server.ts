@@ -1,7 +1,9 @@
 import 'dotenv/config';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
+import { randomUUID } from 'node:crypto';
 import getTicker from '../tools/get_ticker.js';
 import getOrderbook from '../tools/get_orderbook.js';
 import getCandles from '../tools/get_candles.js';
@@ -14,29 +16,36 @@ import { logToolRun, logError } from '../lib/logger.js';
 import { RenderChartSvgInputSchema, RenderChartSvgOutputSchema, GetTickerInputSchema, GetOrderbookInputSchema, GetCandlesInputSchema, GetIndicatorsInputSchema } from './schemas.js';
 import { GetDepthInputSchema } from './schemas.js';
 import { GetVolMetricsInputSchema, GetVolMetricsOutputSchema } from './schemas.js';
-import { GetMarketSummaryInputSchema, GetMarketSummaryOutputSchema } from './schemas.js';
+// removed GetMarketSummary schemas
 import { GetTickersInputSchema } from './schemas.js';
 import { GetTransactionsInputSchema, GetFlowMetricsInputSchema } from './schemas.js';
-import { GetDepthDiffInputSchema, GetOrderbookPressureInputSchema } from './schemas.js';
+import { GetOrderbookPressureInputSchema } from './schemas.js';
 import { GetCircuitBreakInfoInputSchema } from './schemas.js';
 import getTransactions from '../tools/get_transactions.js';
 import getFlowMetrics from '../tools/get_flow_metrics.js';
 import getTickers from '../tools/get_tickers.js';
-import getDepthDiff from '../tools/get_depth_diff.js';
+// get_depth_diff removed in favor of get_orderbook_statistics
 import getOrderbookPressure from '../tools/get_orderbook_pressure.js';
+import getOrderbookStatistics from '../tools/orderbook_statistics.js';
 import getVolatilityMetrics from '../tools/get_volatility_metrics.js';
-import getMarketSummary from '../tools/get_market_summary.js';
+// removed get_market_summary tool
 import analyzeMarketSignal from '../tools/analyze_market_signal.js';
 import analyzeIchimokuSnapshot from '../tools/analyze_ichimoku_snapshot.js';
 import analyzeBbSnapshot from '../tools/analyze_bb_snapshot.js';
 import analyzeSmaSnapshot from '../tools/analyze_sma_snapshot.js';
 import getTickersJpy from '../tools/get_tickers_jpy.js';
 import detectMacdCross from '../tools/detect_macd_cross.js';
+import detectWhaleEvents from '../tools/detect_whale_events.js';
+import detectFormingPatterns from '../tools/detect_forming_patterns.js';
+import analyzeMacdPattern from './handlers/analyzeMacdPattern.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema } from './schemas.js';
 import getCircuitBreakInfo from '../tools/get_circuit_break_info.js';
 import { AnalyzeMarketSignalInputSchema, AnalyzeMarketSignalOutputSchema } from './schemas.js';
 
 const server = new McpServer({ name: 'bitbank-mcp', version: '0.3.0' });
+// Explicit registries for tools/prompts to improve STDIO inspector compatibility
+const registeredTools: Array<{ name: string; description: string; inputSchema: any }> = [];
+const registeredPrompts: Array<{ name: string; description: string }> = [];
 
 type TextContent = { type: 'text'; text: string; _meta?: Record<string, unknown> };
 type ToolReturn = { content: TextContent[]; structuredContent?: Record<string, unknown> };
@@ -46,16 +55,28 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 const respond = (result: unknown): ToolReturn => {
-	// ルール: 画面には要約のみを出す。詳細データは structuredContent に載せる。
-	// SVGなどの巨大フィールドがテキストに出てしまうのを防止する。
+	// 優先順位: custom content > summary > safe JSON fallback
 	let text = '';
-	if (isPlainObject(result) && typeof (result as any).summary === 'string') {
-		text = String((result as any).summary);
-	} else {
-		// 後方互換: 既存のツールが summary を返さない場合は、短縮版のJSONを出す
+	if (isPlainObject(result)) {
+		const r: any = result as any;
+		// ツールが content を提供している場合（配列 or 文字列）を優先
+		if (Array.isArray(r.content)) {
+			const first = r.content.find((c: any) => c && c.type === 'text' && typeof c.text === 'string');
+			if (first) {
+				text = String(first.text);
+			}
+		} else if (typeof r.content === 'string') {
+			text = String(r.content);
+		}
+		// 上記で未決定なら summary を採用
+		if (!text && typeof r.summary === 'string') {
+			text = String(r.summary);
+		}
+	}
+	// それでも空の場合は安全な短縮JSONにフォールバック
+	if (!text) {
 		try {
 			const json = JSON.stringify(result, (_key, value) => {
-				// よく肥大化する既知キーは省略
 				if (typeof value === 'string' && value.length > 2000) return `…omitted (${value.length} chars)`;
 				return value;
 			}, 2);
@@ -70,16 +91,96 @@ const respond = (result: unknown): ToolReturn => {
 	};
 };
 
+// === In-memory lightweight tracking buffer for depth_diff (per pair) ===
+type TrackedOrder = { id: string; side: 'bid' | 'ask'; price: number; size: number; firstTs: number; lastTs: number };
+const depthTrackByPair: Map<string, { nextId: number; active: TrackedOrder[] }> = new Map();
+
 function registerToolWithLog<S extends z.ZodTypeAny, R = unknown>(
 	name: string,
 	schema: { description: string; inputSchema: S },
 	handler: (input: z.infer<S>) => Promise<R>
 ) {
-	// server.registerTool expects ZodRawShape; unwrap Optional/Default/Effects and extract Object.shape
+	// Convert Zod schema → JSON Schema (subset) for MCP inspector
+	const unwrapZod = (s: any): any => {
+		let cur = s;
+		for (let i = 0; i < 6; i++) {
+			const def = cur?._def;
+			if (!def) break;
+			if (def?.schema) { cur = def.schema; continue; }
+			if (def?.innerType) { cur = def.innerType; continue; }
+			break;
+		}
+		return cur;
+	};
+	const toJsonSchema = (s: any): any => {
+		s = unwrapZod(s);
+		const t = s?._def?.typeName;
+		switch (t) {
+			case 'ZodString': {
+				const out: any = { type: 'string' };
+				const checks = s?._def?.checks || [];
+				const rex = checks.find((c: any) => c.kind === 'regex')?.regex;
+				if (rex) out.pattern = String(rex.source);
+				return out;
+			}
+			case 'ZodNumber': {
+				const out: any = { type: 'number' };
+				const checks = s?._def?.checks || [];
+				const min = checks.find((c: any) => c.kind === 'min')?.value;
+				const max = checks.find((c: any) => c.kind === 'max')?.value;
+				if (Number.isFinite(min)) out.minimum = min;
+				if (Number.isFinite(max)) out.maximum = max;
+				return out;
+			}
+			case 'ZodBoolean': return { type: 'boolean' };
+			case 'ZodEnum': return { type: 'string', enum: [...(s?._def?.values || [])] };
+			case 'ZodArray': return { type: 'array', items: toJsonSchema(s?._def?.type) };
+			case 'ZodTuple': {
+				const items = (s?._def?.items || []).map((it: any) => toJsonSchema(it));
+				return { type: 'array', items, minItems: items.length, maxItems: items.length };
+			}
+			case 'ZodRecord': return { type: 'object', additionalProperties: toJsonSchema(s?._def?.valueType) };
+			case 'ZodObject': {
+				const shape = (s as any).shape || (typeof s?._def?.shape === 'function' ? s._def.shape() : undefined) || {};
+				const properties: Record<string, any> = {};
+				const required: string[] = [];
+				for (const [key, zodProp] of Object.entries(shape)) {
+					// detect defaults and optional
+					let defVal: any = undefined;
+					let isOptional = false;
+					let cur: any = zodProp as any;
+					for (let i = 0; i < 6; i++) {
+						const def = cur?._def;
+						if (!def) break;
+						if (def.typeName === 'ZodDefault') {
+							try { defVal = typeof def.defaultValue === 'function' ? def.defaultValue() : def.defaultValue; } catch { }
+							cur = def.innerType; continue;
+						}
+						if (def.typeName === 'ZodOptional') { isOptional = true; cur = def.innerType; continue; }
+						if (def?.schema) { cur = def.schema; continue; }
+						if (def?.innerType) { cur = def.innerType; continue; }
+						break;
+					}
+					properties[key] = toJsonSchema(cur);
+					if (defVal !== undefined) properties[key].default = defVal;
+					if (!isOptional && defVal === undefined) required.push(key);
+				}
+				const obj: any = { type: 'object', properties };
+				if (required.length) obj.required = required;
+				return obj;
+			}
+			default: return {};
+		}
+	};
+
+	// Build JSON Schema for listing
+	const inputSchemaJson = toJsonSchema(schema.inputSchema) || { type: 'object', properties: {} };
+	registeredTools.push({ name, description: schema.description, inputSchema: inputSchemaJson });
+
+	// For actual registration, the SDK expects a Zod raw shape (not JSON schema)
 	const getRawShape = (s: z.ZodTypeAny): z.ZodRawShape => {
 		let cur: any = s as any;
-		// Unwrap ZodDefault / ZodOptional / ZodEffects chains
-		for (let i = 0; i < 5; i++) {
+		for (let i = 0; i < 6; i++) {
 			if (cur?.shape) break;
 			const def = cur?._def;
 			if (!def) break;
@@ -90,7 +191,8 @@ function registerToolWithLog<S extends z.ZodTypeAny, R = unknown>(
 		if (cur?.shape) return cur.shape as z.ZodRawShape;
 		throw new Error('inputSchema must be or wrap a ZodObject');
 	};
-	server.registerTool(name, { description: schema.description, inputSchema: getRawShape(schema.inputSchema) }, async (input) => {
+
+	server.registerTool(name, { description: schema.description, inputSchema: getRawShape(schema.inputSchema) } as any, async (input: any) => {
 		const t0 = Date.now();
 		try {
 			const result = await handler(input as z.infer<S>);
@@ -330,61 +432,285 @@ registerToolWithLog(
 		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
 	}
 );
+// get_depth_diff removed
+
+/*
 registerToolWithLog(
 	'get_depth_diff',
-	{ description: 'Depth diff between two REST snapshots. view=summary|detailed|full. detailed/full prints major changes with price/size; filters: minDeltaBTC, topN.', inputSchema: GetDepthDiffInputSchema },
-	async ({ pair, delayMs, maxLevels, view, minDeltaBTC, topN, enrichWithTradeData, trackLargeOrders, minTrackingSizeBTC }: any) => {
-		const res: any = await getDepthDiff(pair, delayMs, maxLevels);
-		if (!res?.ok) return res;
-		if (view === 'summary') return res;
-		const agg = res?.data?.aggregates || {};
-		const asks = res?.data?.asks || {};
-		const bids = res?.data?.bids || {};
-		const abs = (n: number) => Math.abs(Number(n || 0));
-		const flt = (arr: any[], key: 'size' | 'delta') => (arr || []).filter((x) => abs(x?.[key]) >= (minDeltaBTC || 0)).sort((a, b) => abs(b[key]) - abs(a[key])).slice(0, topN || 5);
-		const fmt = (x: any, side: 'ask' | 'bid', kind: 'added' | 'removed' | 'changed') => {
-			const sign = kind === 'removed' ? '-' : (kind === 'changed' ? (x.delta >= 0 ? '+' : '') : '+');
-			const qty = kind === 'changed' ? x.delta : x.size;
-			return `${Number(x.price).toLocaleString()}円 ${sign}${Number(qty).toFixed(2)} BTC (${side})`;
-		};
-		const added = [...flt(asks.added, 'size').map((x: any) => fmt(x, 'ask', 'added')), ...flt(bids.added, 'size').map((x: any) => fmt(x, 'bid', 'added'))];
-		const removed = [...flt(asks.removed, 'size').map((x: any) => fmt(x, 'ask', 'removed')), ...flt(bids.removed, 'size').map((x: any) => fmt(x, 'bid', 'removed'))];
-		const changed = [...flt(asks.changed, 'delta').map((x: any) => fmt(x, 'ask', 'changed')), ...flt(bids.changed, 'delta').map((x: any) => fmt(x, 'bid', 'changed'))];
-		let text = `=== ${String(pair).toUpperCase()} 板変化 (${Number(delayMs) / 1000}s) ===\n`;
-		const tilt = agg.bidNetDelta - agg.askNetDelta;
-		text += `${tilt >= 0 ? '🟢 買い圧力優勢' : '🔴 売り圧力優勢'}: bid ${agg.bidNetDelta} BTC, ask ${agg.askNetDelta} BTC`;
-		text += `\n\n📊 主要な変化:`;
-		const lines = [
-			...added.map((s: string) => `[追加] ${s}`),
-			...removed.map((s: string) => `[削除] ${s}`),
-			...changed.map((s: string) => `[増減] ${s}`),
-		];
-		text += `\n` + (lines.length ? lines.join('\n') : '該当なし');
-		// optional: enrich with trades and simple tracking hints
-		if (enrichWithTradeData) {
-			text += `\n\n🧾 約定照合: （簡易）観測期間内の実約定を参照して大口変化の相関を示します（詳細は別ツール推奨）`;
-			// 提示のみ（実装は get_transactions を別途連携する拡張余地）
-		}
-		if (trackLargeOrders) {
-			text += `\n\n🛰️ 追跡対象: ${minTrackingSizeBTC}BTC 以上の大口を優先的に監視（試験的）`;
-		}
-		if (view === 'full') {
-			const dump = (title: string, arr: any[], side: 'ask' | 'bid', kind: 'added' | 'removed' | 'changed') => `\n\n--- ${title} (${side}) ---\n` + (arr || []).map((x) => fmt(x, side, kind)).join('\n');
-			text += dump('ADDED', asks.added, 'ask', 'added');
-			text += dump('REMOVED', asks.removed, 'ask', 'removed');
-			text += dump('CHANGED', asks.changed, 'ask', 'changed');
-			text += dump('ADDED', bids.added, 'bid', 'added');
-			text += dump('REMOVED', bids.removed, 'bid', 'removed');
-			text += dump('CHANGED', bids.changed, 'bid', 'changed');
-		}
-		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
-	}
+	{ description: 'Depth diff between two REST snapshots.', inputSchema: z.object({}) as any },
+	async () => ({ ok: false, summary: 'Removed: use get_orderbook_statistics', data: {}, meta: { errorType: 'deprecated' } })
 );
+*/
+
+/* legacy handler retained above for reference */
+/*
+	const res: any = await getDepthDiff(pair, delayMs, maxLevels);
+	if (!res?.ok) return res;
+	if (view === 'summary') return res;
+	const agg = res?.data?.aggregates || {};
+	const asks = res?.data?.asks || {};
+	const bids = res?.data?.bids || {};
+	const abs = (n: number) => Math.abs(Number(n || 0));
+	const flt = (arr: any[], key: 'size' | 'delta') => (arr || []).filter((x) => abs(x?.[key]) >= (minDeltaBTC || 0)).sort((a, b) => abs(b[key]) - abs(a[key])).slice(0, topN || 5);
+	const fmt = (x: any, side: 'ask' | 'bid', kind: 'added' | 'removed' | 'changed', extra?: string) => {
+		const sign = kind === 'removed' ? '-' : (kind === 'changed' ? (x.delta >= 0 ? '+' : '') : '+');
+		const qty = kind === 'changed' ? x.delta : x.size;
+		return `${Number(x.price).toLocaleString()}円 ${sign}${Number(qty).toFixed(2)} BTC (${side})${extra ? ` ${extra}` : ''}`;
+	};
+	const sigAsksAdded = flt(asks.added, 'size');
+	const sigBidsAdded = flt(bids.added, 'size');
+	const sigAsksRemoved = flt(asks.removed, 'size');
+	const sigBidsRemoved = flt(bids.removed, 'size');
+	const sigAsksChanged = flt(asks.changed, 'delta');
+	const sigBidsChanged = flt(bids.changed, 'delta');
+
+	// Optional trade cross-reference (basic)
+	let tradeNoteMap = new Map<string, string>();
+	const startTs = Number(res?.data?.prev?.timestamp ?? 0);
+	const endTs = Number(res?.data?.curr?.timestamp ?? 0);
+	if (enrichWithTradeData && endTs > startTs) {
+		try {
+			const txRes: any = await getTransactions(pair, 200, undefined as any);
+			const txs: any[] = Array.isArray(txRes?.data?.normalized) ? txRes.data.normalized : [];
+			const within = txs.filter((t: any) => Number(t.timestampMs) >= startTs && Number(t.timestampMs) <= endTs);
+			const tol = 0.001; // 0.1%
+			function matchVol(price: number) {
+				return within.filter((t: any) => Math.abs(Number(t.price) - price) / Math.max(1, price) < tol).reduce((s, t) => s + Number(t.amount || 0), 0);
+			}
+			const allSig = [
+				...sigAsksRemoved.map((x: any) => ({ x, side: 'ask', kind: 'removed' })),
+				...sigBidsRemoved.map((x: any) => ({ x, side: 'bid', kind: 'removed' })),
+				...sigAsksChanged.map((x: any) => ({ x, side: 'ask', kind: 'changed' })),
+				...sigBidsChanged.map((x: any) => ({ x, side: 'bid', kind: 'changed' })),
+			];
+			for (const it of allSig) {
+				const vol = matchVol(Number(it.x.price));
+				const key = `${it.kind}:${it.side}:${it.x.price}:${it.x.delta ?? it.x.size}`;
+				tradeNoteMap.set(key, vol > 0 ? `✅ 約定: ${vol.toFixed(2)} BTC` : '❌ 約定なし');
+			}
+		} catch { }
+	}
+
+	const toIsoJst = (ts: number) => {
+		try { return new Date(ts).toLocaleString('ja-JP', { timeZone: tz || 'Asia/Tokyo', hour12: false }); } catch { return new Date(ts).toISOString(); }
+	};
+	let text = `=== ${String(pair).toUpperCase()} 板変化 (${Number(delayMs) / 1000}s) ===\n`;
+	if (startTs && endTs) {
+		text += `📅 ${toIsoJst(startTs)} → ${toIsoJst(endTs)}\n   (Unix: ${startTs} → ${endTs})\n`;
+	}
+
+	// Movement detection within snapshot (removed -> added near price with similar size)
+	const priceTolRel = 0.001; // 0.1%
+	const sizeTolRel = 0.05; // 5%
+	function findMove(remArr: any[], addArr: any[]) {
+		const moves: Array<{ side: 'bid' | 'ask'; from: any; to: any }> = [];
+		for (const r of remArr) {
+			const cand = addArr.find((a) => Math.abs(a.size - r.size) / Math.max(1e-12, r.size) <= sizeTolRel && Math.abs(a.price - r.price) / Math.max(1, r.price) <= priceTolRel);
+			if (cand) moves.push({ side: addArr === sigBidsAdded ? 'bid' : 'ask', from: r, to: cand });
+		}
+		return moves;
+	}
+	const bidMoves = findMove(sigBidsRemoved, sigBidsAdded);
+	const askMoves = findMove(sigAsksRemoved, sigAsksAdded);
+
+	// Lifetime tracking across calls (LRU-like simple list)
+	const track = depthTrackByPair.get(pair) || { nextId: 1, active: [] as TrackedOrder[] };
+	depthTrackByPair.set(pair, track);
+	const nowTs = endTs || Date.now();
+	function attachLifetimeExtra(side: 'bid' | 'ask', item: any, kind: 'added' | 'removed') {
+		if (kind === 'added') {
+			if ((item.size || 0) >= (minTrackingSizeBTC || 1)) {
+				track.active.push({ id: `T${track.nextId++}`, side, price: Number(item.price), size: Number(item.size), firstTs: nowTs, lastTs: nowTs });
+			}
+			return undefined;
+		}
+		// removed: try match existing
+		const idx = track.active.findIndex((o) => o.side === side && Math.abs(o.size - Number(item.size)) / Math.max(1e-12, o.size) <= sizeTolRel && Math.abs(o.price - Number(item.price)) / Math.max(1, o.price) <= priceTolRel);
+		if (idx >= 0) {
+			const o = track.active[idx];
+			const lifetimeSec = ((nowTs - o.firstTs) / 1000).toFixed(1);
+			track.active.splice(idx, 1);
+			return `| 存在: ${lifetimeSec}s`;
+		}
+		return undefined;
+	}
+	const tilt = agg.bidNetDelta - agg.askNetDelta;
+	text += `${tilt >= 0 ? '🟢 買い圧力優勢' : '🔴 売り圧力優勢'}: bid ${agg.bidNetDelta} BTC, ask ${agg.askNetDelta} BTC`;
+	text += `\n\n📊 主要な変化:`;
+	const moveDur = startTs && endTs ? `${((endTs - startTs) / 1000).toFixed(1)}s` : '';
+	const moveLines = [
+		...bidMoves.map((m: any) => {
+			const key = `removed:bid:${m.from.price}:${m.from.size}`;
+			const note = tradeNoteMap.get(key);
+			return `[移動] ${Number(m.from.price).toLocaleString()}円 → ${Number(m.to.price).toLocaleString()}円 | ${Number(m.to.size).toFixed(2)} BTC (bid)${moveDur ? ` | ${moveDur}` : ''}${note ? ` \n       └─ ${note}` : ''}`;
+		}),
+		...askMoves.map((m: any) => {
+			const key = `removed:ask:${m.from.price}:${m.from.size}`;
+			const note = tradeNoteMap.get(key);
+			return `[移動] ${Number(m.from.price).toLocaleString()}円 → ${Number(m.to.price).toLocaleString()}円 | ${Number(m.to.size).toFixed(2)} BTC (ask)${moveDur ? ` | ${moveDur}` : ''}${note ? ` \n       └─ ${note}` : ''}`;
+		}),
+	];
+	const lines = [
+		...moveLines,
+		...sigAsksAdded.map((x: any) => {
+			attachLifetimeExtra('ask', x, 'added');
+			return `[追加] ${fmt(x, 'ask', 'added')}`;
+		}),
+		...sigBidsAdded.map((x: any) => {
+			attachLifetimeExtra('bid', x, 'added');
+			return `[追加] ${fmt(x, 'bid', 'added')}`;
+		}),
+		...sigAsksRemoved.map((x: any) => {
+			const key = `removed:ask:${x.price}:${x.size}`;
+			const life = attachLifetimeExtra('ask', x, 'removed');
+			const extra = [tradeNoteMap.get(key), life].filter(Boolean).join(' ');
+			return `[削除] ${fmt(x, 'ask', 'removed', extra)}`;
+		}),
+		...sigBidsRemoved.map((x: any) => {
+			const key = `removed:bid:${x.price}:${x.size}`;
+			const life = attachLifetimeExtra('bid', x, 'removed');
+			const extra = [tradeNoteMap.get(key), life].filter(Boolean).join(' ');
+			return `[削除] ${fmt(x, 'bid', 'removed', extra)}`;
+		}),
+		...sigAsksChanged.map((x: any) => {
+			const key = `changed:ask:${x.price}:${x.delta}`;
+			return `[増減] ${fmt(x, 'ask', 'changed', tradeNoteMap.get(key))}`;
+		}),
+		...sigBidsChanged.map((x: any) => {
+			const key = `changed:bid:${x.price}:${x.delta}`;
+			return `[増減] ${fmt(x, 'bid', 'changed', tradeNoteMap.get(key))}`;
+		}),
+	];
+	text += `\n` + (lines.length ? lines.join('\n') : '該当なし');
+	// optional: enrich with trades and simple tracking hints
+	if (enrichWithTradeData) {
+		text += `\n\n🧾 約定照合: （簡易）観測期間内の実約定を参照して大口変化の相関を示します（詳細は別ツール推奨）`;
+		// 提示のみ（実装は get_transactions を別途連携する拡張余地）
+	}
+	if (trackLargeOrders) {
+		text += `\n\n🛰️ 追跡対象: ${minTrackingSizeBTC}BTC 以上の大口を優先的に監視（試験的）`;
+	}
+	if (view === 'full') {
+		const dump = (title: string, arr: any[], side: 'ask' | 'bid', kind: 'added' | 'removed' | 'changed') => `\n\n--- ${title} (${side}) ---\n` + (arr || []).map((x) => fmt(x, side, kind)).join('\n');
+		text += dump('ADDED', asks.added, 'ask', 'added');
+		text += dump('REMOVED', asks.removed, 'ask', 'removed');
+		text += dump('CHANGED', asks.changed, 'ask', 'changed');
+		text += dump('ADDED', bids.added, 'bid', 'added');
+		text += dump('REMOVED', bids.removed, 'bid', 'removed');
+		text += dump('CHANGED', bids.changed, 'bid', 'changed');
+	}
+	return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+}
+);
+*/
 
 registerToolWithLog(
 	'get_orderbook_pressure',
-	{ description: 'Compute orderbook pressure in ±pct bands around mid using two snapshots.', inputSchema: GetOrderbookPressureInputSchema },
-	async ({ pair, delayMs, bandsPct }: any) => getOrderbookPressure(pair, delayMs, bandsPct)
+	{ description: '板のセンチメント（買い/売り偏り）を静的スナップショットから評価します。bandsPct で帯域（%）を指定。本文に各帯域の詳細と総合判定を表示します。', inputSchema: GetOrderbookPressureInputSchema },
+	async ({ pair, delayMs, bandsPct, normalize, weightScheme }: any) => {
+		const res: any = await getOrderbookPressure(pair, delayMs, bandsPct);
+		if (!res?.ok) return res;
+		const bands: any[] = Array.isArray(res?.data?.bands) ? res.data.bands : [];
+		if (bands.length === 0) return res;
+		// derive volumes/score from tool output
+		const rows = bands.map((b) => ({ pct: Number(b.widthPct), buy: Number(b.baseBidSize || 0), sell: Number(b.baseAskSize || 0), score: Number(b.netDeltaPct || 0) }));
+		// normalization (optional): midvol across central bands (±0.2%〜0.5%)
+		const central = rows.filter(r => r.pct >= 0.002 && r.pct <= 0.005);
+		const sel = central.length ? central : rows.slice(0, Math.min(2, rows.length));
+		const midVolume = sel.length ? (sel.reduce((s, r) => s + (r.buy + r.sell), 0) / sel.length) : 0;
+		const epsNorm = 1e-9;
+		const normScale = Math.max(epsNorm, midVolume);
+		const normMode = String(normalize || 'none');
+		const useNorm = normMode === 'midvol';
+		const normInfo = { mode: useNorm ? 'midvol' : 'none', scale: useNorm ? Number(normScale.toFixed(6)) : null } as const;
+		// weights for overall (closest bands first)
+		const sorted = [...rows].sort((a, b) => a.pct - b.pct);
+		let weights: number[];
+		if ((weightScheme || 'byDistance') === 'equal') {
+			weights = sorted.map(() => 1 / Math.max(1, sorted.length));
+		} else {
+			// distance-based: decreasing weights normalized to sum=1
+			const raw = sorted.map((_, i) => 1 / (i + 1));
+			const sum = raw.reduce((s, v) => s + v, 0) || 1;
+			weights = raw.map(v => v / sum);
+		}
+		const overall = sorted.reduce((s, r, i) => s + (r.score * (weights[i] || 0)), 0);
+		const s = overall;
+		const sentiment = s <= -0.30 ? 'sell' : s <= -0.10 ? 'slightly_sell' : (Math.abs(s) < 0.10 ? 'neutral' : (s >= 0.30 ? 'buy' : 'slightly_buy'));
+		// nearby wall from smallest band (pressure threshold logic)
+		const nearest = sorted[0];
+		const nearestPressure = nearest ? nearest.score : 0;
+		const threshold = 0.10;
+		const nearbyWall = nearest ? (nearestPressure > threshold ? 'bid' : (nearestPressure < -threshold ? 'ask' : 'none')) : 'none';
+		// cliff score: thickness gap between first and second band (0-1 approx)
+		const cliffScore = (() => {
+			if (sorted.length < 2) return 0;
+			const v1 = (sorted[0].buy + sorted[0].sell);
+			const v2 = (sorted[1].buy + sorted[1].sell);
+			const tot = v1 + v2;
+			if (tot <= 0) return 0;
+			const d = Math.abs(v1 - v2) / tot;
+			return Number(d.toFixed(2));
+		})();
+		// distance label + implication
+		const getDistanceLabel = (pct: number) => (pct <= 0.002 ? '直近' : (pct <= 0.006 ? '短期' : '中期'));
+		const generateImplication = (score: number, pct: number) => {
+			const distance = getDistanceLabel(pct);
+			const absScore = Math.abs(score);
+			if (absScore < 0.05) return `${distance}では均衡`;
+			if (score > 0) {
+				if (absScore > 0.20) return pct <= 0.002 ? `${distance}に強い買い壁（サポート）` : `${distance}的に厚い買い板（下支え期待）`;
+				return `${distance}ではやや買い優勢`;
+			} else {
+				if (absScore > 0.20) return pct <= 0.002 ? `${distance}に強い売り壁（反発抵抗）` : `${distance}的に厚い売り板（上値重い）`;
+				return `${distance}ではやや売り優勢`;
+			}
+		};
+
+		// format lines per band
+		const bandLines = rows
+			.sort((a, b) => a.pct - b.pct)
+			.map((r) => {
+				const imp = generateImplication(r.score, r.pct);
+				return `±${(r.pct * 100).toFixed(1)}%: 買${r.buy.toFixed(2)} BTC / 売${r.sell.toFixed(2)} BTC (圧力${r.score >= 0 ? '+' : ''}${r.score.toFixed(2)}) - ${imp}`;
+			});
+		const mid = res?.data?.bands?.[0]?.baseMid ?? null;
+		// spread in bps (fetch best bid/ask quickly)
+		let spreadBpsStr = 'n/a bps';
+		try {
+			const dres: any = await getDepth(pair);
+			if (dres?.ok) {
+				const bestAsk = Number(dres?.data?.asks?.[0]?.[0]);
+				const bestBid = Number(dres?.data?.bids?.[0]?.[0]);
+				if (Number.isFinite(bestAsk) && Number.isFinite(bestBid) && mid != null) {
+					const spreadAbs = bestAsk - bestBid;
+					const spreadRatio = spreadAbs / Number(mid);
+					const spreadBpsVal = spreadRatio * 10000;
+					const fmtBps = (x: number) => (Math.abs(x) < 1 ? x.toFixed(3) : x.toFixed(1));
+					spreadBpsStr = `${fmtBps(spreadBpsVal)}bps`;
+				}
+			}
+		} catch { }
+		const text = [
+			`${String(pair).toUpperCase()} ${mid != null ? Math.round(mid).toLocaleString() + '円' : ''}`.trim(),
+			`全体圧力: ${s >= 0 ? '+' : ''}${s.toFixed(2)} (${sentiment.replace('_', ' ')})`,
+			`正規化: ${normInfo.mode}${normInfo.scale != null ? ` (scale=${normInfo.scale})` : ''} | weight=${(weightScheme || 'byDistance')}`,
+			'',
+			'【帯域別】',
+			...bandLines,
+			'',
+			`市場構造: スプレッド ${spreadBpsStr}、近接壁=${nearbyWall}、段差スコア ${cliffScore}`,
+			'→ 瞬時の買い/売り偏りを要約（静的評価）'
+		].join('\n');
+		return { content: [{ type: 'text', text }], structuredContent: { ...res, data: { ...res.data, normalization: normInfo, weights: { scheme: (weightScheme || 'byDistance'), values: weights } } } as Record<string, unknown> };
+	}
+);
+
+// New: orderbook statistics (swing/long-term investors)
+registerToolWithLog(
+	'get_orderbook_statistics',
+	{ description: '板の厚み/流動性分布/大口/総合評価を返すスナップショット統計。ranges(%)とpriceZones(分割数)で範囲指定。用途: 市場構造の定量把握。', inputSchema: z.object({ pair: z.string().default('btc_jpy'), ranges: z.array(z.number()).optional().default([0.5, 1.0, 2.0]), priceZones: z.number().int().min(2).max(50).optional().default(10) }) as any },
+	async ({ pair, ranges, priceZones }: any) => getOrderbookStatistics(pair, ranges, priceZones)
 );
 
 registerToolWithLog(
@@ -502,46 +828,204 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'render_chart_svg',
-	{ description: '重要: チャートはユーザーが明示的に要求した場合のみ描画します。分析目的だけでは呼び出さないでください。出力: `{ ok, summary, data: { svg?: string, filePath?: string }, meta }`。既定はローソク足のみ（SMA/BB/一目はオフ）。必要時のみ withSMA/withBB/withIchimoku を指定。軽量化: svgPrecision=1, svgMinify=true, simplifyTolerance=1, viewBoxTight=true。\n\n使い方: 1) 実行 → 2) 返却の structuredContent.data.svg を取得 → 3) image/svg+xml のアーティファクトとして出力 → 4) data.svg が無い場合は data.filePath を読み取り表示。', inputSchema: RenderChartSvgInputSchema },
+	{ description: 'ローソク足/ライン/板チャートをSVG形式で生成します。\n\n【使用タイミング】\n- ユーザーが視覚的確認を求めている時\n- パターンや指標の根拠を視覚的に示したい時\n- detect_patterns 等の分析結果を可視化したい時\n\n【返却形式】\n- data.svg: 完全なSVG文字列（最重要。これをそのまま image/svg+xml のアーティファクトとして出力）\n- data.filePath: サイズ超過時のみファイルパス（または preferFile=true の場合に常に）\n- data.legend: 描画したレイヤの凡例\n- meta.range: { start, end }（ISO8601）\n- meta.indicators: 表示中のインジケータ一覧\n\n【CRITICAL: アーティファクト表示要件】\n- SVGは必ず antArtifact タグで表示（例: <antArtifact type="image/svg+xml" isClosed="true">…</antArtifact>）\n- artifact タグは使用不可（テキスト表示になり視覚化されません）\n- タグ名は大文字小文字を厳密に: antArtifact（antは小、ArtifactのAは大）\n- data.svg が null の場合: file_read で data.filePath を読み、同様に antArtifact で表示\n\n【基本例】\nrender_chart_svg({ pair: "btc_jpy", type: "1day", limit: 30 })\n→ 返却 { data: { svg: "<svg>...</svg>" }, meta: { range: {start, end}, indicators: [..] } }\n→ LLMは data.svg をそのままアーティファクト出力。data.svg が null の場合は data.filePath を file_read で読み取り表示。\n\n【他ツールとの連携】\n1) detect_patterns を実行\n2) 返却された data.overlays を取得\n3) render_chart_svg({ overlays: data.overlays }) に渡して描画（ranges/annotations/depth_zones に対応）\n\n【軽量化オプション】\n- svgPrecision, svgMinify, simplifyTolerance, viewBoxTight\n- maxSvgBytes: 超過時は data.filePath、preferFile=true: 常に保存のみ', inputSchema: RenderChartSvgInputSchema },
 	async (args: any) => {
-		const result = await renderChartSvg(args as any);
-		// スキーマで最終検証（SDK 契約の単一ソース化）
-		return RenderChartSvgOutputSchema.parse(result);
+		// Default to file-first strategy for reliability
+		const effArgs = {
+			...args,
+			autoSave: args?.autoSave !== undefined ? args.autoSave : true,
+			preferFile: args?.preferFile !== undefined ? args.preferFile : true,
+		};
+		const raw = await renderChartSvg(effArgs as any);
+		const parsed = RenderChartSvgOutputSchema.parse(raw);
+		// 本文に SVG/メタ情報を含め、LLM が structuredContent を見られない環境でも利用できるようにする
+		try {
+			const data: any = (parsed as any).data || {};
+			const meta: any = (parsed as any).meta || {};
+			const pair = String(meta?.pair || args?.pair || 'pair').toUpperCase();
+			const type = String(meta?.type || args?.type || '1day');
+			const header = `${pair} ${type} chart rendered`;
+			// Prefer file output (concise link-based content)
+			if (data?.filePath || data?.url) {
+				const rangeLine = meta?.range ? `- Period: ${meta.range.start} to ${meta.range.end}` : '';
+				const tfLine = `- Timeframe: ${type}${meta?.limit ? ` (${meta.limit} candles)` : ''}`;
+				const indLine = `- Indicators: ${Array.isArray(meta?.indicators) && meta.indicators.length ? meta.indicators.join(', ') : 'None'}`;
+				const sizeLine = meta?.sizeBytes != null ? `- Size: ${meta.sizeBytes} bytes` : '';
+				const linkLine = data?.url ? `View chart: ${data.url}` : `View chart: computer://${data.filePath}`;
+				const text = [
+					'\n📊 Chart Generated Successfully',
+					'',
+					linkLine,
+					'',
+					'Chart Details:',
+					`- Pair: ${pair}`,
+					rangeLine,
+					tfLine,
+					indLine,
+					sizeLine,
+					'',
+					'Note: The chart has been saved as an SVG file. Use the link above to view it.'
+				].filter(Boolean).join('\n');
+				const enriched = {
+					...(parsed as any),
+					displayMode: 'file',
+					artifactHint: {
+						renderHint: 'FILE_LINK',
+						displayType: 'image/svg+xml',
+						source: 'file',
+						svgBytes: Number(meta?.sizeBytes ?? 0),
+						filePath: data?.filePath || null,
+						fileUrl: data?.url || (data?.filePath ? `computer://${data.filePath}` : null),
+					},
+				} as any;
+				return { content: [{ type: 'text', text }], structuredContent: enriched };
+			}
+			if (data?.svg) {
+				const rangeLine = meta?.range ? `- Period: ${meta.range.start} to ${meta.range.end}` : '';
+				const tfLine = `- Timeframe: ${type}${meta?.limit ? ` (${meta.limit} candles)` : ''}`;
+				const indLine = `- Indicators: ${Array.isArray(meta?.indicators) && meta.indicators.length ? meta.indicators.join(', ') : 'none'}`;
+				const sizeLine = meta?.sizeBytes != null ? `- Size: ${meta.sizeBytes} bytes` : '';
+				const legendLines = data?.legend ? Object.entries(data.legend).map(([k, v]: any[]) => `- ${k}: ${String(v)}`).join('\n') : '';
+				const text = [
+					header,
+					'',
+					'=== SVG_START ===',
+					String(data.svg),
+					'=== SVG_END ===',
+					'',
+					'Chart Info:',
+					rangeLine,
+					tfLine,
+					indLine,
+					sizeLine,
+					'',
+					legendLines ? 'Legend:\n' + legendLines : ''
+				].filter(Boolean).join('\n');
+				const enriched = {
+					...(parsed as any),
+					artifactHint: {
+						renderHint: 'ARTIFACT_REQUIRED',
+						displayType: 'image/svg+xml',
+						source: 'inline_svg',
+						svgBytes: Number(meta?.sizeBytes ?? 0),
+						filePath: data?.filePath || null,
+						fileUrl: data?.url || null,
+					},
+				} as any;
+				return { content: [{ type: 'text', text }], structuredContent: enriched };
+			}
+			return { content: [{ type: 'text', text: header }], structuredContent: parsed as any };
+		} catch {
+			return { content: [{ type: 'text', text: String((parsed as any)?.summary || 'chart rendered') }], structuredContent: parsed as any };
+		}
 	}
 );
 
 registerToolWithLog(
 	'detect_patterns',
-	{ description: 'Detect classic chart patterns from recent candles. Returns candidate patterns with confidence and ranges. Use after rendering the chart.', inputSchema: DetectPatternsInputSchema },
-	async ({ pair, type, limit, patterns, swingDepth, tolerancePct, minBarsBetweenSwings }: any) => {
+	{ description: '古典的チャートパターン（ダブルトップ/ヘッドアンドショルダーズ/三角持ち合い等）を検出します。content に検出名・信頼度・期間（必要に応じて価格範囲/ネックライン）を出力。視覚確認には render_chart_svg の overlays に structuredContent.data.overlays を渡してください。view=summary|detailed|full（既定=detailed）。', inputSchema: DetectPatternsInputSchema },
+	async ({ pair, type, limit, patterns, swingDepth, tolerancePct, minBarsBetweenSwings, view }: any) => {
 		const out = await detectPatterns(pair, type, limit, { patterns, swingDepth, tolerancePct, minBarsBetweenSwings });
-		return DetectPatternsOutputSchema.parse(out as any);
+		const res = DetectPatternsOutputSchema.parse(out as any);
+		if (!res?.ok) return res as any;
+		const pats: any[] = Array.isArray((res as any)?.data?.patterns) ? (res as any).data.patterns : [];
+		const meta: any = (res as any)?.meta || {};
+		const count = Number(meta?.count ?? pats.length ?? 0);
+		const hdr = `${String(pair).toUpperCase()} [${String(type)}] ${limit ?? count}本から${pats.length}件を検出`;
+		// detection period (if candles range available in meta or infer from patterns)
+		try {
+			const toTs = (s?: string) => { try { return s ? Date.parse(s) : NaN; } catch { return NaN; } };
+			const ends = pats.map(p => toTs(p?.range?.end)).filter((x: number) => Number.isFinite(x));
+			const starts = pats.map(p => toTs(p?.range?.start)).filter((x: number) => Number.isFinite(x));
+			if (starts.length && ends.length) {
+				const startIso = new Date(Math.min(...starts)).toISOString().slice(0, 10);
+				const endIso = new Date(Math.max(...ends)).toISOString().slice(0, 10);
+				const days = Math.max(1, Math.round((Math.max(...ends) - Math.min(...starts)) / 86400000));
+				// prepend detection window line in summary/detailed
+				if (view === 'summary') {
+					// nothing extra here; appended below
+				}
+			}
+		} catch { }
+		// 種別別件数集計
+		const byType = pats.reduce((m: Record<string, number>, p: any) => { const k = String(p?.type || 'unknown'); m[k] = (m[k] || 0) + 1; return m; }, {} as Record<string, number>);
+		const typeSummary = Object.entries(byType).map(([k, v]) => `${k}×${v}`).join(', ');
+		const fmtLine = (p: any, idx: number) => {
+			const name = String(p?.type || 'unknown');
+			const conf = p?.confidence != null ? Number(p.confidence).toFixed(2) : 'n/a';
+			const range = p?.range ? `${p.range.start} ~ ${p.range.end}` : 'n/a';
+			let priceRange: string | null = null;
+			if (Array.isArray(p?.pivots) && p.pivots.length) {
+				const prices = p.pivots.map((v: any) => Number(v?.price)).filter((x: any) => Number.isFinite(x));
+				if (prices.length) priceRange = `${Math.min(...prices).toLocaleString()}円 - ${Math.max(...prices).toLocaleString()}円`;
+			}
+			let neckline: string | null = null;
+			if (Array.isArray(p?.neckline) && p.neckline.length === 2) {
+				const [a, b] = p.neckline;
+				const y1 = Number(a?.y);
+				const y2 = Number(b?.y);
+				if (Number.isFinite(y1) && Number.isFinite(y2)) {
+					neckline = (y1 === y2)
+						? `${y1.toLocaleString()}円（水平）`
+						: `${y1.toLocaleString()}円 → ${y2.toLocaleString()}円`;
+				}
+			}
+			const lines = [
+				`${idx + 1}. ${name} (信頼度: ${conf})`,
+				`   - 期間: ${range}`,
+				priceRange ? `   - 価格範囲: ${priceRange}` : null,
+				neckline ? `   - ネックライン: ${neckline}` : null,
+			].filter(Boolean);
+			return lines.join('\n');
+		};
+		if ((view || 'detailed') === 'summary') {
+			const toTs = (s?: string) => { try { return s ? Date.parse(s) : NaN; } catch { return NaN; } };
+			const now = Date.now();
+			const within = (ms: number) => pats.filter(p => Number.isFinite(toTs(p?.range?.end)) && (now - toTs(p.range.end)) <= ms).length;
+			const in30 = within(30 * 86400000);
+			const in90 = within(90 * 86400000);
+			const starts = pats.map(p => toTs(p?.range?.start)).filter((x: number) => Number.isFinite(x));
+			const ends = pats.map(p => toTs(p?.range?.end)).filter((x: number) => Number.isFinite(x));
+			const periodLine = (starts.length && ends.length) ? `検出対象期間: ${new Date(Math.min(...starts)).toISOString().slice(0, 10)} ~ ${new Date(Math.max(...ends)).toISOString().slice(0, 10)} (${Math.max(1, Math.round((Math.max(...ends) - Math.min(...starts)) / 86400000))}日間)` : '';
+			const text = `${hdr}（${typeSummary || '分類なし'}、直近30日: ${in30}件、直近90日: ${in90}件）\n${periodLine}\n検討パターン: ${(patterns && patterns.length) ? patterns.join(', ') : '既定セット'}\n※完成パターンのみ。形成中は detect_forming_patterns を使用してください。\n詳細は structuredContent.data.patterns を参照。`;
+			return { content: [{ type: 'text', text }], structuredContent: res as any };
+		}
+		if ((view || 'detailed') === 'full') {
+			const body = pats.map((p, i) => fmtLine(p, i)).join('\n\n');
+			const overlayNote = (res as any)?.data?.overlays ? '\n\nチャート連携: structuredContent.data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。' : '';
+			const trustNote = '\n\n信頼度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 明瞭なパターン（トレード判断に有効）\n  0.7-0.8 = 推奨レベル（他指標と併用推奨）\n  0.6-0.7 = 参考程度（慎重に判断）\n  0.6未満 = ノイズの可能性';
+			const text = `${hdr}（${typeSummary || '分類なし'}）\n\n【検出パターン（全件）】\n${body}${overlayNote}${trustNote}`;
+			return { content: [{ type: 'text', text }], structuredContent: res as any };
+		}
+		// detailed (default): 上位5件
+		const top = pats.slice(0, 5);
+		const body = top.length ? top.map((p, i) => fmtLine(p, i)).join('\n\n') : '';
+		let none = '';
+		if (!top.length) {
+			none = `\nパターンは検出されませんでした（tolerancePct=${tolerancePct ?? 'default'}）。\n・検討パターン: ${(patterns && patterns.length) ? patterns.join(', ') : '既定セット'}\n・必要に応じて tolerance を 0.03-0.05 に緩和してください`;
+		}
+		const overlayNote = (res as any)?.data?.overlays ? '\n\nチャート連携: structuredContent.data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。' : '';
+		const trustNote = '\n\n信頼度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 明瞭なパターン（トレード判断に有効）\n  0.7-0.8 = 推奨レベル（他指標と併用推奨）\n  0.6-0.7 = 参考程度（慎重に判断）\n  0.6未満 = ノイズの可能性';
+		const usage = `\n\nusage_example:\n  step1: detect_patterns を実行\n  step2: structuredContent.data.overlays を取得\n  step3: render_chart_svg の overlays に渡す`;
+		const text = `${hdr}（${typeSummary || '分類なし'}）\n\n${top.length ? '【検出パターン】\n' + body : ''}${none}${overlayNote}${trustNote}${usage}`;
+		return { content: [{ type: 'text', text }], structuredContent: { ...res, usage_example: { step1: 'detect_patterns を実行', step2: 'data.overlays を取得', step3: 'render_chart_svg の overlays に渡す' } } as any };
 	}
 );
 
-// Deprecated: prefer analyze_market_signal or targeted tools.
+// Back-compat alias kept; prefer detect_forming_chart_patterns
+// removed: detect_forming_patterns (replaced by detect_forming_chart_patterns)
+
 registerToolWithLog(
-	'get_market_summary',
-	{ description: '非推奨: 低解像度の市場サマリー（tickers + 年率化RV）。最初の呼び出しには使わないでください。具体的な分析には analyze_market_signal / get_flow_metrics / get_volatility_metrics を利用。', inputSchema: GetMarketSummaryInputSchema },
-	async ({ market, window, ann }: any) => {
-		const result = await getMarketSummary(market, { window, ann });
-		return GetMarketSummaryOutputSchema.parse(result);
-	}
+	'detect_forming_chart_patterns',
+	{ description: '⚠️ チャートパターン（ダブルトップ/ヘッドアンドショルダーズ等）専用。MACDクロスのforming検出には使用不可 → analyze_macd_pattern を使用。形成中パターンを検出し完成度・シナリオを提示。view=summary|detailed|full|debug（既定=detailed）。', inputSchema: z.object({ pair: z.string().default('btc_jpy'), type: z.string().default('1day'), limit: z.number().int().min(20).max(80).default(40), patterns: z.array(z.enum(['double_top', 'double_bottom'] as any)).optional(), minCompletion: z.number().min(0).max(1).default(0.4), view: z.enum(['summary', 'detailed', 'full', 'debug']).optional().default('detailed'), pivotConfirmBars: z.number().int().min(1).max(20).optional(), rightPeakTolerancePct: z.number().min(0.05).max(0.5).optional() }) as any },
+	async ({ pair, type, limit, patterns, minCompletion, view, pivotConfirmBars, rightPeakTolerancePct }: any) => detectFormingPatterns(pair, type, limit, { patterns, minCompletion, view, pivotConfirmBars, rightPeakTolerancePct })
 );
 
-// Safer alias with explicit purpose: quick snapshot only, not for decision.
-registerToolWithLog(
-	'market_overview_snapshot',
-	{ description: 'Quick snapshot of market movers/volatility buckets. Use only as context; do not base decisions solely on this. Prefer analyze_market_signal for conclusions.', inputSchema: GetMarketSummaryInputSchema },
-	async ({ market, window, ann }: any) => {
-		const result = await getMarketSummary(market, { window, ann });
-		return GetMarketSummaryOutputSchema.parse(result);
-	}
-);
+//
 
 registerToolWithLog(
 	'analyze_market_signal',
-	{ description: 'Flow/Volatility/Indicators/SMA を合成した相対強度スコアを返します（式・重み・要素寄与の内訳（rawValue, contribution, interpretation）と topContributors を同梱）。SMA関連は「SMA配置トレンド（構造）」と「短期SMA変化スコア（勢い）」を区別して説明してください。**重要: ユーザーにスコアを説明する際は、必ず(1)計算式: score = 0.35*buyPressure + 0.25*cvdTrend + 0.15*momentum + 0.10*volatility + 0.15*smaTrend、(2)各要素の内訳、(3)最も影響している要素、を明示してください。**', inputSchema: AnalyzeMarketSignalInputSchema },
+	{ description: '【初動トリアージ専用】市場の総合状態を単一スコア(-100〜+100)で瞬時評価。分析の起点として最初に呼び出すツール。\n\n■ 主な用途\n- 「今、買い/売り/中立のどれか？」の即答\n- 詳細分析が必要な要素の特定\n- 複数銘柄の相対比較・スクリーニング\n\n■ スコア計算式\nscore = 0.35×buyPressure + 0.25×cvdTrend + 0.15×momentum + 0.10×volatility + 0.15×smaTrend\n\n5要素の意味:\n- buyPressure (35%): 板の買い/売り注文バランス\n- cvdTrend (25%): 累積出来高差分の方向性\n- momentum (15%): RSI/MACDなどの勢い指標\n- volatility (10%): 価格変動の大きさ\n- smaTrend (15%): 移動平均線の配置と変化\n\n■ このツールの限界（重要）\nこれは概要把握用のスナップショット。詳細分析には以下の専門ツールを併用すること:\n- フロー詳細分析 → get_flow_metrics (時系列バケット、スパイク検出)\n- ボラティリティ詳細 → get_volatility_metrics (RV/ATR/Parkinson/GK/RS)\n- テクニカル指標詳細 → get_indicators (RSI/MACD/BB/一目の全詳細値)\n- 板の帯域別分析 → get_orderbook_pressure (±0.1%/0.5%/1%等の層別圧力)\n- パターン検出 → detect_patterns / detect_forming_patterns\n\n■ LLMへの指示\n1. スコアを説明する際は必ず計算式と各要素の寄与度を明示\n2. 最も影響している要素（topContributors）を強調\n3. スコアが中立付近または要素間で矛盾がある場合、追加の専門ツール呼び出しを推奨\n4. SMA関連は「SMA配置トレンド(構造)」と「短期SMA変化スコア(勢い)」を区別して説明', inputSchema: AnalyzeMarketSignalInputSchema },
 	async ({ pair, type, flowLimit, bucketMs, windows }: any) => {
 		const res = await analyzeMarketSignal(pair, { type, flowLimit, bucketMs, windows });
 		return AnalyzeMarketSignalOutputSchema.parse(res);
@@ -556,8 +1040,14 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'analyze_bb_snapshot',
-	{ description: 'ボリンジャーバンドの数値スナップショット。mid/upper/lower と zScore, bandWidthPct を返します。視覚的主張は行いません。', inputSchema: (await import('./schemas.js')).AnalyzeBbSnapshotInputSchema as any },
+	{ description: 'ボリンジャーバンドの数値スナップショットを取得。視覚的判断は行わず、客観的な数値のみ提供。\n\n【mode の使い分け】\n- default (推奨): ±2σ帯の基本情報で高速チェック\n  - middle/upper(+2σ)/lower(-2σ)\n  - zScore: 現在価格が±2σ帯のどこに位置するか\n  - bandWidthPct: バンド幅の middle 比（スクイーズ/エクスパンション把握）\n  - 用途: 初動確認、定期監視、軽量スナップショット\n\n- extended: ±1σ/±2σ/±3σ を含む詳細分析\n  - 全階層のバンド値と各層での価格位置\n  - 極端値検出（±3σタッチ、バンドウォーク等）\n  - 用途: 異常値確認、詳細なボラティリティ分析\n\n【他ツールとの使い分け】\n- get_indicators: RSI/MACD等を含む総合テクニカル分析（重い）\n- analyze_bb_snapshot: BB特化で軽量（速い）\n- render_chart_svg: 視覚化が必要な場合', inputSchema: (await import('./schemas.js')).AnalyzeBbSnapshotInputSchema as any },
 	async ({ pair, type, limit, mode }: any) => analyzeBbSnapshot(pair, type, limit, mode)
+);
+
+registerToolWithLog(
+	'analyze_macd_pattern',
+	{ description: 'MACDゴールデンクロス/デッドクロスのforming検出と過去統計分析専用。チャートパターン検出は detect_forming_chart_patterns を使用。historyDays（既定90）、performanceWindows（既定1/3/5/10）、minHistogramForForming（既定0.3）。', inputSchema: z.object({ pair: z.string(), historyDays: z.number().int().min(10).max(365).optional().default(90), performanceWindows: z.array(z.number().int().min(1).max(30)).optional().default([1, 3, 5, 10] as any), minHistogramForForming: z.number().min(0).optional().default(0.3) }) as any },
+	async ({ pair, historyDays, performanceWindows, minHistogramForForming }: any) => analyzeMacdPattern({ pair, historyDays, performanceWindows, minHistogramForForming })
 );
 
 registerToolWithLog(
@@ -581,10 +1071,36 @@ registerToolWithLog(
 	}
 );
 
+
+
 registerToolWithLog(
 	'detect_macd_cross',
-	{ description: '市場内の銘柄で直近のMACDゴールデン/デッドクロスを検出します（1day, lookback=3本）。pairsで限定可能。', inputSchema: z.object({ market: z.enum(['all', 'jpy']).default('all'), lookback: z.number().int().min(1).max(10).default(3), pairs: z.array(z.string()).optional() }) as any },
-	async ({ market, lookback, pairs }: any) => detectMacdCross(market, lookback, pairs)
+	{ description: '既にクロスした銘柄のスクリーニング専用。forming 中の検出は analyze_macd_pattern を使用。\n\n市場内の銘柄で直近のMACDゴールデンクロス/デッドクロスを検出します（1day）。\n\nview: summary|detailed（既定=summary）\n- summary: 簡潔な一覧（高速スキャン用）\n- detailed: クロス強度・価格変化等の詳細（分析用）\n推奨: まず summary で全体把握 → 気になる銘柄のみ detailed で深掘り\n\nlookback（既定=3）: 用途別の目安\n- リアルタイム監視: 1-2\n- 週次レビュー: 5-7\n\npairs で検査対象ペアを限定可能。\n\nscreen（任意）: スクリーニング用フィルタ/ソート\n- minHistogramDelta: ヒストグラム変化の下限\n- maxBarsAgo: 直近バー数以内\n- minReturnPct: クロス以降の騰落率下限\n- crossType: golden|dead|both\n- sortBy: date|histogram|return|barsAgo（既定=date）\n- sortOrder: asc|desc（既定=desc）\n- limit: 上位N件', inputSchema: z.object({ market: z.enum(['all', 'jpy']).default('all').describe('対象市場'), lookback: z.number().int().min(1).max(10).default(3).describe('検出ウィンドウ（推奨: リアルタイム=1-2, 週次=5-7）'), pairs: z.array(z.string()).optional().describe('検査対象を限定（省略時は市場全体）'), view: z.enum(['summary', 'detailed']).optional().default('summary').describe('summary: 簡潔な一覧（高速スキャン） / detailed: クロス強度・騰落率などの詳細（深掘り）。推奨: まず summary → 気になる銘柄のみ detailed'), screen: z.object({ minHistogramDelta: z.number().optional(), maxBarsAgo: z.number().int().min(0).optional(), minReturnPct: z.number().optional(), crossType: z.enum(['golden', 'dead', 'both']).optional().default('both'), sortBy: z.enum(['date', 'histogram', 'return', 'barsAgo']).optional().default('date'), sortOrder: z.enum(['asc', 'desc']).optional().default('desc'), limit: z.number().int().min(1).max(100).optional(), withPrice: z.boolean().optional() }).optional() }) as any },
+	async ({ market, lookback, pairs, view, screen }: any) => {
+		const res: any = await detectMacdCross(market, lookback, pairs, view, screen);
+		if (!res?.ok || view !== 'detailed') return res;
+		try {
+			const detRaw: any[] = Array.isArray(res?.data?.screenedDetailed)
+				? (res as any).data.screenedDetailed
+				: (Array.isArray(res?.data?.resultsDetailed) ? (res as any).data.resultsDetailed : []);
+			if (!detRaw.length) return res;
+			const fmtDelta = (v: any) => v == null ? 'n/a' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}`;
+			const fmtRet = (v: any) => v == null ? 'n/a' : `${v >= 0 ? '+' : ''}${Number(v).toFixed(2)}%`;
+			const lines = detRaw.map((r) => {
+				const date = (r?.crossDate || '').slice(0, 10);
+				const prevDays = r?.prevCross?.barsAgo != null ? `${r.prevCross.barsAgo}日` : 'n/a';
+				return `${String(r.pair)}: ${String(r.type)}@${date} (ヒストグラム${fmtDelta(r?.histogramDelta)}, 前回クロスから${prevDays}${r?.returnSinceCrossPct != null ? `, ${fmtRet(r.returnSinceCrossPct)}` : ''})`;
+			});
+			const text = `${String(res?.summary || '')}\n${lines.join('\n')}`.trim();
+			return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+		} catch { return res; }
+	}
+);
+
+registerToolWithLog(
+	'detect_whale_events',
+	{ description: '大口投資家の動向を簡易に検出（板×ローソク足）。lookback=30min|1hour|2hour、minSize=0.5BTC既定。推測ベースで、実約定・寿命照合は未実装。', inputSchema: z.object({ pair: z.string().default('btc_jpy'), lookback: z.enum(['30min', '1hour', '2hour']).default('1hour'), minSize: z.number().min(0).default(0.5) }) as any },
+	async ({ pair, lookback, minSize }: any) => detectWhaleEvents(pair, lookback, minSize)
 );
 
 // prompts are unchanged for TS port and can be reused or migrated later
@@ -614,6 +1130,7 @@ function registerPromptSafe(name: string, def: { description: string; messages: 
 					.join('\n');
 				return { role: msg.role === 'system' ? 'user' : 'assistant', content: { type: 'text', text } };
 			});
+		registeredPrompts.push({ name, description: def.description });
 		s.registerPrompt(
 			name,
 			{ description: def.description },
@@ -787,3 +1304,45 @@ registerPromptSafe('multi_factor_signal', {
 // === stdio 接続（最後に実行） ===
 const transport = new StdioServerTransport();
 await server.connect(transport);
+
+// Fallback handlers to ensure list operations work over STDIO
+try {
+	(server as any).setRequestHandler?.('tools/list', async () => ({
+		tools: registeredTools.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema })),
+	}));
+	(server as any).setRequestHandler?.('prompts/list', async () => ({
+		prompts: registeredPrompts.map((p) => ({ name: p.name, description: p.description })),
+	}));
+} catch { }
+
+// Optional HTTP transport (/mcp) when PORT is provided
+try {
+	const portStr = process.env.PORT;
+	const port = portStr ? Number(portStr) : NaN;
+	const enableHttp = process.env.MCP_ENABLE_HTTP === '1';
+	if (enableHttp && Number.isFinite(port) && port > 0) {
+		const { default: express } = await import('express');
+		const app = express();
+		app.use(express.json());
+		const allowedHosts = (process.env.ALLOWED_HOSTS || '127.0.0.1,localhost').split(',').map(s => s.trim()).filter(Boolean);
+		const allowedOrigins = (process.env.ALLOWED_ORIGINS || '').split(',').map(s => s.trim()).filter(Boolean);
+		const httpTransport: any = new (StreamableHTTPServerTransport as any)({
+			path: '/mcp', // some SDKs use 'path' instead of 'endpoint'
+			sessionIdGenerator: () => randomUUID(),
+			enableDnsRebindingProtection: true,
+			...(allowedHosts.length ? { allowedHosts } : {}),
+			...(allowedOrigins.length ? { allowedOrigins } : {}),
+		} as any);
+		await server.connect(httpTransport as any);
+		const mw = typeof httpTransport.expressMiddleware === 'function'
+			? httpTransport.expressMiddleware()
+			: (req: any, res: any, next: any) => next();
+		app.use(mw);
+		app.listen(port, () => {
+			// no stdout/stderr output to avoid STDIO transport contamination
+		});
+	}
+} catch (e) {
+	// eslint-disable-next-line no-console
+	console.warn('HTTP transport setup skipped:', (e as any)?.message || e);
+}

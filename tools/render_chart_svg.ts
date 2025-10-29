@@ -50,6 +50,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   let withSMA = args.withSMA ?? [];
   let withBB = args.withBB ?? (withIchimoku ? false : false);
   const svgPrecision = Math.max(0, Math.min(3, Number((args as any)?.svgPrecision ?? 0)));
+  const effectivePrecision = Math.max(1, svgPrecision);
   const svgMinify = (args as any)?.svgMinify !== false;
   const simplifyTolerance = Math.max(0, Number((args as any)?.simplifyTolerance ?? 0));
   const viewBoxTight = (args as any)?.viewBoxTight !== false;
@@ -74,6 +75,8 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     withLegend = true,
     overlays,
   } = args as any;
+  const debugEnabled = Boolean((args as any)?.debug);
+  const debugInfo: Record<string, any> = debugEnabled ? { notes: [] } : {};
 
   // === Depth チャート（独立描画） ===
   if (isDepth) {
@@ -101,8 +104,8 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
       const padding = { top: 36, right: 12, bottom: 32, left: 64 };
       const plotW = w - padding.left - padding.right;
       const plotH = h - padding.top - padding.bottom;
-      const x = (price: number) => padding.left + ((price - xMinP) * plotW) / Math.max(1, xMaxP - xMinP);
-      const y = (qty: number) => h - padding.bottom - (qty * plotH) / maxQty;
+      const x = (price: number) => Number((padding.left + ((price - xMinP) * plotW) / Math.max(1, xMaxP - xMinP)).toFixed(effectivePrecision));
+      const y = (qty: number) => Number((h - padding.bottom - (qty * plotH) / maxQty).toFixed(effectivePrecision));
 
       // ステップパス生成
       const toStepPath = (steps: Array<[number, number]>) => {
@@ -304,8 +307,8 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   // X座標計算: 描画ウィンドウ内での相対位置を計算
   // Xはバー中心を(i+0.5)に置き、左右に半スロットの余白を確保して端の切れを防ぐ
   const totalSlots = Math.max(1, xs.length + forwardShift);
-  const x = (i: number) => padding.left + ((i + 0.5) * plotW) / totalSlots;
-  const y = (v: number) => h - padding.bottom - ((v - yMin) * plotH) / Math.max(1, yMax - yMin);
+  const x = (i: number) => Number((padding.left + ((i + 0.5) * plotW) / totalSlots).toFixed(effectivePrecision));
+  const y = (v: number) => Number((h - padding.bottom - ((v - yMin) * plotH) / Math.max(1, yMax - yMin)).toFixed(effectivePrecision));
 
   // --- 凡例メタデータと描画レイヤーの準備 ---
   const legendMeta: Record<string, string> = {};
@@ -343,7 +346,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
         const top = Math.min(o, c);
         const bot = Math.max(o, c);
         const up = d.close >= d.open;
-        return `<rect x="${cx}" y="${top}" width="${barW}" height="${Math.max(1, bot - top)}" fill="${up ? '#16a34a' : '#ef4444'}"/>`;
+        return `<rect x="${Number(cx.toFixed(effectivePrecision))}" y="${Number(top.toFixed(effectivePrecision))}" width="${Number(barW.toFixed(effectivePrecision))}" height="${Number(Math.max(1, bot - top).toFixed(effectivePrecision))}" fill="${up ? '#16a34a' : '#ef4444'}"/>`;
       })
       .join('');
   } else if (style === 'line') {
@@ -370,9 +373,13 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     type Pt = { x: number; y: number };
     let raw: Pt[] = [];
     const offset = options.offset || 0; // 先行(+26) / 遅行(-26)
+    let skipped = 0;
     data.forEach((val, i) => {
       if (val !== null && typeof val === 'number') {
-        raw.push({ x: x(i - pastBuffer + offset), y: y(val) });
+        const posIndex = i - pastBuffer + offset;
+        // 極端に描画領域外になる点はスキップしてパス破綻を防ぐ
+        if (posIndex < -1 || posIndex > xs.length + forwardShift + 1) { skipped++; return; }
+        raw.push({ x: x(posIndex), y: y(val) });
       }
     });
     if (raw.length === 0) return '';
@@ -398,6 +405,9 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     const d = 'M ' + points.join(' L ');
     const dash = options.dash ? `stroke-dasharray="${options.dash}"` : '';
     const width = options.width || '2';
+    if (debugEnabled) {
+      (debugInfo.paths ||= []).push({ color, count: raw.length, skipped });
+    }
     return `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}" ${dash}/>`;
   };
 
@@ -456,11 +466,17 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
     type Point = { x: number; y: number };
     const createPoints = (data?: Array<number | null>): Point[] => {
       const points: Point[] = [];
+      let skipped = 0;
       data?.forEach?.((val, i) => {
         if (val !== null && val !== undefined) {
-          points.push({ x: x(i - pastBuffer), y: y(val) });
+          const posIndex = i - pastBuffer;
+          if (posIndex < -1 || posIndex > xs.length + forwardShift + 1) { skipped++; return; }
+          points.push({ x: x(posIndex), y: y(val) });
         }
       });
+      if (debugEnabled) {
+        (debugInfo.bb ||= []).push({ count: points.length, skipped });
+      }
       return points;
     };
     const createPathFromPoints = (points?: Point[]): string => {
@@ -733,6 +749,8 @@ ${priceLine}
   const sizeBytes = Buffer.byteLength(finalSvg, 'utf8');
   const layerCount = estimatedLayers;
   const preferFile = Boolean((args as any)?.preferFile);
+  const autoSave = Boolean((args as any)?.autoSave);
+  const outputNameRaw = (args as any)?.outputPath as string | undefined;
   const maxSvgBytesRaw = (args as any)?.maxSvgBytes as number | undefined;
   const maxSvgBytes = typeof maxSvgBytesRaw === 'number' ? maxSvgBytesRaw : Infinity;
 
@@ -746,6 +764,14 @@ ${priceLine}
     sizeBytes,
     layerCount,
   };
+  if (debugEnabled) {
+    (metaBase as any).debug = {
+      x: { count: xs.length, totalSlots, padding, plotW },
+      y: { yMin, yMax, ticks: yTicks },
+      data: { withBB, withSMA, withIchimoku, forwardShift, pastBuffer },
+      ...debugInfo,
+    };
+  }
 
   const filenameSuffix = withIchimoku ? '_light' : '';
   const filename = `chart-${pair}-${type}-${Date.now()}${filenameSuffix}.svg`;
@@ -757,9 +783,10 @@ ${priceLine}
     try {
       await fs.mkdir(assetsDir, { recursive: true });
       await fs.writeFile(outputPath, finalSvg);
-      return ok<RenderData, RenderMeta>(
-        `${formatPair(pair)} ${type} chart saved to ${outputPath}`,
-        { filePath: outputPath, svg: undefined, legend: legendMeta },
+      const savedUrl = `computer://${outputPath}`;
+      return ok<RenderData & { url?: string }, RenderMeta>(
+        `${formatPair(pair)} ${type} chart saved to ${outputPath}\nURL: ${savedUrl}`,
+        { filePath: outputPath, svg: undefined, legend: legendMeta, url: savedUrl },
         metaBase
       );
     } catch (err) {
@@ -769,6 +796,40 @@ ${priceLine}
 
   // preferFile=false: サイズが閾値以下ならinline、超える場合のみ保存
   if (sizeBytes <= maxSvgBytes) {
+    if (autoSave) {
+      const autoName = (outputNameRaw && String(outputNameRaw).trim())
+        ? `${String(outputNameRaw).trim()}.svg`
+        : `${String(pair)}_${String(type)}_${Date.now()}.svg`;
+      const trySave = async (dir: string) => {
+        await fs.mkdir(dir, { recursive: true });
+        const p = path.join(dir, autoName);
+        await fs.writeFile(p, finalSvg);
+        return p;
+      };
+      try {
+        const outDir = '/mnt/user-data/outputs';
+        const autoPath = await trySave(outDir);
+        const base = { svg: finalSvg, filePath: autoPath, legend: legendMeta } as any;
+        base.url = `computer://${autoPath}`;
+        const suffix = `\nSaved to: ${autoPath}\nURL: ${base.url}`;
+        const msg = summaryNotes.length ? `${formatPair(pair)} ${type} chart rendered (${summaryNotes.join('; ')})${suffix}` : `${formatPair(pair)} ${type} chart rendered${suffix}`;
+        return ok<RenderData & { url?: string }, RenderMeta>(msg, base, metaBase);
+      } catch (e1) {
+        try {
+          // Fallback to repo assets dir when /mnt is not writable
+          const outDir = path.join(process.cwd(), 'assets');
+          const autoPath = await trySave(outDir);
+          const base = { svg: finalSvg, filePath: autoPath, legend: legendMeta } as any;
+          base.url = `computer://${autoPath}`;
+          const suffix = `\nSaved to: ${autoPath}\nURL: ${base.url}`;
+          const msg = summaryNotes.length ? `${formatPair(pair)} ${type} chart rendered (${summaryNotes.join('; ')})${suffix}` : `${formatPair(pair)} ${type} chart rendered${suffix}`;
+          return ok<RenderData & { url?: string }, RenderMeta>(msg, base, metaBase);
+        } catch (e2) {
+          // autoSave失敗時は通常のinline返却にフォールバック
+          summaryNotes.push('autoSave failed');
+        }
+      }
+    }
     if (summaryNotes.length) {
       // 軽量化メモをサマリーにのみ表示
       const summary = `${formatPair(pair)} ${type} chart rendered (${summaryNotes.join('; ')})`;
@@ -781,9 +842,10 @@ ${priceLine}
   try {
     await fs.mkdir(assetsDir, { recursive: true });
     await fs.writeFile(outputPath, finalSvg);
-    return ok<RenderData, RenderMeta>(
-      `${formatPair(pair)} ${type} chart saved to ${outputPath} (truncated)`,
-      { filePath: outputPath, svg: undefined, legend: legendMeta },
+    const savedUrl = `computer://${outputPath}`;
+    return ok<RenderData & { url?: string }, RenderMeta>(
+      `${formatPair(pair)} ${type} chart saved to ${outputPath} (truncated)\nURL: ${savedUrl}`,
+      { filePath: outputPath, svg: undefined, legend: legendMeta, url: savedUrl },
       { ...metaBase, truncated: true, fallback: summaryNotes[0] }
     );
   } catch (err) {

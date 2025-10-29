@@ -46,6 +46,10 @@ export const RenderChartSvgInputSchema = z
     viewBoxTight: z.boolean().optional().default(true).describe('Use tighter paddings to reduce empty margins.'),
     barWidthRatio: z.number().min(0.1).max(0.9).optional().describe('Width ratio of each candle body (slot fraction).'),
     yPaddingPct: z.number().min(0).max(0.2).optional().describe('Vertical padding ratio to expand y-range.'),
+    // 自動保存（LLM利便性のため）
+    autoSave: z.boolean().optional().default(false).describe('If true, also save SVG to /mnt/user-data/outputs and return filePath/url.'),
+    // 自動保存時のファイル名（拡張子は自動で .svg を付与）
+    outputPath: z.string().optional().describe('File name (without extension) under /mnt/user-data/outputs when autoSave=true.'),
     // サイズ制御（超過時は data.svg を省略し filePath のみ返却）
     maxSvgBytes: z.number().int().min(1024).optional().describe('If set and svg exceeds this size (bytes), omit data.svg and return filePath only.'),
     // 返却方針: true の場合は保存を最優先し、失敗時はエラーにする（inline返却にフォールバックしない）
@@ -102,6 +106,7 @@ export const RenderChartSvgOutputSchema = z.object({
   data: z.object({
     svg: z.string().optional(),
     filePath: z.string().optional(),
+    url: z.string().optional(),
     legend: z.record(z.string()).optional(),
   }).or(z.object({})),
   meta: z
@@ -396,17 +401,7 @@ export const GetDepthInputSchema = z.object({
 });
 
 // === Depth Diff (simple REST-based) ===
-export const GetDepthDiffInputSchema = z.object({
-  pair: z.string().optional().default('btc_jpy'),
-  delayMs: z.number().int().min(100).max(5000).optional().default(1000),
-  maxLevels: z.number().int().min(10).max(500).optional().default(200),
-  view: z.enum(['summary', 'detailed', 'full']).optional().default('detailed'),
-  minDeltaBTC: z.number().min(0).optional().default(0),
-  topN: z.number().int().min(1).max(50).optional().default(5),
-  enrichWithTradeData: z.boolean().optional().default(false),
-  trackLargeOrders: z.boolean().optional().default(false),
-  minTrackingSizeBTC: z.number().min(0).optional().default(1.0),
-});
+// Deprecated: get_depth_diff is removed in favor of get_orderbook_statistics
 
 const DepthDeltaSchema = z.object({ price: z.number(), delta: z.number(), from: z.number().nullable(), to: z.number().nullable() });
 const DepthSideDiffSchema = z.object({
@@ -433,6 +428,8 @@ export const GetOrderbookPressureInputSchema = z.object({
   pair: z.string().optional().default('btc_jpy'),
   delayMs: z.number().int().min(100).max(5000).optional().default(1000),
   bandsPct: z.array(z.number().positive()).optional().default([0.001, 0.005, 0.01]),
+  normalize: z.enum(['none', 'midvol']).optional().default('none'),
+  weightScheme: z.enum(['equal', 'byDistance']).optional().default('byDistance'),
 });
 
 const PressureBandSchema = z.object({
@@ -635,6 +632,7 @@ export const DetectPatternsInputSchema = z.object({
   swingDepth: z.number().int().min(1).max(10).optional().default(3),
   tolerancePct: z.number().min(0).max(0.1).optional().default(0.02),
   minBarsBetweenSwings: z.number().int().min(1).max(30).optional().default(3),
+  view: z.enum(['summary', 'detailed', 'full']).optional().default('detailed'),
 });
 
 export const DetectedPatternSchema = z.object({
@@ -642,7 +640,23 @@ export const DetectedPatternSchema = z.object({
   confidence: z.number().min(0).max(1),
   range: z.object({ start: z.string(), end: z.string() }),
   pivots: z.array(z.object({ idx: z.number().int(), price: z.number() })).optional(),
-  neckline: z.array(z.object({ x: z.number().int(), y: z.number() })).length(2).optional(),
+  neckline: z.array(z.object({ x: z.number().int().optional(), y: z.number() })).length(2).optional(),
+  aftermath: z
+    .object({
+      breakoutDate: z.string().nullable().optional(),
+      breakoutConfirmed: z.boolean(),
+      priceMove: z
+        .object({
+          days3: z.object({ return: z.number(), high: z.number(), low: z.number() }).nullable().optional(),
+          days7: z.object({ return: z.number(), high: z.number(), low: z.number() }).nullable().optional(),
+          days14: z.object({ return: z.number(), high: z.number(), low: z.number() }).nullable().optional(),
+        })
+        .optional(),
+      targetReached: z.boolean(),
+      theoreticalTarget: z.number().nullable().optional(),
+      outcome: z.string(),
+    })
+    .optional(),
 });
 
 export const DetectPatternsOutputSchema = z.union([
@@ -757,35 +771,22 @@ export const MarketSummaryRanksSchema = z.object({
   topVolatility: z.array(z.object({ pair: z.string(), rv_std_ann: z.number().nullable() })).optional(),
 });
 
-export const GetMarketSummaryDataSchemaOut = z.object({
-  items: z.array(MarketSummaryItemSchema),
-  ranks: MarketSummaryRanksSchema.optional(),
-  errors: z.array(z.object({ pair: z.string(), reason: z.string() })).optional(),
-});
-
-export const GetMarketSummaryMetaSchemaOut = z.object({
-  market: z.enum(['all', 'jpy']).optional().default('all'),
-  window: z.number().int().optional().default(30),
-  ann: z.boolean().optional().default(true),
-  fetchedAt: z.string(),
-});
-
-export const GetMarketSummaryOutputSchema = z.union([
-  z.object({ ok: z.literal(true), summary: z.string(), data: GetMarketSummaryDataSchemaOut, meta: GetMarketSummaryMetaSchemaOut }),
-  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
-]);
-
-export const GetMarketSummaryInputSchema = z.object({
-  market: z.enum(['all', 'jpy']).optional().default('all'),
-  window: z.number().int().min(2).max(180).optional().default(30),
-  ann: z.boolean().optional().default(true),
-});
+// removed: GetMarketSummary* schemas
 
 // === Analyze Market Signal ===
 export const AnalyzeMarketSignalDataSchemaOut = z.object({
   score: z.number(),
   recommendation: z.enum(['bullish', 'bearish', 'neutral']),
   tags: z.array(z.string()),
+  confidence: z.enum(['high', 'medium', 'low']),
+  confidenceReason: z.string(),
+  nextActions: z.array(z.object({
+    priority: z.enum(['high', 'medium', 'low']),
+    tool: z.string(),
+    reason: z.string(),
+    suggestedParams: z.record(z.any()).optional(),
+  })),
+  alerts: z.array(z.object({ level: z.enum(['info', 'warning', 'critical']), message: z.string() })).optional(),
   formula: z.string(),
   weights: z.object({
     buyPressure: z.number(),
@@ -840,6 +841,7 @@ export const AnalyzeIchimokuSnapshotInputSchema = z.object({
   pair: z.string().optional().default('btc_jpy'),
   type: CandleTypeEnum.optional().default('1day'),
   limit: z.number().int().min(60).max(365).optional().default(120),
+  lookback: z.number().int().min(2).max(120).optional().default(10),
 });
 
 export const AnalyzeIchimokuSnapshotDataSchemaOut = z.object({
@@ -849,6 +851,7 @@ export const AnalyzeIchimokuSnapshotDataSchemaOut = z.object({
     kijun: z.number().nullable(),
     spanA: z.number().nullable(),
     spanB: z.number().nullable(),
+    chikou: z.number().nullable().optional(),
     cloudTop: z.number().nullable(),
     cloudBottom: z.number().nullable(),
   }),
@@ -857,6 +860,48 @@ export const AnalyzeIchimokuSnapshotDataSchemaOut = z.object({
     tenkanKijun: z.enum(['bullish', 'bearish', 'neutral', 'unknown']),
     cloudSlope: z.enum(['rising', 'falling', 'flat', 'unknown']),
   }),
+  cloud: z.object({
+    thickness: z.number().nullable(),
+    thicknessPct: z.number().nullable(),
+    direction: z.enum(['rising', 'falling', 'flat']).nullable(),
+    strength: z.enum(['strong', 'moderate', 'weak']).nullable(),
+    upperBound: z.number().nullable(),
+    lowerBound: z.number().nullable(),
+  }).optional(),
+  tenkanKijunDetail: z.object({
+    relationship: z.enum(['bullish', 'bearish']).nullable(),
+    distance: z.number().nullable(),
+    distancePct: z.number().nullable(),
+  }).optional(),
+  chikouSpan: z.object({
+    position: z.enum(['above', 'below']).nullable(),
+    distance: z.number().nullable(),
+    clearance: z.number().nullable(),
+  }).optional(),
+  trend: z.object({
+    cloudHistory: z.array(z.object({ barsAgo: z.number().int(), position: z.enum(['above', 'in', 'below']) })),
+    trendStrength: z.object({ shortTerm: z.number(), mediumTerm: z.number() }),
+    momentum: z.enum(['accelerating', 'steady', 'decelerating']),
+  }).optional(),
+  signals: z.object({
+    sanpuku: z.object({
+      kouten: z.boolean(),
+      gyakuten: z.boolean(),
+      conditions: z.object({ priceAboveCloud: z.boolean(), tenkanAboveKijun: z.boolean(), chikouAbovePrice: z.boolean() })
+    }),
+    recentCrosses: z.array(z.object({ type: z.enum(['golden_cross', 'death_cross']), barsAgo: z.number().int(), description: z.string() })),
+    kumoTwist: z.object({ detected: z.boolean(), barsAgo: z.number().int().optional(), direction: z.enum(['bullish', 'bearish']).optional() }),
+    overallSignal: z.enum(['strong_bullish', 'bullish', 'neutral', 'bearish', 'strong_bearish']),
+    confidence: z.enum(['high', 'medium', 'low']),
+  }).optional(),
+  scenarios: z.object({
+    keyLevels: z.object({ resistance: z.array(z.number()), support: z.array(z.number()), cloudEntry: z.number(), cloudExit: z.number() }),
+    scenarios: z.object({
+      bullish: z.object({ condition: z.string(), target: z.number(), probability: z.enum(['high', 'medium', 'low']) }),
+      bearish: z.object({ condition: z.string(), target: z.number(), probability: z.enum(['high', 'medium', 'low']) }),
+    }),
+    watchPoints: z.array(z.string()),
+  }).optional(),
   tags: z.array(z.string()),
 });
 
@@ -880,14 +925,57 @@ export const AnalyzeBbSnapshotInputSchema = z.object({
   mode: z.enum(['default', 'extended']).optional().default('default')
 });
 
-export const AnalyzeBbSnapshotDataSchemaOut = z.object({
+// analyze_bb_snapshot: support legacy (flat) and new (structured) data shapes
+const AnalyzeBbSnapshotDataSchemaLegacy = z.object({
   latest: z.object({ close: z.number().nullable(), middle: z.number().nullable(), upper: z.number().nullable(), lower: z.number().nullable() }),
   zScore: z.number().nullable(),
   bandWidthPct: z.number().nullable(),
   tags: z.array(z.string()),
 });
 
-export const AnalyzeBbSnapshotMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string(), type: CandleTypeEnum.or(z.string()), count: z.number().int(), mode: z.enum(['default', 'extended']) });
+const AnalyzeBbSnapshotDataSchemaStructured = z.object({
+  mode: z.enum(['default', 'extended']),
+  price: z.number().nullable(),
+  bb: z.union([
+    // default: middle/upper/lower
+    z.object({
+      middle: z.number().nullable(),
+      upper: z.number().nullable(),
+      lower: z.number().nullable(),
+      zScore: z.number().nullable(),
+      bandWidthPct: z.number().nullable(),
+    }),
+    // extended: bands map and bandWidthPct per band
+    z.object({
+      middle: z.number().nullable(),
+      bands: z.record(z.string(), z.number().nullable()).optional(),
+      zScore: z.number().nullable(),
+      bandWidthPct: z.union([z.number().nullable(), z.record(z.string(), z.number().nullable())]),
+    }),
+  ]),
+  interpretation: z.unknown().optional(),
+  position_analysis: z.unknown().optional(),
+  extreme_events: z.unknown().optional(),
+  context: z.unknown().optional(),
+  signals: z.array(z.string()).optional(),
+  next_steps: z.record(z.any()).optional(),
+  tags: z.array(z.string()).optional(),
+});
+
+export const AnalyzeBbSnapshotDataSchemaOut = z.union([
+  AnalyzeBbSnapshotDataSchemaLegacy,
+  AnalyzeBbSnapshotDataSchemaStructured,
+]);
+
+export const AnalyzeBbSnapshotMetaSchemaOut = z.object({
+  pair: z.string(),
+  fetchedAt: z.string(),
+  type: CandleTypeEnum.or(z.string()),
+  count: z.number().int(),
+  mode: z.enum(['default', 'extended']),
+  // allow additional meta injected by implementation
+  extra: z.object({}).passthrough().optional(),
+});
 
 export const AnalyzeBbSnapshotOutputSchema = z.union([
   z.object({ ok: z.literal(true), summary: z.string(), data: AnalyzeBbSnapshotDataSchemaOut, meta: AnalyzeBbSnapshotMetaSchemaOut }),
@@ -908,7 +996,29 @@ export const AnalyzeSmaSnapshotDataSchemaOut = z.object({
   crosses: z.array(z.object({ a: z.string(), b: z.string(), type: z.enum(['golden', 'dead']), delta: z.number() })),
   alignment: z.enum(['bullish', 'bearish', 'mixed', 'unknown']),
   tags: z.array(z.string()),
-});
+  // Extended (optional): enriched summary and SMA analytics
+  summary: z.object({
+    close: z.number().nullable(),
+    align: z.enum(['bullish', 'bearish', 'mixed', 'unknown']),
+    position: z.enum(['above_all', 'below_all', 'between', 'unknown']),
+  }).optional(),
+  smas: z.record(z.string(), z.object({
+    value: z.number().nullable(),
+    distancePct: z.number().nullable(),
+    distanceAbs: z.number().nullable(),
+    slope: z.enum(['rising', 'falling', 'flat']),
+    slopePctPerBar: z.number().nullable(),
+    slopePctTotal: z.number().nullable(),
+    barsWindow: z.number().nullable(),
+    slopePctPerDay: z.number().nullable().optional(),
+  })).optional(),
+  recentCrosses: z.array(z.object({
+    type: z.enum(['golden_cross', 'dead_cross']),
+    pair: z.tuple([z.number(), z.number()]),
+    barsAgo: z.number().int(),
+    date: z.string(),
+  })).optional(),
+}).passthrough();
 
 export const AnalyzeSmaSnapshotMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string(), type: CandleTypeEnum.or(z.string()), count: z.number().int(), periods: z.array(z.number().int()) });
 

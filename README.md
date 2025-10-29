@@ -59,6 +59,81 @@ CLI 例: `./node_modules/.bin/tsx tools/render_chart_svg_cli.ts <pair> <type> <l
 ![Ichimoku Sample Chart](assets/ichimoku_sample.svg)
 
 
+## render_chart_svg
+
+### 返却形式
+
+```json
+{
+  "ok": true,
+  "summary": "BTC/JPY 1day chart rendered",
+  "data": {
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\">...",
+    "filePath": null,
+    "legend": {
+      "BB2": "Bollinger Bands ±2σ",
+      "SMA_25": "SMA 25"
+    }
+  },
+  "meta": {
+    "pair": "btc_jpy",
+    "type": "1day",
+    "limit": 60,
+    "indicators": ["BB2", "SMA_25"],
+    "range": {
+      "start": "2025-09-01T00:00:00.000Z",
+      "end": "2025-10-26T00:00:00.000Z"
+    },
+    "sizeBytes": 34567
+  }
+}
+```
+
+LLM は `data.svg` があればそのまま image/svg+xml のアーティファクトとして出力し、`data.svg` が null の場合は `data.filePath` を file_read で読み取って表示します。
+
+### detect_patterns との連携例
+
+```ts
+// 1. パターン検出
+const patterns = await detect_patterns({ pair: 'btc_jpy', type: '1day', limit: 90 });
+
+// 2. overlays を取得
+const overlays = patterns.data.overlays;
+
+// 3. チャートに描画
+const chart = await render_chart_svg({
+  pair: 'btc_jpy',
+  type: '1day',
+  limit: 90,
+  overlays
+});
+
+// 4. SVG出力
+console.log(chart.data.svg);
+```
+
+overlays の構造（例）:
+
+```json
+{
+  "ranges": [
+    { "start": "2025-10-01", "end": "2025-10-10", "label": "ダブルトップ", "color": "#ff000030" }
+  ],
+  "annotations": [
+    { "isoTime": "2025-10-12T00:00:00Z", "text": "ブレイクアウト" }
+  ],
+  "depth_zones": [
+    { "low": 12000000, "high": 12500000, "label": "強い抵抗帯", "color": "#ff000030" }
+  ]
+}
+```
+
+### サイズ制限
+
+- `maxSvgBytes` を未指定: `data.svg` に完全なSVGを返却
+- `maxSvgBytes` を指定し超過: `data.svg = null`, `data.filePath` に保存
+- `preferFile = true`: 常に `data.filePath` のみ（inline返却は行わない）
+
 ### プロンプトとCLIの対応表（抜粋）
 
 | Prompt 名 | 概要 | 対応CLIフラグ例 |
@@ -106,7 +181,7 @@ npx @modelcontextprotocol/inspector docker run -i --rm -e NO_COLOR=1 -e LOG_LEVE
 
 ```bash
 npm install
-npx @modelcontextprotocol/inspector tsx src/server.ts
+npx @modelcontextprotocol/inspector -- tsx src/server.ts
 ```
 
 ### MCP Inspector での検証ポイント（簡易）
@@ -128,7 +203,7 @@ npx @modelcontextprotocol/inspector tsx src/server.ts
 - 既存プロンプト（例: `bb_light_chart`, `ichimoku_default_chart`）を使い、`render_chart_svg` がツール呼び出しされることを確認
 - もし自前描画が発生する場合は、プロンプトを修正し「必ずツールを使う」指示を強化
 
-> 注意: `get_market_summary` は低解像度のスナップショットのため非推奨です。意思決定には `analyze_market_signal` か、`get_flow_metrics` / `get_volatility_metrics` / `get_indicators` の組み合わせを使用してください。全体の雰囲気把握のみ必要な場合は別名 `market_overview_snapshot` を使用できます。
+> 注意: 全体把握には `analyze_market_signal` を、詳細には `get_flow_metrics` / `get_volatility_metrics` / `get_indicators` を併用してください。
 
 ## CLIツールとしての使用方法
 
@@ -158,7 +233,7 @@ npx @modelcontextprotocol/inspector tsx src/server.ts
 - `type=1month` の場合のみ `YYYY` を指定（例: 2024）
 - それ以外（例: `1day`, `1hour` など）は `YYYYMMDD`（例: 20240511）
 
-- 初心者向け解説については、専用ツール `get_simple_trend` は廃止しました。以後は **`get_indicators` の返却値（SMA・RSI・一目均衡表など）を基にプロンプトで整形** してください。これにより、分析ロジックの一貫性が保たれ、Claude からも安定した出力が得られます。
+// 初心者向け解説についての記述は割愛します。以後は **`get_indicators` の返却値（SMA・RSI・一目均衡表など）を基にプロンプトで整形** してください。これにより、分析ロジックの一貫性が保たれ、Claude からも安定した出力が得られます。
 
 インジケータの表示を制御するには、以下のフラグを利用します。
 
@@ -256,7 +331,7 @@ npm run typecheck       # 型チェック（CI も同じ）
 
 1) サーバ起動
 ```bash
-npx @modelcontextprotocol/inspector tsx src/server.ts
+npx @modelcontextprotocol/inspector -- tsx src/server.ts
 ```
 2) 以下をUIで確認
 - `render_chart_svg` の `bbMode`（light↔full）切替が SVG に反映

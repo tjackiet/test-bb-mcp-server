@@ -8,10 +8,10 @@ import getTransactions from './get_transactions.js';
 import getFlowMetrics from './get_flow_metrics.js';
 import getTickers from './get_tickers.js';
 import getCircuitBreakInfo from './get_circuit_break_info.js';
-import getDepthDiff from './get_depth_diff.js';
+// get_depth_diff removed in favor of get_orderbook_statistics
 import getOrderbookPressure from './get_orderbook_pressure.js';
 import getVolatilityMetrics from './get_volatility_metrics.js';
-import getMarketSummary from './get_market_summary.js';
+import detectWhaleEvents from './detect_whale_events.js';
 
 export {
   getTicker,
@@ -24,10 +24,9 @@ export {
   getFlowMetrics,
   getTickers,
   getCircuitBreakInfo,
-  getDepthDiff,
   getOrderbookPressure,
   getVolatilityMetrics,
-  getMarketSummary,
+  detectWhaleEvents,
 };
 
 
