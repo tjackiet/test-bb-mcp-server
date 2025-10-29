@@ -15,3 +15,39 @@ npm run stat -- --last 24h
 ```
 
 
+### Docker起動（開発・検証用）
+
+最小の検証用途で Docker を使う場合の例です。Node 18+ があれば Docker は必須ではありません。
+
+```bash
+# ビルド
+docker build -t bitbank-mcp .
+
+# MCP Inspector からSTDIOで起動（推奨: 余計な出力を抑制）
+npx @modelcontextprotocol/inspector docker run -i --rm \
+  -e NO_COLOR=1 -e LOG_LEVEL=info \
+  bitbank-mcp
+```
+
+HTTPで試す場合（任意）:
+
+```bash
+docker run -it --rm -p 8787:8787 \
+  -e MCP_ENABLE_HTTP=1 -e PORT=8787 \
+  -e NO_COLOR=1 -e LOG_LEVEL=info \
+  bitbank-mcp
+
+# 別ターミナルから Inspector で接続
+npx @modelcontextprotocol/inspector http://localhost:8787/mcp
+```
+
+ログ永続化（任意）:
+
+```bash
+docker run -it --rm \
+  -v $(pwd)/logs:/app/logs \
+  -e NO_COLOR=1 -e LOG_LEVEL=info \
+  bitbank-mcp
+```
+
+
