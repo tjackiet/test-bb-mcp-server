@@ -40,9 +40,9 @@ export const RenderChartSvgInputSchema = z
     // 軽量化のため凡例は既定でオフ
     withLegend: z.boolean().optional().default(false),
     // 軽量化オプション
-    svgPrecision: z.number().int().min(0).max(3).optional().default(0).describe('Coordinate rounding decimals (0-3).'),
+    svgPrecision: z.number().int().min(0).max(3).optional().default(1).describe('Coordinate rounding decimals (0-3).'),
     svgMinify: z.boolean().optional().default(true).describe('Minify SVG text by stripping whitespace where safe.'),
-    simplifyTolerance: z.number().min(0).optional().default(0).describe('Line simplification tolerance in pixels (0 disables).'),
+    simplifyTolerance: z.number().min(0).optional().default(0.5).describe('Line simplification tolerance in pixels (0 disables).'),
     viewBoxTight: z.boolean().optional().default(true).describe('Use tighter paddings to reduce empty margins.'),
     barWidthRatio: z.number().min(0.1).max(0.9).optional().describe('Width ratio of each candle body (slot fraction).'),
     yPaddingPct: z.number().min(0).max(0.2).optional().describe('Vertical padding ratio to expand y-range.'),
@@ -51,7 +51,7 @@ export const RenderChartSvgInputSchema = z
     // 自動保存時のファイル名（拡張子は自動で .svg を付与）
     outputPath: z.string().optional().describe('File name (without extension) under /mnt/user-data/outputs when autoSave=true.'),
     // サイズ制御（超過時は data.svg を省略し filePath のみ返却）
-    maxSvgBytes: z.number().int().min(1024).optional().describe('If set and svg exceeds this size (bytes), omit data.svg and return filePath only.'),
+    maxSvgBytes: z.number().int().min(1024).optional().default(100_000).describe('If set and svg exceeds this size (bytes), omit data.svg and return filePath only.'),
     // 返却方針: true の場合は保存を最優先し、失敗時はエラーにする（inline返却にフォールバックしない）
     preferFile: z.boolean().optional().default(false).describe('If true, prefer saving SVG to file and return error on save failure (no inline fallback).'),
     // Optional pattern overlays (ranges/annotations)

@@ -49,10 +49,10 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   // 互換: 以前の仕様からの流入に備え、withIchimoku時は引き続きBB/SMAをオフ
   let withSMA = args.withSMA ?? [];
   let withBB = args.withBB ?? (withIchimoku ? false : false);
-  const svgPrecision = Math.max(0, Math.min(3, Number((args as any)?.svgPrecision ?? 0)));
+  const svgPrecision = Math.max(0, Math.min(3, Number((args as any)?.svgPrecision ?? 1)));
   const effectivePrecision = Math.max(1, svgPrecision);
   const svgMinify = (args as any)?.svgMinify !== false;
-  const simplifyTolerance = Math.max(0, Number((args as any)?.simplifyTolerance ?? 0));
+  const simplifyTolerance = Math.max(0, Number((args as any)?.simplifyTolerance ?? 0.5));
   const viewBoxTight = (args as any)?.viewBoxTight !== false;
   // BBモード正規化: light→default, full→extended（後方互換）
   const normalizeBbMode = (m: unknown): 'default' | 'extended' => {
@@ -77,6 +77,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   } = args as any;
   const debugEnabled = Boolean((args as any)?.debug);
   const debugInfo: Record<string, any> = debugEnabled ? { notes: [] } : {};
+  const forceLayers = (args as any)?.forceLayers === true || (args as any)?.noAutoLighten === true;
 
   // === Depth チャート（独立描画） ===
   if (isDepth) {
@@ -148,7 +149,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
         </g>`;
 
       const svg = `
-      <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="background-color:#1f2937;color:#e5e7eb;font-family:sans-serif;">
+      <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" style="background-color:#1f2937;color:#e5e7eb;font-family:sans-serif;max-width:100%;height:auto;">
         <title>${formatPair(pair)} depth chart</title>
         ${legendDepth}
         <g class="axes">${yAxis}${xAxis}</g>
@@ -173,7 +174,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
   // --- 事前見積もりヒューリスティクス（重そうなら candles-only にフォールバック） ---
   const estimatedLayers = (withIchimoku ? 1 : 0) + (withBB ? (bbMode === 'extended' ? 3 : 1) : 0) + (Array.isArray(withSMA) ? withSMA.length : 0) + 1; // +1 for base series
   let summaryNotes: string[] = [];
-  if (limit * estimatedLayers > 500) {
+  if (!forceLayers && limit * estimatedLayers > 500) {
     if (withBB || (withSMA && withSMA.length > 0) || withIchimoku) {
       withBB = false;
       withSMA = [];
@@ -285,10 +286,12 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
 
   const dataYMin = Math.min(...allYValues);
   const dataYMax = Math.max(...allYValues);
-  const yPad = Math.min(0.2, Math.max(0, Number((args as any)?.yPaddingPct ?? 0.03)));
+  const yPad = Math.min(0.2, Math.max(0, Number((args as any)?.yPaddingPct ?? 0.06)));
   const yAxisMinWithBuffer = dataYMin * (1 - yPad);
-  const yAxisMaxWithBuffer = dataYMax * (1 + yPad);
-  const yTicks = niceTicks(yAxisMinWithBuffer, yAxisMaxWithBuffer, 6);
+  // クリップ回避用の安全ヘッドルーム（レンジの2%）
+  const autoHeadroom = (dataYMax - dataYMin) * 0.02;
+  const yAxisMaxTarget = dataYMax * (1 + yPad) + autoHeadroom;
+  const yTicks = niceTicks(yAxisMinWithBuffer, yAxisMaxTarget, 6);
   const yMin = yTicks[0];
   const yMax = yTicks.at(-1) as number;
 
@@ -665,7 +668,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
 
   // --- 2種類のSVGを構築 ---
   const createSvgString = (layers: { ichimoku: string; bb: string; sma: string }) => `
-    <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" style="background-color: #1f2937; color: #e5e7eb; font-family: sans-serif;">
+    <svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg" style="background-color: #1f2937; color: #e5e7eb; font-family: sans-serif; max-width: 100%; height: auto;">
       <title>${formatPair(pair)} ${type} chart</title>
       <defs>
         <clipPath id="plotArea">
@@ -744,25 +747,43 @@ ${priceLine}
     lightSvg = minify(lightSvg);
   }
 
+  // --- 安全のための簡易サニタイゼーション ---
+  const sanitizeSvg = (s: string) =>
+    s
+      // strip script tags
+      .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, '')
+      // drop on* event handlers
+      .replace(/\son[a-z]+="[^"]*"/gi, '')
+      .replace(/\son[a-z]+='[^']*'/gi, '');
+
   // --- 返却ポリシー（preferFile / maxSvgBytes） ---
-  const finalSvg = withIchimoku ? lightSvg : fullSvg;
+  const finalSvg = sanitizeSvg(withIchimoku ? lightSvg : fullSvg);
   const sizeBytes = Buffer.byteLength(finalSvg, 'utf8');
   const layerCount = estimatedLayers;
   const preferFile = Boolean((args as any)?.preferFile);
   const autoSave = Boolean((args as any)?.autoSave);
   const outputNameRaw = (args as any)?.outputPath as string | undefined;
   const maxSvgBytesRaw = (args as any)?.maxSvgBytes as number | undefined;
-  const maxSvgBytes = typeof maxSvgBytesRaw === 'number' ? maxSvgBytesRaw : Infinity;
+  const maxSvgBytes = typeof maxSvgBytesRaw === 'number' ? maxSvgBytesRaw : 100_000;
 
-  const metaBase: RenderMeta = {
+  // Human-friendly identifiers
+  const title = `${formatPair(pair)} ${type} chart`;
+  const rangeStart = displayItems[0]?.isoTime || '';
+  const rangeEnd = displayItems.at(-1)?.isoTime || '';
+  const identifier = `${String(pair)}-${String(type)}-${String(rangeStart).slice(0, 10)}-${String(rangeEnd).slice(0, 10)}`.replace(/[^a-z0-9_-]+/gi, '-');
+
+  const metaBase: RenderMeta & { identifier?: string; title?: string } = {
     pair: pair as Pair,
     type,
     limit,
     indicators: Object.keys(legendMeta),
     bbMode,
-    range: { start: displayItems[0]?.isoTime || '', end: displayItems.at(-1)?.isoTime || '' },
+    range: { start: rangeStart, end: rangeEnd },
     sizeBytes,
     layerCount,
+    // helpful hints for artifact renderers
+    ...(identifier ? { identifier } : {}),
+    ...(title ? { title } : {}),
   };
   if (debugEnabled) {
     (metaBase as any).debug = {
@@ -833,9 +854,9 @@ ${priceLine}
     if (summaryNotes.length) {
       // 軽量化メモをサマリーにのみ表示
       const summary = `${formatPair(pair)} ${type} chart rendered (${summaryNotes.join('; ')})`;
-      return ok<RenderData, RenderMeta>(summary, { svg: finalSvg, filePath: undefined, legend: legendMeta }, metaBase);
+      return ok<RenderData & { meta?: any }, RenderMeta>(summary, { svg: finalSvg, filePath: undefined, legend: legendMeta, meta: { identifier, title, sizeBytes, range: { start: rangeStart, end: rangeEnd } } }, metaBase);
     }
-    return ok<RenderData, RenderMeta>(`${formatPair(pair)} ${type} chart rendered`, { svg: finalSvg, filePath: undefined, legend: legendMeta }, metaBase);
+    return ok<RenderData & { meta?: any }, RenderMeta>(`${formatPair(pair)} ${type} chart rendered`, { svg: finalSvg, filePath: undefined, legend: legendMeta, meta: { identifier, title, sizeBytes, range: { start: rangeStart, end: rangeEnd } } }, metaBase);
   }
 
   // 超過 → ファイル保存し、truncated=true で返す
@@ -843,9 +864,9 @@ ${priceLine}
     await fs.mkdir(assetsDir, { recursive: true });
     await fs.writeFile(outputPath, finalSvg);
     const savedUrl = `computer://${outputPath}`;
-    return ok<RenderData & { url?: string }, RenderMeta>(
+    return ok<RenderData & { url?: string; meta?: any }, RenderMeta>(
       `${formatPair(pair)} ${type} chart saved to ${outputPath} (truncated)\nURL: ${savedUrl}`,
-      { filePath: outputPath, svg: undefined, legend: legendMeta, url: savedUrl },
+      { filePath: outputPath, svg: undefined, legend: legendMeta, url: savedUrl, meta: { identifier, title, sizeBytes, range: { start: rangeStart, end: rangeEnd } } },
       { ...metaBase, truncated: true, fallback: summaryNotes[0] }
     );
   } catch (err) {

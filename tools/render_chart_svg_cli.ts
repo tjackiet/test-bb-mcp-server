@@ -29,6 +29,11 @@ async function main() {
 		withIchimoku,
 	};
 
+	// Heuristic override flags
+	if (flagArgs.has('--force-layers') || flagArgs.has('--no-auto-lighten')) {
+		(options as any).forceLayers = true;
+	}
+
 	const modeFlag = args.find((a) => a.startsWith('--ichimoku-mode='));
 	if (modeFlag) {
 		const mode = modeFlag.split('=')[1];
