@@ -51,7 +51,7 @@ npm install
 ```
 - 追加後、Claude Desktop を再起動してください
 - Node.js 18+ があれば Docker は不要です
-  - Docker の起動手順は docs/ops.md の「Docker起動（開発・検証用）」を参照してください。
+  - Docker の起動手順は [docs/ops.md の「Docker起動（開発・検証用）」](docs/ops.md#docker起動開発検証用) を参照してください。
 
 ### 3. 使ってみる
 Claude にそのまま話しかけます:
