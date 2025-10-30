@@ -1,4 +1,5 @@
 import express from 'express';
+import type { Request, Response, NextFunction, RequestHandler } from 'express-serve-static-core';
 import { randomUUID } from 'node:crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -10,15 +11,17 @@ const app = express();
 app.use(express.json({ limit: '2mb' }));
 
 // ngrok Free のブラウザ警告回避用ヘッダ
-app.use((_req, res, next) => {
+app.use((_req: Request, res: Response, next: NextFunction) => {
   res.setHeader('ngrok-skip-browser-warning', '1');
   next();
 });
 
 // 簡易ヘルスチェック
-app.get('/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
+app.get('/health', (_req: Request, res: Response) => {
+  res.json({ ok: true, ts: Date.now() });
+});
 // 最低限の /mcp ルート（メタ確認用）
-app.get(ENDPOINT, (_req, res) => {
+app.get(ENDPOINT, (_req: Request, res: Response) => {
   res.json({
     version: '1.0',
     actions: [
@@ -32,11 +35,13 @@ app.get(ENDPOINT, (_req, res) => {
 });
 
 // 最小サーバ（必要に応じて既存の登録ロジックに差し替え可）
-const server = new McpServer({ name: 'bb-mcp', version: '1.0.0' });
+const server: any = new McpServer({ name: 'bb-mcp', version: '1.0.0' }) as any;
 server.registerTool(
   'ping',
   { description: 'Return a ping response', inputSchema: ({} as any) },
-  async (args: any) => ({ content: [{ type: 'text', text: `pong: ${args?.message ?? ''}` }] })
+  async (args: Record<string, unknown>, _extra: any) => {
+    return { content: [{ type: 'text', text: `pong: ${String((args as any)?.message ?? '')}` }] } as any;
+  }
 );
 
 // Streamable HTTP transport
@@ -58,7 +63,9 @@ const transport: any = new (StreamableHTTPServerTransport as any)({
 } as any);
 await server.connect(transport as any);
 
-const mw = typeof transport.expressMiddleware === 'function' ? transport.expressMiddleware() : (_req: any, _res: any, next: any) => next();
+const mw: RequestHandler = typeof transport.expressMiddleware === 'function'
+  ? (transport.expressMiddleware() as RequestHandler)
+  : (_req: Request, _res: Response, next: NextFunction) => next();
 app.use(ENDPOINT, mw);
 
 app.listen(PORT, '::', () => {

@@ -1,6 +1,7 @@
 import getIndicators from './get_indicators.js';
 import { ok, fail } from '../lib/result.js';
 import { createMeta } from '../lib/validate.js';
+import type { Pair } from '../src/types/domain.d.ts';
 
 type View = 'summary' | 'detailed' | 'full' | 'debug';
 
@@ -19,11 +20,12 @@ export default async function detectFormingPatterns(
 
     const res = await getIndicators(pair, type as any, limit);
     if (!res?.ok) return fail(res.summary || 'failed', (res.meta as any)?.errorType || 'internal') as any;
+    const pairNorm: Pair = ((res.meta as any)?.pair ?? pair) as Pair;
 
     const candles: Array<{ open: number; high: number; low: number; close: number; isoTime?: string }>
       = res.data.chart.candles as any[];
     if (!Array.isArray(candles) || candles.length < 20)
-      return ok('insufficient data', { patterns: [] }, createMeta(pair, { type, count: 0 })) as any;
+      return ok('insufficient data', { patterns: [] }, createMeta(pairNorm, { type, count: 0 })) as any;
 
     // helpers
     const n = candles.length;
@@ -431,12 +433,12 @@ export default async function detectFormingPatterns(
         '【検出されたパターン】',
         `${filtered.length}件（minCompletion=${minCompletion} を満たすパターン${filtered.length ? '' : 'なし'}）`,
       ].join('\n');
-      return ok(text, { patterns: filtered, meta: { pair, type, count: filtered.length, peaks: peaks.length, valleys: valleys.length } }, createMeta(pair, { type, debug: true })) as any;
+      return ok(text, { patterns: filtered, meta: { pair: pairNorm, type, count: filtered.length, peaks: peaks.length, valleys: valleys.length } }, createMeta(pairNorm, { type, debug: true })) as any;
     }
 
     if (view === 'summary') {
       const text = `${summary}（${typeSummary || '分類なし'}）\n詳細は structuredContent.data.patterns を参照。`;
-      return ok(text, { patterns: filtered, meta: { pair, type, count: filtered.length } }, createMeta(pair, { type })) as any;
+      return ok(text, { patterns: filtered, meta: { pair: pairNorm, type, count: filtered.length } }, createMeta(pairNorm, { type })) as any;
     }
 
     const fmt = (p: any, i: number) => {
@@ -516,7 +518,7 @@ export default async function detectFormingPatterns(
     const list = (view === 'full' ? filtered : filtered.slice(0, 5)).map(fmt).join('\n\n');
     const tail = "\n\n形成中パターンについて:\n  完成度60%以上 = 形成が進んでいる\n  完成度40-60% = 初期段階（不確実）\n  信頼度は完成後の予想信頼度";
     const text = `${summary}\n\n${filtered.length ? '【形成中パターン】\n' + list + tail : '該当なし（minCompletion=' + minCompletion + '）'}`;
-    return ok(text, { patterns: filtered, meta: { pair, type, count: filtered.length } }, createMeta(pair, { type })) as any;
+    return ok(text, { patterns: filtered, meta: { pair: pairNorm, type, count: filtered.length } }, createMeta(pairNorm, { type })) as any;
   } catch (e: any) {
     return fail(e?.message || 'internal error', 'internal') as any;
   }

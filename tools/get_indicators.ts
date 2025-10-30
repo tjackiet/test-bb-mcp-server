@@ -118,7 +118,7 @@ export function ema(values: number[], period: number): NumericSeries {
       prev = avg;
       out.push(Number(avg.toFixed(2)));
     } else {
-      const cur = v * k + prev * (1 - k);
+      const cur: number = v * k + (prev as number) * (1 - k);
       prev = cur;
       out.push(Number(cur.toFixed(2)));
     }

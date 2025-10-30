@@ -83,6 +83,8 @@ BTCの今の市場状況を分析して
 
 **Q. どのツールを使えばよい？** まず `analyze_market_signal` で全体を把握 → 必要に応じて各専門ツールへ。
 
+**Q. 対応銘柄は固定？** 固定ではありません。上流の公開 API が返す銘柄に自動追随します（追加/廃止も自動反映）。参考: [bitbank 公開API仕様](https://github.com/bitbankinc/bitbank-api-docs/blob/master/public-api.md)
+
 **Q. MCP Inspector でも試せる？** はい。開発時は次で実行できます。
 ```bash
 npx @modelcontextprotocol/inspector -- tsx src/server.ts

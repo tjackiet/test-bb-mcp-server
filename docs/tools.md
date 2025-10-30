@@ -2,6 +2,8 @@
 自由にプロンプトを投げてもらって構いません。
 基本的には、「get_orderbook を使って〜」等、ツール名を指定する必要もありません。
 
+注: 本サーバは固定銘柄リストではなく、bitbank 公開APIが返す全銘柄に自動追随します（追加/廃止も自動反映）。参考: [bitbank 公開API仕様](https://github.com/bitbankinc/bitbank-api-docs/blob/master/public-api.md)
+
 ## 相場の全体像分析
 - analyze_market_signal: 市場の総合スコア（-100〜+100）で強弱を即判定（寄与度・式付き）
 - detect_macd_cross: 直近の MACD クロス銘柄をスクリーニング（短期転換の把握）

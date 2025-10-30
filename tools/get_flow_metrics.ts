@@ -65,7 +65,7 @@ export default async function getFlowMetrics(
     }
 
     // CVD とスパイク
-    const outBuckets: Array<{ timestampMs: number; isoTime: string; buyVolume: number; sellVolume: number; totalVolume: number; cvd: number; zscore: number | null; spike: 'notice' | 'warning' | 'strong' | null }>
+    const outBuckets: Array<{ timestampMs: number; isoTime: string; isoTimeJST?: string; displayTime?: string; buyVolume: number; sellVolume: number; totalVolume: number; cvd: number; zscore: number | null; spike: 'notice' | 'warning' | 'strong' | null }>
       = [];
     let cvd = 0;
     const vols = buckets.map(b => b.vBuy + b.vSell);
