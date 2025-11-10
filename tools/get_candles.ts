@@ -86,7 +86,13 @@ export default async function getCandles(
     );
     return GetCandlesOutputSchema.parse(result) as unknown as Result<GetCandlesData, GetCandlesMeta>;
   } catch (e: any) {
-    return GetCandlesOutputSchema.parse(fail(e?.message || 'ネットワークエラー', 'network')) as unknown as Result<GetCandlesData, GetCandlesMeta>;
+    const rawMsg = String(e?.message || '');
+    const t = String(type);
+    if (/404/.test(rawMsg) && ['4hour', '8hour', '12hour'].includes(t)) {
+      const hint = `${t} は YYYY 形式（例: 2025）が必要です。なお、現在この時間足がAPIで提供されていない可能性もあります。1hour または 1day での取得もお試しください。`;
+      return GetCandlesOutputSchema.parse(fail(`HTTP 404 Not Found (${chk.pair}/${t}). ${hint}`, 'user')) as unknown as Result<GetCandlesData, GetCandlesMeta>;
+    }
+    return GetCandlesOutputSchema.parse(fail(rawMsg || 'ネットワークエラー', 'network')) as unknown as Result<GetCandlesData, GetCandlesMeta>;
   }
 }
 

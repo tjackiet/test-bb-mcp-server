@@ -11,6 +11,7 @@
     "report": "tsx tools/report.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "ci:typecheck": "npm run gen:types && tsc --noEmit -p tsconfig.json",
+    "build": "npm run ci:typecheck",
     "gen:types": "tsx tools/gen_types.ts",
     "sync:manifest": "tsx tools/sync_manifest.ts",
     "sync:prompts": "tsx tools/sync_prompts.ts",

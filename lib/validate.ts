@@ -63,15 +63,13 @@ export function validateDate(
 	| { ok: true; value: string }
 	| { ok: false; error: { type: 'user' | 'internal'; message: string } } {
 	if (type) {
+		// YYYYMMDD が必要なタイプ（分足～1時間足）
 		const TYPES_REQUIRE_YYYYMMDD = new Set([
 			'1min',
 			'5min',
 			'15min',
 			'30min',
 			'1hour',
-			'4hour',
-			'8hour',
-			'12hour',
 		]);
 
 		if (TYPES_REQUIRE_YYYYMMDD.has(type)) {
@@ -83,6 +81,7 @@ export function validateDate(
 			}
 			return { ok: true, value: date };
 		} else {
+			// 4hour/8hour/12hour 以上は YYYY 単位で取得（公式仕様）
 			if (!/^\d{4,8}$/.test(date)) {
 				return {
 					ok: false,

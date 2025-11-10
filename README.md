@@ -22,6 +22,8 @@ bitbank の公開 API から価格・板情報・約定履歴・ローソク足�
 - 板の圧力分析（価格帯ごとの買い/売り圧力）
 - パターン検出（ダブルトップ/ヘッドアンドショルダーズ等）
 - 総合スコア判定（複数指標を統合した強弱判定）
+  - 形成中パターンの過去事例統計（detect_forming_chart_patterns）
+  - 長期パターンの現在地関連検出（detect_patterns: requireCurrentInPattern/currentRelevanceDays）
 
 #### 視覚化
 - ローソク足・一目均衡表・ボリンジャーバンド等のチャートを SVG 形式で生成
@@ -70,6 +72,15 @@ BTCの今の市場状況を分析して
 - MCP クライアント（Claude）では、アーティファクトとして `data.svg` を表示するようにお願いしてください。
   - Claude で LLM がうまくアーティファクトを出力できない場合は、以下のプロンプトを加えるのがおすすめです。
     - 「identifier と title を追加して、アーティファクトとして表示して」 
+  - 既定の描画は「ロウソク足のみ」。ボリンジャーバンド等のオーバーレイは明示指定時に追加されます（BBは `--bb-mode=default` 指定時に ±2σ がデフォルト）。
+
+### パターン検出の新機能
+- detect_patterns:
+  - requireCurrentInPattern（bool, 既定 false）: パターン終了が直近 N 日以内のものに限定
+  - currentRelevanceDays（int, 既定 7）: 直近とみなす日数
+- detect_forming_chart_patterns:
+  - 本文出力を優先度順に整理（🔴形成中 → 🟡長期視点 → 🟢最近完成 → ⚪アーカイブ）
+  - 形成中パターンごとに過去60日の同型完成事例を集計（件数/成功率/平均変動と例示）
 
 ## 詳細ドキュメント
 - ツール一覧と使い分け: [docs/tools.md](docs/tools.md)

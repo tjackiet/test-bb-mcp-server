@@ -41,8 +41,11 @@ import analyzeMacdPattern from './handlers/analyzeMacdPattern.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema } from './schemas.js';
 import getCircuitBreakInfo from '../tools/get_circuit_break_info.js';
 import { AnalyzeMarketSignalInputSchema, AnalyzeMarketSignalOutputSchema } from './schemas.js';
+// typed prompt schema imports not used; prompts are registered via prompts.ts
+import { prompts as promptDefs } from './prompts.js';
+import { SYSTEM_PROMPT } from './system-prompt.js';
 
-const server = new McpServer({ name: 'bitbank-mcp', version: '0.3.0' });
+const server = new McpServer({ name: 'bitbank-mcp', version: '0.4.2' });
 // Explicit registries for tools/prompts to improve STDIO inspector compatibility
 const registeredTools: Array<{ name: string; description: string; inputSchema: any }> = [];
 const registeredPrompts: Array<{ name: string; description: string }> = [];
@@ -924,14 +927,70 @@ registerToolWithLog(
 registerToolWithLog(
 	'detect_patterns',
 	{ description: '古典的チャートパターン（ダブルトップ/ヘッドアンドショルダーズ/三角持ち合い等）を検出します。content に検出名・信頼度・期間（必要に応じて価格範囲/ネックライン）を出力。視覚確認には render_chart_svg の overlays に structuredContent.data.overlays を渡してください。view=summary|detailed|full（既定=detailed）。', inputSchema: DetectPatternsInputSchema },
-	async ({ pair, type, limit, patterns, swingDepth, tolerancePct, minBarsBetweenSwings, view }: any) => {
-		const out = await detectPatterns(pair, type, limit, { patterns, swingDepth, tolerancePct, minBarsBetweenSwings });
+	async ({ pair, type, limit, patterns, swingDepth, tolerancePct, minBarsBetweenSwings, view, requireCurrentInPattern, currentRelevanceDays }: any) => {
+		const out = await detectPatterns(pair, type, limit, { patterns, swingDepth, tolerancePct, minBarsBetweenSwings, requireCurrentInPattern, currentRelevanceDays });
 		const res = DetectPatternsOutputSchema.parse(out as any);
 		if (!res?.ok) return res as any;
 		const pats: any[] = Array.isArray((res as any)?.data?.patterns) ? (res as any).data.patterns : [];
 		const meta: any = (res as any)?.meta || {};
 		const count = Number(meta?.count ?? pats.length ?? 0);
 		const hdr = `${String(pair).toUpperCase()} [${String(type)}] ${limit ?? count}本から${pats.length}件を検出`;
+		// Debug view: list swings and candidates with reasons
+		if (view === 'debug') {
+			const swings = Array.isArray(meta?.debug?.swings) ? meta.debug.swings : [];
+			const cands = Array.isArray(meta?.debug?.candidates) ? meta.debug.candidates : [];
+			const swingLines = swings.map((s: any) => `- ${s.kind} idx=${s.idx} price=${Math.round(Number(s.price)).toLocaleString()} (${s.isoTime || 'n/a'})`);
+			const candLines = cands.map((c: any, i: number) => {
+				const tag = c.accepted ? '✅' : '❌';
+				const reason = c.accepted ? (c.reason ? ` (${c.reason})` : '') : (c.reason ? ` [${c.reason}]` : '');
+				const pts = Array.isArray(c.points) ? c.points.map((p: any) => `${p.role}@${p.idx}:${Math.round(Number(p.price)).toLocaleString()}`).join(', ') : '';
+				const indices = Array.isArray(c.indices) ? ` indices=[${c.indices.join(',')}]` : '';
+				// details を必ず表示（spread と slopes）
+				let detailsStr = '\n   details: none';
+				if (c.details) {
+					const d = c.details || {};
+					const s1 = Number(d.spreadStart);
+					const s2 = Number(d.spreadEnd);
+					const hi = Number(d.hiSlope);
+					const lo = Number(d.loSlope);
+					const spreadPart = (Number.isFinite(s1) && Number.isFinite(s2))
+						? `${Math.round(s1).toLocaleString()} → ${Math.round(s2).toLocaleString()}`
+						: 'n/a';
+					const hiPart = Number.isFinite(hi) ? hi.toFixed(8) : 'n/a';
+					const loPart = Number.isFinite(lo) ? lo.toFixed(8) : 'n/a';
+					detailsStr = `\n   spread: ${spreadPart}${(Number.isFinite(hi) || Number.isFinite(lo)) ? `, slopes: hi=${hiPart} lo=${loPart}` : ''}`;
+				}
+				return `${i + 1}. ${tag} ${c.type}${reason}${indices}${pts ? `\n   ${pts}` : ''}${detailsStr}`;
+			});
+			const text = [
+				hdr,
+				'',
+				'【Swings】',
+				swingLines.length ? swingLines.join('\n') : 'なし',
+				'',
+				'【Candidates】',
+				candLines.length ? candLines.join('\n') : 'なし',
+			].join('\n');
+			// structuredContent に candidates を含める
+			try {
+				const result: any = res as any;
+				return {
+					content: [{ type: 'text', text }],
+					structuredContent: {
+						data: {
+							patterns: (result?.data?.patterns ?? []),
+							overlays: (result?.data?.overlays ?? null),
+							candidates: cands,
+						},
+						meta: result?.meta ?? {},
+						ok: result?.ok ?? true,
+						summary: result?.summary ?? hdr,
+					} as Record<string, unknown>,
+				};
+			} catch {
+				return { content: [{ type: 'text', text }], structuredContent: res as any };
+			}
+		}
 		// detection period (if candles range available in meta or infer from patterns)
 		try {
 			const toTs = (s?: string) => { try { return s ? Date.parse(s) : NaN; } catch { return NaN; } };
@@ -1002,7 +1061,8 @@ registerToolWithLog(
 		const body = top.length ? top.map((p, i) => fmtLine(p, i)).join('\n\n') : '';
 		let none = '';
 		if (!top.length) {
-			none = `\nパターンは検出されませんでした（tolerancePct=${tolerancePct ?? 'default'}）。\n・検討パターン: ${(patterns && patterns.length) ? patterns.join(', ') : '既定セット'}\n・必要に応じて tolerance を 0.03-0.05 に緩和してください`;
+			const effTol = (meta as any)?.effective_params?.tolerancePct ?? tolerancePct ?? 'default';
+			none = `\nパターンは検出されませんでした（tolerancePct=${effTol}）。\n・検討パターン: ${(patterns && patterns.length) ? patterns.join(', ') : '既定セット'}\n・必要に応じて tolerance を 0.03-0.06 に緩和してください`;
 		}
 		const overlayNote = (res as any)?.data?.overlays ? '\n\nチャート連携: structuredContent.data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。' : '';
 		const trustNote = '\n\n信頼度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 明瞭なパターン（トレード判断に有効）\n  0.7-0.8 = 推奨レベル（他指標と併用推奨）\n  0.6-0.7 = 参考程度（慎重に判断）\n  0.6未満 = ノイズの可能性';
@@ -1111,8 +1171,7 @@ registerToolWithLog(
 function registerPromptSafe(name: string, def: { description: string; messages: any[] }) {
 	const s: any = server as any;
 	if (typeof s.registerPrompt === 'function') {
-		// SDKの registerPrompt は (name, config, callback) を要求する
-		// Inspector互換のため、tool_code はテキストにフォールバックして返却する
+		// Inspector 互換: tool_code をテキストに変換し、role=system は user 扱いにする
 		const toSdkMessages = (msgs: any[]) =>
 			msgs.map((msg) => {
 				const blocks = Array.isArray(msg.content) ? msg.content : [];
@@ -1141,165 +1200,10 @@ function registerPromptSafe(name: string, def: { description: string; messages: 
 	}
 }
 
-registerPromptSafe('bb_default_chart', {
-	description: 'Render chart with Bollinger Bands default (±2σ).',
-	messages: [
-		{
-			role: 'system',
-			content: [
-				{ type: 'text', text: '重要: チャートや可視化を生成する際は、必ず最初に render_chart_svg ツールを呼び出してください。自前のSVG/Canvas/JSでの描画は行わないこと。返却 data.svg をそのまま表示します。' },
-			],
-		},
-		{
-			role: 'assistant',
-			content: [
-				{
-					type: 'tool_code',
-					tool_name: 'render_chart_svg',
-					tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'default', withSMA: [] },
-				},
-			],
-		},
-	],
-});
-
-registerPromptSafe('candles_only_chart', {
-	description: 'Render plain candlestick chart only (no indicators).',
-	messages: [
-		{
-			role: 'system',
-			content: [
-				{ type: 'text', text: '追加の指標は取得・描画しないでください。ろうそく足チャートのみを描画します。必ず render_chart_svg を呼び、withBB=false, withSMA=[], withIchimoku=false を指定します。' },
-			],
-		},
-		{
-			role: 'assistant',
-			content: [
-				{
-					type: 'tool_code',
-					tool_name: 'render_chart_svg',
-					tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: false, withSMA: [], withIchimoku: false },
-				},
-			],
-		},
-	],
-});
-
-registerPromptSafe('bb_extended_chart', {
-	description: 'Render chart with Bollinger Bands extended (±1/±2/±3σ). Use only if user explicitly requests extended.',
-	messages: [
-		{
-			role: 'system',
-			content: [
-				{ type: 'text', text: '重要: チャートや可視化を生成する際は、必ず最初に render_chart_svg ツールを呼び出してください。自前のSVG/Canvas/JSでの描画は行わないこと。返却 data.svg をそのまま表示します。' },
-			],
-		},
-		{
-			role: 'assistant',
-			content: [
-				{
-					type: 'tool_code',
-					tool_name: 'render_chart_svg',
-					tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withBB: true, bbMode: 'extended', withSMA: [] },
-				},
-			],
-		},
-	],
-});
-
-registerPromptSafe('ichimoku_default_chart', {
-	description: 'Render chart with Ichimoku default (Tenkan/Kijun/Cloud only).',
-	messages: [
-		{
-			role: 'system',
-			content: [
-				{ type: 'text', text: '重要: チャートや可視化を生成する際は、必ず最初に render_chart_svg ツールを呼び出してください。自前のSVG/Canvas/JSでの描画は行わないこと。返却 data.svg をそのまま表示します。' },
-			],
-		},
-		{
-			role: 'assistant',
-			content: [
-				{
-					type: 'tool_code',
-					tool_name: 'render_chart_svg',
-					tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withIchimoku: true, ichimoku: { mode: 'default' }, withSMA: [] },
-				},
-			],
-		},
-	],
-});
-
-registerPromptSafe('ichimoku_extended_chart', {
-	description: 'Render chart with Ichimoku extended (includes Chikou). Use only if user explicitly requests extended.',
-	messages: [
-		{
-			role: 'system',
-			content: [
-				{ type: 'text', text: '重要: チャートや可視化を生成する際は、必ず最初に render_chart_svg ツールを呼び出してください。自前のSVG/Canvas/JSでの描画は行わないこと。返却 data.svg をそのまま表示します。' },
-			],
-		},
-		{
-			role: 'assistant',
-			content: [
-				{
-					type: 'tool_code',
-					tool_name: 'render_chart_svg',
-					tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{limit}}', withIchimoku: true, ichimoku: { mode: 'extended' }, withSMA: [] },
-				},
-			],
-		},
-	],
-});
-
-registerPromptSafe('depth_analysis', {
-	description: 'Analyze current orderbook depth (bids/asks) and summarize liquidity/imbalance.',
-	messages: [
-		{ role: 'system', content: [{ type: 'text', text: '板情報を使う場合は必ず get_depth ツールを呼び出してください。返却データは大きくなるため、要約と着眼点（厚い板、スプレッド、偏りなど）を中心に分析してください。' }] },
-		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_depth', tool_input: { pair: '{{pair}}' } }] },
-	],
-});
-
-// alias: depth_chart（名前で探しやすいように）
-registerPromptSafe('depth_chart', {
-	description: 'Render a depth-focused analysis (calls get_depth first).',
-	messages: [
-		{ role: 'system', content: [{ type: 'text', text: '板情報を使う場合は必ず get_depth ツールを呼び出してください。返却データは大きくなるため、要約と着眼点（厚い板、スプレッド、偏りなど）を中心に分析してください。' }] },
-		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_depth', tool_input: { pair: '{{pair}}' } }] },
-	],
-});
-
-// === 強化: flow/orderbook pressure 用のテンプレ ===
-registerPromptSafe('flow_analysis', {
-	description: 'Analyze recent transactions-derived flow metrics with numeric tags and concise conclusion.',
-	messages: [
-		{ role: 'system', content: [{ type: 'text', text: 'フロー分析時は必ず get_flow_metrics ツールを先に呼び出し、出力は「数値タグ → 短文結論 → 根拠（引用）」の順で構成してください。' }] },
-		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_flow_metrics', tool_input: { pair: '{{pair}}', limit: '{{limit}}', bucketMs: '{{bucketMs}}' } }] },
-	],
-});
-
-registerPromptSafe('orderbook_pressure_analysis', {
-	description: 'Assess orderbook pressure in ±pct bands with numeric tags and concise conclusion.',
-	messages: [
-		{ role: 'system', content: [{ type: 'text', text: '板圧力を評価する際は必ず get_orderbook_pressure ツールを先に呼び出し、出力は「数値タグ → 短文結論 → 根拠（引用）」の順で構成してください。' }] },
-		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_orderbook_pressure', tool_input: { pair: '{{pair}}', delayMs: '{{delayMs}}', bandsPct: '{{bandsPct}}' } }] },
-	],
-});
-
-// === Multi-factor quick analysis (skip meandering inference) ===
-registerPromptSafe('multi_factor_signal', {
-	description: 'Quick multi-factor market signal: flow metrics, volatility and indicators (no chart unless asked).',
-	messages: [
-		{
-			role: 'system',
-			content: [
-				{ type: 'text', text: 'まず get_flow_metrics → get_volatility_metrics → get_indicators の順で必要最小限を取得してください。チャート描画は要求がある時のみ render_chart_svg を呼びます。要約は「数値タグ → 短文結論 → 根拠（引用）」で簡潔に。' },
-			],
-		},
-		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_flow_metrics', tool_input: { pair: '{{pair}}', limit: '{{limit}}', bucketMs: '{{bucketMs}}' } }] },
-		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_volatility_metrics', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{volLimit}}', windows: '{{windows}}', annualize: true } }] },
-		{ role: 'assistant', content: [{ type: 'tool_code', tool_name: 'get_indicators', tool_input: { pair: '{{pair}}', type: '{{type}}', limit: '{{indLimit}}' } }] },
-	],
-});
+// === Register prompts from src/prompts.ts ===
+for (const p of (promptDefs as any[])) {
+	registerPromptSafe(p.name, { description: p.description, messages: p.messages });
+}
 
 // === stdio 接続（最後に実行） ===
 const transport = new StdioServerTransport();
@@ -1313,7 +1217,61 @@ try {
 	(server as any).setRequestHandler?.('prompts/list', async () => ({
 		prompts: registeredPrompts.map((p) => ({ name: p.name, description: p.description })),
 	}));
+	// prompts/get: return specific prompt definition as-is (no conversion)
+	(server as any).setRequestHandler?.('prompts/get', async (request: any) => {
+		try {
+			console.error('[prompts/get] Request received:', safeJson(request));
+			const name = request?.params?.name;
+			console.error('[prompts/get] Requested name:', name);
+			if (!name) {
+				console.error('[prompts/get] ERROR: No name provided');
+				throw new Error('Prompt name is required');
+			}
+			console.error('[prompts/get] Available prompts:', (promptDefs as any[]).map((p) => p.name).join(', '));
+			const promptDef = (promptDefs as any[]).find((p) => p.name === name);
+			if (!promptDef) {
+				console.error('[prompts/get] ERROR: Prompt not found:', name);
+				throw new Error(`Prompt not found: ${name}`);
+			}
+			console.error('[prompts/get] Found prompt:', name, 'with', (promptDef as any)?.messages?.length ?? 0, 'messages');
+			const result = { description: (promptDef as any).description, messages: (promptDef as any).messages };
+			console.error('[prompts/get] Returning result with', (result as any).messages?.length ?? 0, 'messages');
+			return result;
+		} catch (error: any) {
+			console.error('[prompts/get] EXCEPTION:', error?.message, error?.stack);
+			throw error;
+		}
+	});
 } catch { }
+
+function safeJson(v: unknown) {
+	try { return JSON.stringify(v); } catch { return '[unserializable]'; }
+}
+
+// Resources: provide system-level prompt as MCP resource
+try {
+	(server as any).setRequestHandler?.('resources/list', async () => ({
+		resources: [
+			{
+				uri: 'prompt://system',
+				name: 'test-bb System Prompt',
+				description: 'System-level guidance for using test-bb MCP server',
+				mimeType: 'text/plain',
+			},
+		],
+	}));
+	(server as any).setRequestHandler?.('resources/read', async (request: any) => {
+		const uri = request?.params?.uri;
+		if (uri === 'prompt://system') {
+			return {
+				contents: [
+					{ uri: 'prompt://system', mimeType: 'text/plain', text: SYSTEM_PROMPT },
+				],
+			};
+		}
+		throw new Error(`Resource not found: ${uri}`);
+	});
+} catch {}
 
 // Optional HTTP transport (/mcp) when PORT is provided
 try {

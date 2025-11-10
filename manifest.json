@@ -1,0 +1,139 @@
+{
+  "manifest_version": "0.1",
+  "name": "test-bb",
+  "display_name": "test-bb: bitbank暗号資産分析",
+  "version": "0.4.2",
+  "description": "bitbank公開APIを利用した暗号資産分析用MCPサーバー",
+  "long_description": "bitbank公開APIを利用した暗号資産分析用MCPサーバー。初心者から上級者まで対応する教育的なツールです。チャート分析、テクニカル指標、板情報分析などの機能を提供します。",
+  "author": {
+    "name": "test-bb developer"
+  },
+  "server": {
+    "type": "node",
+    "entry_point": "src/server.ts",
+    "mcp_config": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "tsx",
+        "${__dirname}/src/server.ts"
+      ],
+      "env": {
+        "LOG_LEVEL": "debug",
+        "NO_COLOR": "1"
+      }
+    }
+  },
+  "prompts": [
+    {
+      "name": "beginner_market_check",
+      "description": "【初心者向け】今、買い時？売り時？をわかりやすく説明",
+      "text": "今、買い時？売り時？を初心者向けに教えて"
+    },
+    {
+      "name": "beginner_chart_view",
+      "description": "【初心者向け】チャートの見方を解説しながら表示",
+      "text": "チャートを見せて。見方も初心者向けに教えて"
+    },
+    {
+      "name": "explain_term",
+      "description": "【初心者向け】専門用語をわかりやすく解説",
+      "text": "RSIって何？（初心者向けに説明して）"
+    },
+    {
+      "name": "getting_started",
+      "description": "【初心者向け】test-bbの使い方ガイド",
+      "text": "test-bbの使い方を教えて（初心者向け）"
+    },
+    {
+      "name": "bb_default_chart",
+      "description": "Render chart with Bollinger Bands default (±2σ).",
+      "text": "BB(±2σ)付きチャートを表示して"
+    },
+    {
+      "name": "candles_only_chart",
+      "description": "Render plain candlestick chart only (no indicators).",
+      "text": "ローソク足だけのチャートを表示して"
+    },
+    {
+      "name": "bb_extended_chart",
+      "description": "Render chart with Bollinger Bands extended (±1/±2/±3σ).",
+      "text": "BB拡張（±1/±2/±3σ）チャートを表示して"
+    },
+    {
+      "name": "ichimoku_default_chart",
+      "description": "Render chart with Ichimoku default (Tenkan/Kijun/Cloud only).",
+      "text": "一目均衡表（標準）を表示して"
+    },
+    {
+      "name": "ichimoku_extended_chart",
+      "description": "Render chart with Ichimoku extended (includes Chikou).",
+      "text": "一目均衡表（拡張・遅行含む）を表示して"
+    },
+    {
+      "name": "depth_analysis",
+      "description": "Analyze current orderbook depth (bids/asks).",
+      "text": "板の状況（深さ）を分析して"
+    },
+    {
+      "name": "depth_chart",
+      "description": "Render a depth-focused analysis.",
+      "text": "板の状況を見て必要なら可視化して"
+    },
+    {
+      "name": "flow_analysis",
+      "description": "Analyze recent transactions-derived flow metrics.",
+      "text": "フロー（出来高・CVD）を分析して"
+    },
+    {
+      "name": "orderbook_pressure_analysis",
+      "description": "Assess orderbook pressure in ±pct bands.",
+      "text": "板の圧力（±%帯域）を評価して"
+    },
+    {
+      "name": "multi_factor_signal",
+      "description": "Quick multi-factor market signal.",
+      "text": "総合シグナル（フロー/ボラ/指標）を素早く評価して"
+    },
+    {
+      "name": "beginner_volume_check",
+      "description": "【初心者向け】取引量から市場の活発さをチェック",
+      "text": "今、取引は活発？（出来高を初心者向けに教えて）"
+    },
+    {
+      "name": "beginner_trend_check",
+      "description": "【初心者向け】今の流れは上昇？下降？横ばい？",
+      "text": "今のトレンドを初心者向けに教えて"
+    },
+    {
+      "name": "最近のBTCの動きどう？",
+      "description": "ビットコインの最近の価格動向とトレンドを初心者向けに分析",
+      "text": "最近のBTCの動きどう？\n\n【重要】専門用語は使わず、以下のように置き換えて説明してください：\n- RSI → 加熱度（70以上で過熱、30以下で冷え込み）\n- MACD → 勢いの変化\n- ボリンジャーバンド → 価格の変動幅\n- σ(シグマ) → 標準的な範囲\n- SMA/移動平均線 → 平均価格\n- デッドクロス/ゴールデンクロス → 勢いの転換点\n- 一目均衡表 → トレンドの雲\n- CVD → 買いと売りのバランス\n\nテキストで簡潔に。チャートは不要。"
+    },
+    {
+      "name": "今のBTCって買い時？",
+      "description": "総合的な市場シグナルから今が買い時かを初心者向けに判断",
+      "text": "今のBTCって買い時？\n\n【重要】専門用語は使わず、以下のように置き換えて説明してください：\n- RSI → 加熱度（70以上で過熱、30以下で冷え込み）\n- MACD → 勢いの変化\n- ボリンジャーバンド → 価格の変動幅\n- σ(シグマ) → 標準的な範囲\n- SMA/移動平均線 → 平均価格\n\n結論（買い/売り/様子見）を先に言ってください。\n\nテキストで判断を。チャートは不要。"
+    },
+    {
+      "name": "今注目されているコインある？",
+      "description": "出来高や価格変動から注目されている銘柄を抽出",
+      "text": "今注目されているコインある？\n\n【効率的な回答方法】\n1. get_tickers_jpy を1回だけ呼び出す\n2. 取得したデータから以下を抽出:\n   - 取引量トップ3（取引の活発さ）\n   - 24時間上昇率トップ3（価格の上がり）\n3. 個別の詳細分析（analyze_market_signal等）は不要\n4. 各コインの情報は簡潔に:\n   - 名前\n   - 価格\n   - 24時間の変化率\n   - 取引の活発さ（出来高）\n\n【専門用語の扱い】\n- 出来高 → 取引の活発さ\n- 騰落率 → 24時間の変化率\n\nリスト形式で。チャートは不要。"
+    },
+    {
+      "name": "今日の上昇率ランキングは？",
+      "description": "全銘柄の24時間騰落率ランキングトップ5を表示",
+      "text": "今日の上昇率ランキングは？\n\n【重要】専門用語は避けて説明してください：\n- 騰落率 → 価格の上がり/下がり（%）\n- 24h change → 24時間での変化\n\nトップ5を数値で教えて。チャートは不要。"
+    },
+    {
+      "name": "ビットコインは買いと売りどちらが優勢？",
+      "description": "板情報から買い圧力と売り圧力を分析して優勢な方を判定",
+      "text": "ビットコインは買いと売りどちらが優勢？\n\n【重要】専門用語は使わず、以下のように置き換えて説明してください：\n- 板の厚み → 注文の多さ\n- bid/ask → 買い注文/売り注文\n- スプレッド → 買値と売値の差\n- CVD → 買いと売りのバランス\n- orderbook pressure → 買い圧力/売り圧力\n\n結論（買い優勢/売り優勢/拮抗）を先に言ってください。\n\nテキストで説明して。チャートは不要。"
+    },
+    {
+      "name": "test_simple",
+      "description": "テスト用シンプルPrompt",
+      "text": "ビットコインの現在の価格を教えてください。"
+    }
+  ]
+}

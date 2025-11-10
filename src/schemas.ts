@@ -619,6 +619,9 @@ export const PatternTypeEnum = z.enum([
   'triangle_ascending',
   'triangle_descending',
   'triangle_symmetrical',
+  // wedge patterns
+  'falling_wedge',
+  'rising_wedge',
   'pennant',
   'flag',
 ]);
@@ -627,12 +630,23 @@ export const DetectPatternsInputSchema = z.object({
   pair: z.string().optional().default('btc_jpy'),
   type: CandleTypeEnum.optional().default('1day'),
   limit: z.number().int().min(20).max(365).optional().default(90),
-  patterns: z.array(PatternTypeEnum).optional(),
+  patterns: z.array(PatternTypeEnum).optional().describe(
+    [
+      'Patterns to detect. Recommended params (guideline):',
+      '- double_top/double_bottom: default (swingDepth=7, tolerancePct=0.04, minBarsBetweenSwings=5)',
+      '- triple_top/triple_bottom: tolerancePct≈0.05',
+      '- triangle_*: tolerancePct≈0.06',
+      '- pennant: swingDepth≈5, minBarsBetweenSwings≈3',
+    ].join('\n')
+  ),
   // Heuristics
-  swingDepth: z.number().int().min(1).max(10).optional().default(3),
-  tolerancePct: z.number().min(0).max(0.1).optional().default(0.02),
-  minBarsBetweenSwings: z.number().int().min(1).max(30).optional().default(3),
-  view: z.enum(['summary', 'detailed', 'full']).optional().default('detailed'),
+  swingDepth: z.number().int().min(1).max(10).optional().default(7),
+  tolerancePct: z.number().min(0).max(0.1).optional().default(0.04),
+  minBarsBetweenSwings: z.number().int().min(1).max(30).optional().default(5),
+  view: z.enum(['summary', 'detailed', 'full', 'debug']).optional().default('detailed'),
+  // New: relevance filter for “current-involved” long-term patterns
+  requireCurrentInPattern: z.boolean().optional().default(false),
+  currentRelevanceDays: z.number().int().min(1).max(365).optional().default(7),
 });
 
 export const DetectedPatternSchema = z.object({
@@ -655,6 +669,8 @@ export const DetectedPatternSchema = z.object({
       targetReached: z.boolean(),
       theoreticalTarget: z.number().nullable().optional(),
       outcome: z.string(),
+      // New: number of bars (days for 1day, weeks for 1week, etc.) to reach theoretical target (if reached within evaluation window)
+      daysToTarget: z.number().int().nullable().optional(),
     })
     .optional(),
 });
@@ -682,6 +698,18 @@ export const DetectPatternsOutputSchema = z.union([
       count: z.number().int(),
       visualization_hints: z
         .object({ preferred_style: z.enum(['candles', 'line']).optional(), highlight_patterns: z.array(PatternTypeEnum).optional() })
+        .optional(),
+      debug: z
+        .object({
+          swings: z.array(z.object({ idx: z.number().int(), price: z.number(), kind: z.enum(['H', 'L']), isoTime: z.string().optional() })).optional(),
+          candidates: z.array(z.object({
+            type: PatternTypeEnum,
+            accepted: z.boolean(),
+            reason: z.string().optional(),
+            indices: z.array(z.number().int()).optional(),
+            points: z.array(z.object({ role: z.string(), idx: z.number().int(), price: z.number(), isoTime: z.string().optional() })).optional(),
+          })).optional(),
+        })
         .optional(),
     }),
   }),

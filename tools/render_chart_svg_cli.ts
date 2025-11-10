@@ -23,9 +23,9 @@ async function main() {
 		pair: pair as any,
 		type: type as any,
 		limit,
-		// 既定はSMA描画なし（--sma-only や --sma= 指定で有効化）
+		// 既定はロウソクのみ（インジケータは明示されたときだけ）
 		withSMA: noSma ? [] : [],
-		withBB: !noBb,
+		withBB: false,
 		withIchimoku,
 	};
 

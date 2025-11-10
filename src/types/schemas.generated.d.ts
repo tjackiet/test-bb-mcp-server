@@ -8,7 +8,10 @@ export type RenderChartSvgInput = {
     pair?: string;
     type?: ("1min" | "5min" | "15min" | "30min" | "1hour" | "4hour" | "8hour" | "12hour" | "1day" | "1week" | "1month");
     limit?: number;
-    style?: ("candles" | "line");
+    style?: ("candles" | "line" | "depth");
+    depth?: {
+        levels?: number;
+    } | undefined;
     withSMA?: number[];
     withBB?: boolean;
     bbMode?: ("default" | "extended" | "light" | "full");
@@ -30,8 +33,14 @@ export type RenderChartSvgInput = {
     barWidthRatio?: number | undefined;
     /** Vertical padding ratio to expand y-range. */
     yPaddingPct?: number | undefined;
+    /** If true, also save SVG to /mnt/user-data/outputs and return filePath/url. */
+    autoSave?: boolean;
+    /** File name (without extension) under /mnt/user-data/outputs when autoSave=true. */
+    outputPath?: string | undefined;
     /** If set and svg exceeds this size (bytes), omit data.svg and return filePath only. */
-    maxSvgBytes?: number | undefined;
+    maxSvgBytes?: number;
+    /** If true, prefer saving SVG to file and return error on save failure (no inline fallback). */
+    preferFile?: boolean;
     overlays?: {
         ranges?: {
             start: string;
@@ -57,6 +66,7 @@ export type RenderChartSvgOutput = {
     data: {
         svg?: string | undefined;
         filePath?: string | undefined;
+        url?: string | undefined;
         legend?: {
             [x: string]: string;
         } | undefined;
@@ -193,6 +203,14 @@ export type GetIndicatorsDataFromSchema = {
         sma_50_series?: (number | null)[] | undefined;
         sma_75_series?: (number | null)[] | undefined;
         sma_200_series?: (number | null)[] | undefined;
+        MACD_line?: (number | null) | undefined;
+        MACD_signal?: (number | null) | undefined;
+        MACD_hist?: (number | null) | undefined;
+        macd_series?: {
+            line: (number | null)[];
+            signal: (number | null)[];
+            hist: (number | null)[];
+        } | undefined;
     };
     trend: "strong_uptrend" | "uptrend" | "strong_downtrend" | "downtrend" | "overbought" | "oversold" | "sideways" | "insufficient_data";
     chart: {
