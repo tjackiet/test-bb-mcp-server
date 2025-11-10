@@ -708,7 +708,7 @@ export default async function detectPatterns(
                 accepted: false,
                 reason: !highsOk || !lowsOk ? 'insufficient_touches' : (!fitOk ? 'fit_below_threshold' : (!convergingStrict ? 'not_converging' : 'unknown')),
                 indices: [startIdx, endIdx],
-                details: { highsIdxs: hwin.map(p => p.idx), lowsIdxs: lwin.map(p => p.idx), WIN, offset, highsOk, lowsOk, fitH, fitL, minFitAny, spreadStart, spreadEnd, tol: tolerancePct }
+                details: { highsIdxs: hwin.map(p => p.idx), lowsIdxs: lwin.map(p => p.idx), WIN, offset, highsOk, lowsOk, fitH, fitL, minFitAny, spreadStart, spreadEnd, tol: tolerancePct, hiSlope: hiLine.slope, loSlope: loLine.slope }
               });
             }
           }
