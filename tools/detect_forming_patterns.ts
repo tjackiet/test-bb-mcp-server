@@ -680,17 +680,17 @@ export default async function detectFormingPatterns(
         if (Number.isFinite(lastClose) && Number.isFinite(invalidationPrice)) {
           if (wedgeType === 'falling_wedge') {
             // 下降ウェッジ（上昇転換パターン）: 現在価格が無効化ライン下回ると無効
-            if (lastClose < invalidationPrice) {
+            if (lastClose < invalidationPrice!) {
               status = 'invalid';
-            } else if (lastClose < invalidationPrice * 1.02) {
+            } else if (lastClose < invalidationPrice! * 1.02) {
               // 無効化ラインから2%圏内は警告
               status = 'near_invalidation';
             }
           } else {
             // 上昇ウェッジ（下落転換パターン）: 現在価格が無効化ライン上回ると無効
-            if (lastClose > invalidationPrice) {
+            if (lastClose > invalidationPrice!) {
               status = 'invalid';
-            } else if (lastClose > invalidationPrice * 0.98) {
+            } else if (lastClose > invalidationPrice! * 0.98) {
               // 無効化ラインから2%圏内は警告
               status = 'near_invalidation';
             }
