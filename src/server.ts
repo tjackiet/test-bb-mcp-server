@@ -9,6 +9,7 @@ import getOrderbook from '../tools/get_orderbook.js';
 import getCandles from '../tools/get_candles.js';
 import getIndicators from '../tools/get_indicators.js';
 import renderChartSvg from '../tools/render_chart_svg.js';
+import renderDepthSvg from '../tools/render_depth_svg.js';
 import detectPatterns from '../tools/detect_patterns.js';
 import getDepth from '../tools/get_depth.js';
 import { logToolRun, logError } from '../lib/logger.js';
@@ -18,7 +19,7 @@ import { GetDepthInputSchema } from './schemas.js';
 import { GetVolMetricsInputSchema, GetVolMetricsOutputSchema } from './schemas.js';
 // removed GetMarketSummary schemas
 import { GetTickersInputSchema } from './schemas.js';
-import { GetTransactionsInputSchema, GetFlowMetricsInputSchema } from './schemas.js';
+import { GetTransactionsInputSchema } from './schemas.js';
 import { GetOrderbookPressureInputSchema } from './schemas.js';
 import { GetCircuitBreakInfoInputSchema } from './schemas.js';
 import getTransactions from '../tools/get_transactions.js';
@@ -33,6 +34,7 @@ import analyzeMarketSignal from '../tools/analyze_market_signal.js';
 import analyzeIchimokuSnapshot from '../tools/analyze_ichimoku_snapshot.js';
 import analyzeBbSnapshot from '../tools/analyze_bb_snapshot.js';
 import analyzeSmaSnapshot from '../tools/analyze_sma_snapshot.js';
+import analyzeSupportResistance from '../tools/analyze_support_resistance.js';
 import getTickersJpy from '../tools/get_tickers_jpy.js';
 import detectMacdCross from '../tools/detect_macd_cross.js';
 import detectWhaleEvents from '../tools/detect_whale_events.js';
@@ -298,7 +300,61 @@ registerToolWithLog(
 		const ind: any = res?.data?.indicators ?? {};
 		const candles: any[] = Array.isArray(res?.data?.normalized) ? res.data.normalized : [];
 		const close = candles.at(-1)?.close ?? null;
+		const prev = candles.at(-2)?.close ?? null;
+		const nowJst = (() => {
+			try { return new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false }).replace(/\//g, '-'); } catch { return new Date().toISOString(); }
+		})();
+		const fmtJPY = (v: any) => (v == null ? 'n/a' : `${Math.round(Number(v)).toLocaleString()}円`);
+		const fmtPct = (v: number | null | undefined, digits = 1) => (v == null || !Number.isFinite(v) ? 'n/a' : `${(v >= 0 ? '+' : '')}${Number(v).toFixed(digits)}%`);
+		const vsCurPct = (ref?: number | null) => {
+			if (close == null || ref == null || !Number.isFinite(close) || !Number.isFinite(ref) || ref === 0) return 'n/a';
+			const pct = ((ref - close) / Math.abs(close)) * 100;
+			const dir = ref >= close ? '上方' : '下方';
+			return `${fmtPct(pct, 1)} ${dir}`;
+		};
+		const deltaPrev = (() => {
+			if (close == null || prev == null || !Number.isFinite(prev) || prev === 0) return null;
+			const amt = Number(close) - Number(prev);
+			const pct = (amt / Math.abs(Number(prev))) * 100;
+			return { amt, pct };
+		})();
+		const deltaLabel = (() => {
+			const t = String(type ?? '').toLowerCase();
+			if (t.includes('day')) return '前日比';
+			if (t.includes('week')) return '前週比';
+			if (t.includes('month')) return '前月比';
+			if (t.includes('hour')) return '前時間比';
+			if (t.includes('min')) return '前足比';
+			return '前回比';
+		})();
 		const rsi = ind.RSI_14 ?? null;
+		const rsiSeries = Array.isArray(res?.data?.indicators?.RSI_14_series) ? res.data.indicators.RSI_14_series : null;
+		const recentRsiRaw = (() => {
+			if (!Array.isArray(rsiSeries) || rsiSeries.length === 0) return [];
+			return rsiSeries.slice(-7).map((v: any) => {
+				const num = Number(v);
+				return Number.isFinite(num) ? num : null;
+			});
+		})();
+		const recentRsiFormatted = recentRsiRaw.map(v => (v == null ? 'n/a' : Number(v).toFixed(1)));
+		const rsiTrendLabel = (() => {
+			if (recentRsiRaw.length < 2) return null;
+			const first = recentRsiRaw.find(v => v != null);
+			const last = [...recentRsiRaw].reverse().find(v => v != null);
+			if (first == null || last == null) return null;
+			const diff = last - first;
+			if (Math.abs(diff) < 1) return '横ばい';
+			return diff > 0 ? '回復傾向' : '悪化傾向';
+		})();
+		const rsiUnitLabel = (() => {
+			const t = String(type ?? '').toLowerCase();
+			if (t.includes('day')) return '日';
+			if (t.includes('week')) return '週';
+			if (t.includes('month')) return '月';
+			if (t.includes('hour')) return '時間';
+			if (t.includes('min')) return '本';
+			return '本';
+		})();
 		const sma25 = ind.SMA_25 ?? null;
 		const sma75 = ind.SMA_75 ?? null;
 		const sma200 = ind.SMA_200 ?? null;
@@ -316,6 +372,8 @@ registerToolWithLog(
 		const macdHist = ind.MACD_hist ?? null;
 		const spanA = ind.ICHIMOKU_spanA ?? null;
 		const spanB = ind.ICHIMOKU_spanB ?? null;
+		const tenkan = ind.ICHIMOKU_conversion ?? null;
+		const kijun = ind.ICHIMOKU_base ?? null;
 		const cloudTop = (spanA != null && spanB != null) ? Math.max(spanA, spanB) : null;
 		const cloudBot = (spanA != null && spanB != null) ? Math.min(spanA, spanB) : null;
 		const cloudPos = (close != null && cloudTop != null && cloudBot != null)
@@ -323,34 +381,236 @@ registerToolWithLog(
 			: 'unknown';
 		const trend = res?.data?.trend ?? 'unknown';
 		const count = res?.meta?.count ?? candles.length ?? 0;
+		// Helpers: slope and last cross
+		const slopeOf = (seriesKey: string, n = 5): number | null => {
+			const arr = Array.isArray(res?.data?.indicators?.series?.[seriesKey]) ? res.data.indicators.series[seriesKey] : null;
+			if (!arr || arr.length < 2) return null;
+			const len = Math.min(n, arr.length);
+			const a = Number(arr.at(-len) ?? NaN);
+			const b = Number(arr.at(-1) ?? NaN);
+			if (!Number.isFinite(a) || !Number.isFinite(b) || len <= 1) return null;
+			return (b - a) / (len - 1);
+		};
+		const slopeSym = (s: number | null | undefined) => (s == null ? '➡️' : (s > 0 ? '📈' : (s < 0 ? '📉' : '➡️')));
+		const lastMacdCross = (() => {
+			const macdArr = Array.isArray(res?.data?.indicators?.series?.MACD_line) ? res.data.indicators.series.MACD_line : null;
+			const sigArr = Array.isArray(res?.data?.indicators?.series?.MACD_signal) ? res.data.indicators.series.MACD_signal : null;
+			if (!macdArr || !sigArr) return null;
+			const L = Math.min(macdArr.length, sigArr.length);
+			let lastIdx: number | null = null;
+			let lastType: 'golden' | 'dead' | null = null;
+			for (let i = L - 2; i >= 0; i--) {
+				const a0 = Number(macdArr[i]), b0 = Number(sigArr[i]);
+				const a1 = Number(macdArr[i + 1]), b1 = Number(sigArr[i + 1]);
+				if ([a0, b0, a1, b1].some(v => !Number.isFinite(v))) continue;
+				const prevDiff = a0 - b0;
+				const nextDiff = a1 - b1;
+				if (prevDiff === 0) continue;
+				if ((prevDiff < 0 && nextDiff > 0) || (prevDiff > 0 && nextDiff < 0)) {
+					lastIdx = i + 1;
+					lastType = nextDiff > 0 ? 'golden' : 'dead';
+					break;
+				}
+			}
+			if (lastIdx == null) return null;
+			const barsAgo = (L - 1) - lastIdx;
+			return { type: lastType, barsAgo };
+		})();
+		const divergence = (() => {
+			// simple divergence check over last 14 bars using linear slope
+			const N = Math.min(14, candles.length);
+			if (N < 5) return null;
+			const pxA = Number(candles.at(-N)?.close ?? NaN), pxB = Number(candles.at(-1)?.close ?? NaN);
+			const histSeries = Array.isArray(res?.data?.indicators?.series?.MACD_hist) ? res.data.indicators.series.MACD_hist : null;
+			if (!Number.isFinite(pxA) || !Number.isFinite(pxB) || !histSeries || histSeries.length < N) return null;
+			const hA = Number(histSeries.at(-N) ?? NaN), hB = Number(histSeries.at(-1) ?? NaN);
+			if (!Number.isFinite(hA) || !Number.isFinite(hB)) return null;
+			const pxSlopeUp = pxB > pxA, pxSlopeDn = pxB < pxA;
+			const histSlopeUp = hB > hA, histSlopeDn = hB < hA;
+			if (pxSlopeUp && histSlopeDn) return 'ベアリッシュ（価格↑・モメンタム↓）';
+			if (pxSlopeDn && histSlopeUp) return 'ブルリッシュ（価格↓・モメンタム↑）';
+			return 'なし';
+		})();
+		// SMA arrangement and deviations
+		const curNum = Number(close ?? NaN);
+		const s25n = Number(sma25 ?? NaN), s75n = Number(sma75 ?? NaN), s200n = Number(sma200 ?? NaN);
+		const arrangement = (() => {
+			const pts: Array<{ label: string; v: number }> = [];
+			if (Number.isFinite(curNum)) pts.push({ label: '価格', v: curNum });
+			if (Number.isFinite(s25n)) pts.push({ label: '25日', v: s25n });
+			if (Number.isFinite(s75n)) pts.push({ label: '75日', v: s75n });
+			if (Number.isFinite(s200n)) pts.push({ label: '200日', v: s200n });
+			if (pts.length < 3) return 'n/a';
+			pts.sort((a, b) => a.v - b.v);
+			return pts.map(p => p.label).join(' < ');
+		})();
+		const devPct = (ma?: number | null) => {
+			if (!Number.isFinite(curNum) || !Number.isFinite(Number(ma))) return null;
+			return ((Number(ma) - curNum) / Math.abs(curNum)) * 100;
+		};
+		const s25Dev = devPct(sma25), s75Dev = devPct(sma75), s200Dev = devPct(sma200);
+		const s25Slope = slopeOf('SMA_25', 5), s75Slope = slopeOf('SMA_75', 5), s200Slope = slopeOf('SMA_200', 7);
+		// BB width trend and sigma history (last 5-7 bars)
+		const bbSeries = {
+			upper: Array.isArray(res?.data?.indicators?.series?.BB_upper) ? res.data.indicators.series.BB_upper
+				: (Array.isArray(res?.data?.indicators?.series?.BB2_upper) ? res.data.indicators.series.BB2_upper : null),
+			lower: Array.isArray(res?.data?.indicators?.series?.BB_lower) ? res.data.indicators.series.BB_lower
+				: (Array.isArray(res?.data?.indicators?.series?.BB2_lower) ? res.data.indicators.series.BB2_lower : null),
+			middle: Array.isArray(res?.data?.indicators?.series?.BB_middle) ? res.data.indicators.series.BB_middle
+				: (Array.isArray(res?.data?.indicators?.series?.BB2_middle) ? res.data.indicators.series.BB2_middle : null),
+		};
+		const bwTrend = (() => {
+			try {
+				if (!bbSeries.upper || !bbSeries.lower || !bbSeries.middle) return null;
+				const L = Math.min(bbSeries.upper.length, bbSeries.lower.length, bbSeries.middle.length);
+				if (L < 6) return null;
+				const cur = (bbSeries.upper.at(-1) - bbSeries.lower.at(-1)) / Math.max(1e-12, bbSeries.middle.at(-1));
+				const prev5 = (bbSeries.upper.at(-6) - bbSeries.lower.at(-6)) / Math.max(1e-12, bbSeries.middle.at(-6));
+				if (!Number.isFinite(cur) || !Number.isFinite(prev5)) return null;
+				return cur > prev5 ? '拡大中' : (cur < prev5 ? '収縮中' : '不変');
+			} catch { return null; }
+		})();
+		const sigmaHistory = (() => {
+			try {
+				if (!bbSeries.upper || !bbSeries.middle) return null;
+				const L = Math.min(candles.length, bbSeries.upper.length, bbSeries.middle.length);
+				if (L < 6) return null;
+				const idxs = [-6, -1];
+				const vals = idxs.map(off => {
+					const c = Number(candles.at(off)?.close ?? NaN);
+					const m = Number(bbSeries.middle.at(off) ?? NaN);
+					const u = Number(bbSeries.upper.at(off) ?? NaN);
+					if (![c, m, u].every(Number.isFinite)) return null;
+					const z = Number((2 * (c - m) / Math.max(1e-12, u - m)).toFixed(2));
+					return { off, z };
+				});
+				return vals;
+			} catch { return null; }
+		})();
+		// Ichimoku extras: cloud thickness, chikou proxy, three signals, distance to cloud
+		const cloudThickness = (cloudTop != null && cloudBot != null) ? (cloudTop - cloudBot) : null;
+		const cloudThicknessPct = (cloudThickness != null && close != null && Number.isFinite(close)) ? (cloudThickness / Math.max(1e-12, Number(close))) * 100 : null;
+		const chikouBull = (() => {
+			if (candles.length < 27 || close == null) return null;
+			const past = Number(candles.at(-27)?.close ?? NaN);
+			if (!Number.isFinite(past)) return null;
+			return Number(close) > past;
+		})();
+		const threeSignals = (() => {
+			const aboveCloud = cloudPos === 'above_cloud';
+			const convAboveBase = (tenkan != null && kijun != null) ? (Number(tenkan) >= Number(kijun)) : null;
+			const chikouAbove = chikouBull;
+			let judge: '三役好転' | '三役逆転' | '混在' = '混在';
+			if (aboveCloud && convAboveBase === true && chikouAbove === true) judge = '三役好転';
+			if (cloudPos === 'below_cloud' && convAboveBase === false && chikouAbove === false) judge = '三役逆転';
+			return { judge, aboveCloud, convAboveBase, chikouAbove };
+		})();
+		const toCloudDistance = (() => {
+			if (close == null || cloudTop == null || cloudBot == null) return null;
+			if (cloudPos === 'below_cloud') {
+				const need = cloudBot - Number(close);
+				return need > 0 ? (need / Math.max(1e-12, Number(close))) * 100 : 0;
+			}
+			if (cloudPos === 'above_cloud') {
+				const need = Number(close) - cloudTop;
+				return need > 0 ? (need / Math.max(1e-12, Number(close))) * 100 : 0;
+			}
+			return 0;
+		})();
 
 		const lines: string[] = [];
-		lines.push(`${String(pair).toUpperCase()} [${String(type)}] close=${close ?? 'n/a'} RSI=${rsi ?? 'n/a'} trend=${trend} (count=${count})`);
+		// Header with time and 24h change
+		lines.push(`=== ${String(pair).toUpperCase()} ${String(type)} 分析 ===`);
+		lines.push(`${nowJst} 現在`);
+		const chgLine = deltaPrev ? `(${deltaLabel}: ${fmtPct(deltaPrev.pct, 1)})` : '';
+		lines.push(deltaPrev ? `${fmtJPY(close)} ${chgLine}` : fmtJPY(close));
 		lines.push('');
+		// 総合判定（簡潔）
+		lines.push('【総合判定】');
+		const trendText = trend === 'strong_downtrend' ? '強い下降トレンド ⚠️' : (trend === 'uptrend' ? '上昇トレンド' : '中立/レンジ');
+		const rsiHint = (rsi == null) ? '—' : (Number(rsi) < 30 ? '売られすぎ' : (Number(rsi) > 70 ? '買われすぎ' : '中立圏'));
+		const bwState = bandWidthPct == null ? '—' : (bandWidthPct < 8 ? 'スクイーズ' : (bandWidthPct > 20 ? 'エクスパンション' : '標準'));
+		lines.push(`  トレンド: ${trendText}`);
+		lines.push(`  勢い: RSI=${rsi ?? 'n/a'} → ${rsiHint}`);
+		lines.push(`  リスク: BB幅=${bandWidthPct != null ? bandWidthPct + '%' : 'n/a'} → ${bwState}${bwTrend ? `（${bwTrend}）` : ''}`);
+		lines.push('');
+		// Momentum
 		lines.push('【モメンタム】');
-		lines.push(`  RSI(14): ${rsi ?? 'n/a'}`);
-		lines.push(`  MACD: line=${macdLine ?? 'n/a'} signal=${macdSignal ?? 'n/a'} hist=${macdHist ?? 'n/a'}`);
+		const rsiInterp = (val: number | null) => {
+			if (val == null) return '—';
+			if (val < 30) return '売られすぎ圏（反発の可能性）';
+			if (val < 50) return '弱め（反発余地）';
+			if (val < 70) return '中立〜強め';
+			return '買われすぎ圏（反落の可能性）';
+		};
+		lines.push(`  RSI(14): ${rsi ?? 'n/a'} → ${rsiInterp(Number(rsi))}`);
+		if (recentRsiFormatted.length >= 2) {
+			lines.push(`    【RSI推移（直近${recentRsiFormatted.length}${rsiUnitLabel}）】`);
+			lines.push('');
+			lines.push(`    ${recentRsiFormatted.join(' → ')}`);
+		}
+		const macdHistFmt = macdHist == null ? 'n/a' : `${Math.round(Number(macdHist)).toLocaleString()}`;
+		const macdHint = (macdHist == null) ? '—' : (Number(macdHist) >= 0 ? '強気継続（プラス＝上昇圧力）' : '弱気継続（マイナス＝下落圧力）');
+		lines.push(`  MACD: hist=${macdHistFmt} → ${macdHint}`);
+		const crossStr = lastMacdCross ? `${lastMacdCross.type === 'golden' ? 'ゴールデン' : 'デッド'}クロス: ${lastMacdCross.barsAgo}本前` : '直近クロス: なし';
+		lines.push(`    ・${crossStr}`);
+		lines.push(`    ・ダイバージェンス: ${divergence ?? 'なし'}`);
 		lines.push('');
-		lines.push('【トレンド】');
-		lines.push(`  SMA(25/75/200): ${sma25 ?? 'n/a'} / ${sma75 ?? 'n/a'} / ${sma200 ?? 'n/a'}`);
+		// Trend (SMA)
+		lines.push('【トレンド（移動平均線）】');
+		lines.push(`  配置: ${arrangement}`);
+		lines.push(`  SMA(25): ${fmtJPY(sma25)} (${vsCurPct(sma25)}) ${slopeSym(s25Slope)}`);
+		lines.push(`  SMA(75): ${fmtJPY(sma75)} (${vsCurPct(sma75)}) ${slopeSym(s75Slope)}`);
+		lines.push(`  SMA(200): ${fmtJPY(sma200)} (${vsCurPct(sma200)}) ${slopeSym(s200Slope)}`);
+		// Simple cross info
+		const crossInfo = (() => {
+			const s25 = Array.isArray(res?.data?.indicators?.series?.SMA_25) ? res.data.indicators.series.SMA_25 : null;
+			const s75 = Array.isArray(res?.data?.indicators?.series?.SMA_75) ? res.data.indicators.series.SMA_75 : null;
+			if (!s25 || !s75) return null;
+			const L = Math.min(s25.length, s75.length);
+			let lastIdx: number | null = null; let t: 'golden' | 'dead' | null = null;
+			for (let i = L - 2; i >= 0; i--) {
+				const d0 = Number(s25[i]) - Number(s75[i]);
+				const d1 = Number(s25[i + 1]) - Number(s75[i + 1]);
+				if (![d0, d1].every(Number.isFinite)) continue;
+				if ((d0 < 0 && d1 > 0) || (d0 > 0 && d1 < 0)) { lastIdx = i + 1; t = d1 > 0 ? 'golden' : 'dead'; break; }
+			}
+			if (lastIdx == null) return '直近クロス: なし';
+			return `直近クロス: ${t === 'golden' ? 'ゴールデン' : 'デッド'}（${(L - 1 - lastIdx)}本前）`;
+		})();
+		if (crossInfo) lines.push(`  ${crossInfo}`);
 		lines.push('');
-		lines.push('【ボラティリティ（BB±2σ）】');
-		lines.push(`  middle=${bbMid ?? 'n/a'} upper=${bbUp ?? 'n/a'} lower=${bbLo ?? 'n/a'}`);
-		lines.push(`  bandWidth=${bandWidthPct != null ? bandWidthPct + '%' : 'n/a'} position=${sigmaZ != null ? sigmaZ + 'σ' : 'n/a'}`);
-		// 軽い解釈（1行）: analyze_* の領域を侵さない簡易ヒント
-		if (sigmaZ != null) {
-			let hint = '';
-			if (sigmaZ <= -1) hint = '現在価格は下限付近、反発の可能性';
-			else if (sigmaZ >= 1) hint = '現在価格は上限付近、反落の可能性';
-			else hint = 'バンド中央付近で方向感弱い';
-			const bwHint = bandWidthPct != null ? (bandWidthPct < 8 ? '（収縮気味）' : (bandWidthPct > 20 ? '（拡大型）' : '')) : '';
-			lines.push(`  ${hint}${bwHint}`);
+		// Volatility (BB)
+		lines.push('【ボラティリティ（ボリンジャーバンド±2σ）】');
+		lines.push(`  現在位置: ${sigmaZ != null ? `${sigmaZ}σ` : 'n/a'} → ${sigmaZ != null ? (sigmaZ <= -1 ? '売られすぎ' : (sigmaZ >= 1 ? '買われすぎ' : '中立')) : '—'}`);
+		lines.push(`  middle: ${fmtJPY(bbMid)} (${vsCurPct(bbMid)})`);
+		lines.push(`  upper:  ${fmtJPY(bbUp)} (${vsCurPct(bbUp)})`);
+		lines.push(`  lower:  ${fmtJPY(bbLo)} (${vsCurPct(bbLo)})${(bbLo != null && close != null && Number(bbLo) < Number(close)) ? '' : ' ← 現在価格に近い'}`);
+		if (bandWidthPct != null) lines.push(`  バンド幅: ${bandWidthPct}% → ${bwTrend ?? '—'}`);
+		if (sigmaHistory && sigmaHistory[0] && sigmaHistory[1]) {
+			const ago5 = sigmaHistory[0]?.z; const curZ = sigmaHistory[1]?.z;
+			lines.push('  過去推移:');
+			if (ago5 != null) lines.push(`    ・5日前: ${ago5}σ`);
+			if (curZ != null) lines.push(`    ・現在: ${curZ}σ`);
 		}
 		lines.push('');
+		// Ichimoku
 		lines.push('【一目均衡表】');
-		lines.push(`  spanA=${spanA ?? 'n/a'} spanB=${spanB ?? 'n/a'} cloud=${cloudPos}`);
+		lines.push(`  現在位置: ${cloudPos === 'below_cloud' ? '雲の下 → 弱気' : (cloudPos === 'above_cloud' ? '雲の上 → 強気' : '雲の中 → 中立')}`);
+		lines.push(`  転換線: ${fmtJPY(tenkan)} (${vsCurPct(tenkan)}) ${slopeSym(slopeOf('ICHIMOKU_conversion', 5))}`);
+		lines.push(`  基準線: ${fmtJPY(kijun)} (${vsCurPct(kijun)}) ${slopeSym(slopeOf('ICHIMOKU_base', 5))}`);
+		lines.push(`  先行スパンA: ${fmtJPY(spanA)} (${vsCurPct(spanA)})`);
+		lines.push(`  先行スパンB: ${fmtJPY(spanB)} (${vsCurPct(spanB)})`);
+		if (cloudThickness != null) lines.push(`  雲の厚さ: ${Math.round(cloudThickness).toLocaleString()}円（${cloudThicknessPct != null ? `${cloudThicknessPct.toFixed(1)}%` : 'n/a'}）`);
+		if (chikouBull != null) lines.push(`  遅行スパン: ${chikouBull ? '価格より上 → 強気' : '価格より下 → 弱気'}`);
+		if (threeSignals) lines.push(`  三役判定: ${threeSignals.judge}`);
+		if (toCloudDistance != null && cloudPos === 'below_cloud') lines.push(`  雲突入まで: ${toCloudDistance.toFixed(1)}%`);
 		lines.push('');
-		lines.push('詳細は structuredContent.data.indicators / chart を参照。必要に応じて: analyze_bb_snapshot / analyze_ichimoku_snapshot / analyze_sma_snapshot / analyze_market_signal');
+		lines.push('【次に確認すべきこと】');
+		lines.push('  ・より詳しく: analyze_bb_snapshot / analyze_ichimoku_snapshot / analyze_sma_snapshot');
+		lines.push('  ・転換サイン例: RSI>40, MACDヒストグラムのプラ転, 25日線の明確な上抜け');
+		lines.push('');
+		lines.push('詳細は structuredContent.data.indicators / chart を参照。');
 		const text = lines.join('\n');
 		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
 	}
@@ -414,7 +674,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_flow_metrics',
-	{ description: 'Compute flow metrics (CVD, aggressor ratio, volume spikes) from recent transactions. Returns aggregated buy/sell flow analysis with spike detection. content shows summary stats; detailed data in structuredContent.data. Use for: short-term flow dominance, event detection, momentum shifts. For comprehensive multi-factor analysis, prefer analyze_market_signal. bucketMs: time bucket in ms (default 60000). Recommended: 15000-60000 for spike detection, 60000-300000 for trend analysis. limit: 100-2000 (default 100). view=summary|buckets|full (full prints all buckets and may be long); bucketsN controls how many recent buckets to print (default 10). Outputs zscore and spike flags per bucket. tz sets display timezone (default Asia/Tokyo).', inputSchema: GetFlowMetricsInputSchema },
+	{ description: 'Compute flow metrics (CVD, aggressor ratio, volume spikes) from recent transactions. Returns aggregated buy/sell flow analysis with spike detection. content shows summary stats; detailed data in structuredContent.data. Use for: short-term flow dominance, event detection, momentum shifts. For comprehensive multi-factor analysis, prefer analyze_market_signal. bucketMs: time bucket in ms (default 60000). Recommended: 15000-60000 for spike detection, 60000-300000 for trend analysis. limit: 100-2000 (default 100). view=summary|buckets|full (full prints all buckets and may be long); bucketsN controls how many recent buckets to print (default 10). Outputs zscore and spike flags per bucket. tz sets display timezone (default Asia/Tokyo).', inputSchema: (await import('./schemas.js')).GetFlowMetricsInputSchema as any },
 	async ({ pair, limit, date, bucketMs, view, bucketsN, tz }: any) => {
 		const res: any = await getFlowMetrics(pair, Number(limit), date, Number(bucketMs), tz);
 		if (!res?.ok) return res;
@@ -694,7 +954,14 @@ registerToolWithLog(
 				}
 			}
 		} catch { }
+		// JST timestamp for snapshot
+		const nowJst = (() => {
+			try {
+				return new Date().toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', hour12: false }).replace(/\//g, '/');
+			} catch { return new Date().toISOString(); }
+		})();
 		const text = [
+			`📸 ${nowJst} JST 時点`,
 			`${String(pair).toUpperCase()} ${mid != null ? Math.round(mid).toLocaleString() + '円' : ''}`.trim(),
 			`全体圧力: ${s >= 0 ? '+' : ''}${s.toFixed(2)} (${sentiment.replace('_', ' ')})`,
 			`正規化: ${normInfo.mode}${normInfo.scale != null ? ` (scale=${normInfo.scale})` : ''} | weight=${(weightScheme || 'byDistance')}`,
@@ -762,6 +1029,21 @@ registerToolWithLog(
 			if (diff > 0.2) tagsDerived.push('atr_divergence');
 		}
 		const tagsAll = [...new Set([...(tagsBase || []), ...tagsDerived])];
+
+		// beginner view (plain language for non-experts)
+		if (view === 'beginner') {
+			const rvPct = rvAnn != null ? `${(rvAnn * 100).toFixed(0)}%` : 'n/a';
+			const atrJpy = atrAbs != null ? `${Math.round(Number(atrAbs)).toLocaleString()}円` : 'n/a';
+			const atrPctStr = atrPct != null ? `${(atrPct * 100).toFixed(1)}%` : 'n/a';
+			const closeStr = lastClose != null ? `${Math.round(Number(lastClose)).toLocaleString()}円` : 'n/a';
+			const lines = [
+				`${String(pair).toUpperCase()} [${String(type)}] 現在価格: ${closeStr}`,
+				`・年間のおおよその動き: 約${rvPct}（1年でこのくらい上下しやすい目安）`,
+				`・1日の平均的な動き: 約${atrJpy}（約${atrPctStr}）`,
+				tagsAll.length ? `・今の傾向: ${tagsAll.map(t => t.replaceAll('_', ' ')).join(', ')}` : null,
+			].filter(Boolean).join('\n');
+			return { content: [{ type: 'text', text: lines }], structuredContent: { ...res, data: { ...res.data, tags: tagsAll } } as Record<string, unknown> };
+		}
 
 		// summary view
 		if (view === 'summary') {
@@ -831,7 +1113,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'render_chart_svg',
-	{ description: 'ローソク足/ライン/板チャートをSVG形式で生成します。\n\n【使用タイミング】\n- ユーザーが視覚的確認を求めている時\n- パターンや指標の根拠を視覚的に示したい時\n- detect_patterns 等の分析結果を可視化したい時\n\n【返却形式】\n- data.svg: 完全なSVG文字列（最重要。これをそのまま image/svg+xml のアーティファクトとして出力）\n- data.filePath: サイズ超過時のみファイルパス（または preferFile=true の場合に常に）\n- data.legend: 描画したレイヤの凡例\n- meta.range: { start, end }（ISO8601）\n- meta.indicators: 表示中のインジケータ一覧\n\n【CRITICAL: アーティファクト表示要件】\n- SVGは必ず antArtifact タグで表示（例: <antArtifact type="image/svg+xml" isClosed="true">…</antArtifact>）\n- artifact タグは使用不可（テキスト表示になり視覚化されません）\n- タグ名は大文字小文字を厳密に: antArtifact（antは小、ArtifactのAは大）\n- data.svg が null の場合: file_read で data.filePath を読み、同様に antArtifact で表示\n\n【基本例】\nrender_chart_svg({ pair: "btc_jpy", type: "1day", limit: 30 })\n→ 返却 { data: { svg: "<svg>...</svg>" }, meta: { range: {start, end}, indicators: [..] } }\n→ LLMは data.svg をそのままアーティファクト出力。data.svg が null の場合は data.filePath を file_read で読み取り表示。\n\n【他ツールとの連携】\n1) detect_patterns を実行\n2) 返却された data.overlays を取得\n3) render_chart_svg({ overlays: data.overlays }) に渡して描画（ranges/annotations/depth_zones に対応）\n\n【軽量化オプション】\n- svgPrecision, svgMinify, simplifyTolerance, viewBoxTight\n- maxSvgBytes: 超過時は data.filePath、preferFile=true: 常に保存のみ', inputSchema: RenderChartSvgInputSchema },
+	{ description: 'ローソク足/ライン/板チャートをSVG形式で生成します。\n\n【重要な使用タイミング（厳守）】\n- ユーザーが「描画/可視化/チャートで見たい」等と明示したときのみ使用\n- detect_patterns 等の結果を「図で確認したい」とユーザーが要望したとき\n- 画像（SVG）のアーティファクト表示が明確に求められたとき\n\n【使用してはいけない場合】\n- 数値だけで足りる問い合わせ（分析/要約のみ）\n- ユーザーが視覚化を求めていないとき（自発的に使わない）\n- 「念のため」の再描画\n\nLLM への指示: ユーザーの明示要求がない限り、このツールを起動しないでください。\n\n【返却形式】\n- data.svg: 完全なSVG文字列（最重要。これをそのまま image/svg+xml のアーティファクトとして出力）\n- data.filePath: サイズ超過時のみファイルパス（または preferFile=true の場合に常に）\n- data.legend: 描画したレイヤの凡例\n- meta.range: { start, end }（ISO8601）\n- meta.indicators: 表示中のインジケータ一覧\n\n【CRITICAL: アーティファクト表示要件】\n- SVGは必ず antArtifact タグで表示（例: <antArtifact type="image/svg+xml" isClosed="true">…</antArtifact>）\n- artifact タグは使用不可（テキスト表示になり視覚化されません）\n- タグ名は大文字小文字を厳密に: antArtifact（antは小、ArtifactのAは大）\n- data.svg が null の場合: file_read で data.filePath を読み、同様に antArtifact で表示\n\n【基本例】\nrender_chart_svg({ pair: "btc_jpy", type: "1day", limit: 30 })\n→ 返却 { data: { svg: "<svg>...</svg>" }, meta: { range: {start, end}, indicators: [..] } }\n→ LLMは data.svg をそのままアーティファクト出力。data.svg が null の場合は data.filePath を file_read で読み取り表示。\n\n【他ツールとの連携】\n1) detect_patterns を実行\n2) 返却された data.overlays を取得\n3) render_chart_svg({ overlays: data.overlays }) に渡して描画（ranges/annotations/depth_zones に対応）\n\n【軽量化オプション】\n- svgPrecision, svgMinify, simplifyTolerance, viewBoxTight\n- maxSvgBytes: 超過時は data.filePath、preferFile=true: 常に保存のみ', inputSchema: RenderChartSvgInputSchema },
 	async (args: any) => {
 		// Default to file-first strategy for reliability
 		const effArgs = {
@@ -884,17 +1166,21 @@ registerToolWithLog(
 				return { content: [{ type: 'text', text }], structuredContent: enriched };
 			}
 			if (data?.svg) {
+				const id = String(meta?.identifier || `${pair}-${type}-${Date.now()}`);
+				const ttl = String(meta?.title || `${pair} ${type} chart`);
 				const rangeLine = meta?.range ? `- Period: ${meta.range.start} to ${meta.range.end}` : '';
 				const tfLine = `- Timeframe: ${type}${meta?.limit ? ` (${meta.limit} candles)` : ''}`;
 				const indLine = `- Indicators: ${Array.isArray(meta?.indicators) && meta.indicators.length ? meta.indicators.join(', ') : 'none'}`;
 				const sizeLine = meta?.sizeBytes != null ? `- Size: ${meta.sizeBytes} bytes` : '';
 				const legendLines = data?.legend ? Object.entries(data.legend).map(([k, v]: any[]) => `- ${k}: ${String(v)}`).join('\n') : '';
 				const text = [
-					header,
+					'--- チャートSVG ---',
+					'以下のSVGを antArtifact タグで囲んで必ず視覚的に表示してください:',
+					`identifier: ${id}`,
+					`title: ${ttl}`,
+					'type: image/svg+xml',
 					'',
-					'=== SVG_START ===',
 					String(data.svg),
-					'=== SVG_END ===',
 					'',
 					'Chart Info:',
 					rangeLine,
@@ -917,16 +1203,57 @@ registerToolWithLog(
 				} as any;
 				return { content: [{ type: 'text', text }], structuredContent: enriched };
 			}
-			return { content: [{ type: 'text', text: header }], structuredContent: parsed as any };
+			const txt = String((parsed as any)?.summary || '');
+			return { content: [{ type: 'text', text: txt }], structuredContent: parsed as any };
 		} catch {
 			return { content: [{ type: 'text', text: String((parsed as any)?.summary || 'chart rendered') }], structuredContent: parsed as any };
 		}
 	}
 );
 
+// Lightweight, dedicated depth renderer (bypasses indicators), returns proper meta.pair/type
+registerToolWithLog(
+	'render_depth_svg',
+	{
+		description: '板の深さ(Depth)チャートをSVGで生成します。軽量・専用実装で meta.pair/type を常に含みます。\n\n使い方:\nrender_depth_svg({ pair: \"btc_jpy\", type: \"1day\", depth: { levels: 200 }, preferFile: true })', inputSchema: (await import('zod')).z.object({
+			pair: (await import('zod')).z.string().default('btc_jpy'),
+			type: (await import('zod')).z.string().default('1day'),
+			depth: (await import('zod')).z.object({ levels: (await import('zod')).z.number().int().min(10).max(1000).optional().default(200) }).optional().default({ levels: 200 }),
+			preferFile: (await import('zod')).z.boolean().optional(),
+			autoSave: (await import('zod')).z.boolean().optional(),
+		}) as any
+	},
+	async ({ pair, type, depth, preferFile, autoSave }: any) => {
+		const res: any = await renderDepthSvg({ pair, type, depth, preferFile, autoSave });
+		if (!res?.ok) return res;
+		const data: any = (res as any).data || {};
+		const meta: any = (res as any).meta || {};
+		const header = `${String(pair).toUpperCase()} Depth chart`;
+		if (data?.filePath) {
+			const text = `${header}\nSaved: computer://${data.filePath}`;
+			return { content: [{ type: 'text', text }], structuredContent: res as any };
+		}
+		if (data?.svg) {
+			const text = [
+				header,
+				'',
+				'--- Depth SVG ---',
+				'以下のSVGを antArtifact タグで囲んで表示してください:',
+				`identifier: depth-${String(pair)}-${Date.now()}`,
+				`title: Depth ${String(pair).toUpperCase()}`,
+				'type: image/svg+xml',
+				'',
+				String(data.svg),
+			].join('\n');
+			return { content: [{ type: 'text', text }], structuredContent: res as any };
+		}
+		return { content: [{ type: 'text', text: header }], structuredContent: res as any };
+	}
+);
+
 registerToolWithLog(
 	'detect_patterns',
-	{ description: '古典的チャートパターン（ダブルトップ/ヘッドアンドショルダーズ/三角持ち合い等）を検出します。content に検出名・信頼度・期間（必要に応じて価格範囲/ネックライン）を出力。視覚確認には render_chart_svg の overlays に structuredContent.data.overlays を渡してください。view=summary|detailed|full（既定=detailed）。', inputSchema: DetectPatternsInputSchema },
+	{ description: '古典的チャートパターン（ダブルトップ/ヘッドアンドショルダーズ/三角持ち合い等）を検出します。\n\n⚠️ 重要: このツールは「完成済みパターン」を検出します。将来予測や現在地点に絡む判断には detect_forming_chart_patterns を使用してください。\n\n用途:\n- バックテスト/過去パターンの検証\n- 統計分析・教材用途\n\n出力:\n- content に検出名・パターン整合度・期間（必要に応じて価格範囲/ネックライン）\n- 視覚確認: structuredContent.data.overlays を render_chart_svg.overlays に渡す\n\nview=summary|detailed|full（既定=detailed）。', inputSchema: DetectPatternsInputSchema },
 	async ({ pair, type, limit, patterns, swingDepth, tolerancePct, minBarsBetweenSwings, view, requireCurrentInPattern, currentRelevanceDays }: any) => {
 		const out = await detectPatterns(pair, type, limit, { patterns, swingDepth, tolerancePct, minBarsBetweenSwings, requireCurrentInPattern, currentRelevanceDays });
 		const res = DetectPatternsOutputSchema.parse(out as any);
@@ -958,7 +1285,105 @@ registerToolWithLog(
 						: 'n/a';
 					const hiPart = Number.isFinite(hi) ? hi.toFixed(8) : 'n/a';
 					const loPart = Number.isFinite(lo) ? lo.toFixed(8) : 'n/a';
-					detailsStr = `\n   spread: ${spreadPart}${(Number.isFinite(hi) || Number.isFinite(lo)) ? `, slopes: hi=${hiPart} lo=${loPart}` : ''}`;
+					// 専用: type_classification_failed の内訳を本文に表示
+					if (String(c?.reason) === 'type_classification_failed') {
+						const fh = Number(d?.slopeHigh);
+						const fl = Number(d?.slopeLow);
+						const fr = String(d?.failureReason || '');
+						const ratio = Number(d?.slopeRatio);
+						const fhStr = Number.isFinite(fh) ? fh.toFixed(8) : 'n/a';
+						const flStr = Number.isFinite(fl) ? fl.toFixed(8) : 'n/a';
+						const ratioStr = Number.isFinite(ratio) ? ratio.toFixed(3) : 'n/a';
+						detailsStr =
+							`\n   failureReason: ${fr || 'n/a'}` +
+							`\n   slopes: hi=${fhStr} lo=${flStr}` +
+							`\n   slopeRatio: ${ratioStr}`;
+					} else if (String(c?.reason) === 'probe_window') {
+						const fh = Number(d?.slopeHigh);
+						const fl = Number(d?.slopeLow);
+						const pr = Number(d?.priceRange);
+						const bs = Number(d?.barsSpan);
+						const ms = Number(d?.minMeaningfulSlope);
+						const fhStr = Number.isFinite(fh) ? fh.toFixed(8) : 'n/a';
+						const flStr = Number.isFinite(fl) ? fl.toFixed(8) : 'n/a';
+						const prStr = Number.isFinite(pr) ? Math.round(pr).toLocaleString() : 'n/a';
+						const bsStr = Number.isFinite(bs) ? String(bs) : 'n/a';
+						const msStr = Number.isFinite(ms) ? ms.toFixed(8) : 'n/a';
+						const highsIn = Array.isArray(d?.highsIn) ? d.highsIn.map((p: any) => `[${p.index}:${Math.round(Number(p.price)).toLocaleString()}]`).join(', ') : 'n/a';
+						const lowsIn = Array.isArray(d?.lowsIn) ? d.lowsIn.map((p: any) => `[${p.index}:${Math.round(Number(p.price)).toLocaleString()}]`).join(', ') : 'n/a';
+						detailsStr =
+							`\n   upper.slope: ${fhStr}` +
+							`\n   lower.slope: ${flStr}` +
+							`\n   priceRange: ${prStr}` +
+							`\n   barsSpan: ${bsStr}` +
+							`\n   minMeaningfulSlope: ${msStr}` +
+							`\n   highsIn: ${highsIn}` +
+							`\n   lowsIn: ${lowsIn}`;
+					} else if (String(c?.reason) === 'declining_highs' || String(c?.reason) === 'declining_highs_probe') {
+						const fa = Number(d?.firstAvg);
+						const sa = Number(d?.secondAvg);
+						const ratio = Number(d?.ratio);
+						const faStr = Number.isFinite(fa) ? Math.round(fa).toLocaleString() : 'n/a';
+						const saStr = Number.isFinite(sa) ? Math.round(sa).toLocaleString() : 'n/a';
+						const ratioStr = Number.isFinite(ratio) ? (ratio * 100).toFixed(1) + '%' : 'n/a';
+						const cnt = Number(d?.highsCount);
+						const cntStr = Number.isFinite(cnt) ? String(cnt) : 'n/a';
+						detailsStr =
+							`\n   ${String(c?.reason) === 'declining_highs' ? 'declining_highs: true' : 'declining_highs_probe: metrics'}` +
+							`\n   highsIn.count: ${cntStr}` +
+							`\n   1st half avg: ${faStr}` +
+							`\n   2nd half avg: ${saStr}` +
+							`\n   ratio: ${ratioStr}`;
+					} else if (String(c?.reason) === 'rising_probe') {
+						const r2h = Number(d?.r2High), r2l = Number(d?.r2Low);
+						const sh = Number(d?.slopeHigh), sl = Number(d?.slopeLow);
+						const sratio = Number(d?.slopeRatioLH);
+						const pr = Number(d?.priceRange), bs = Number(d?.barsSpan), ms = Number(d?.minMeaningfulSlope);
+						const fa = Number(d?.firstAvg), sa = Number(d?.secondAvg), dr = Number(d?.ratio);
+						const highsIn = Array.isArray(d?.highsIn) ? d.highsIn.map((p: any) => `[${p.index}:${Math.round(Number(p.price)).toLocaleString()}]`).join(', ') : 'n/a';
+						const lowsIn = Array.isArray(d?.lowsIn) ? d.lowsIn.map((p: any) => `[${p.index}:${Math.round(Number(p.price)).toLocaleString()}]`).join(', ') : 'n/a';
+						detailsStr =
+							`\n   r2: hi=${Number.isFinite(r2h) ? r2h.toFixed(3) : 'n/a'}, lo=${Number.isFinite(r2l) ? r2l.toFixed(3) : 'n/a'}` +
+							`\n   slopes: hi=${Number.isFinite(sh) ? sh.toFixed(6) : 'n/a'} lo=${Number.isFinite(sl) ? sl.toFixed(6) : 'n/a'}` +
+							`\n   slopeRatioLH: ${Number.isFinite(sratio) ? sratio.toFixed(3) : 'n/a'}` +
+							`\n   priceRange: ${Number.isFinite(pr) ? Math.round(pr).toLocaleString() : 'n/a'}, barsSpan: ${Number.isFinite(bs) ? String(bs) : 'n/a'}` +
+							`\n   minMeaningfulSlope: ${Number.isFinite(ms) ? ms.toFixed(6) : 'n/a'}` +
+							`\n   highsIn: ${highsIn}` +
+							`\n   lowsIn: ${lowsIn}` +
+							`\n   declining_highs metrics: firstAvg=${Number.isFinite(fa) ? Math.round(fa).toLocaleString() : 'n/a'}, secondAvg=${Number.isFinite(sa) ? Math.round(sa).toLocaleString() : 'n/a'}, ratio=${Number.isFinite(dr) ? (dr * 100).toFixed(1) + '%' : 'n/a'}`;
+					} else if (String(c?.reason) === 'post_filter_rising_highs_not_declining') {
+						const fa = Number(d?.firstAvg);
+						const sa = Number(d?.secondAvg);
+						const ratio = Number(d?.ratio);
+						const faStr = Number.isFinite(fa) ? Math.round(fa).toLocaleString() : 'n/a';
+						const saStr = Number.isFinite(sa) ? Math.round(sa).toLocaleString() : 'n/a';
+						const ratioStr = Number.isFinite(ratio) ? (ratio * 100).toFixed(1) + '%' : 'n/a';
+						const cnt = Number(d?.highsCount);
+						const cntStr = Number.isFinite(cnt) ? String(cnt) : 'n/a';
+						detailsStr =
+							`\n   post_filter: rising highs not declining` +
+							`\n   highsIn.count: ${cntStr}` +
+							`\n   1st half avg: ${faStr}` +
+							`\n   2nd half avg: ${saStr}` +
+							`\n   ratio: ${ratioStr}`;
+					} else if (String(c?.reason) === 'post_filter_falling_lows_not_rising') {
+						const fa = Number(d?.firstAvg);
+						const sa = Number(d?.secondAvg);
+						const ratio = Number(d?.ratio);
+						const faStr = Number.isFinite(fa) ? Math.round(fa).toLocaleString() : 'n/a';
+						const saStr = Number.isFinite(sa) ? Math.round(sa).toLocaleString() : 'n/a';
+						const ratioStr = Number.isFinite(ratio) ? (ratio * 100).toFixed(1) + '%' : 'n/a';
+						const cnt = Number(d?.lowsCount);
+						const cntStr = Number.isFinite(cnt) ? String(cnt) : 'n/a';
+						detailsStr =
+							`\n   post_filter: falling lows not rising` +
+							`\n   lowsIn.count: ${cntStr}` +
+							`\n   1st half avg: ${faStr}` +
+							`\n   2nd half avg: ${saStr}` +
+							`\n   ratio: ${ratioStr}`;
+					} else {
+						detailsStr = `\n   spread: ${spreadPart}${(Number.isFinite(hi) || Number.isFinite(lo)) ? `, slopes: hi=${hiPart} lo=${loPart}` : ''}`;
+					}
 				}
 				return `${i + 1}. ${tag} ${c.type}${reason}${indices}${pts ? `\n   ${pts}` : ''}${detailsStr}`;
 			});
@@ -1029,11 +1454,74 @@ registerToolWithLog(
 						: `${y1.toLocaleString()}円 → ${y2.toLocaleString()}円`;
 				}
 			}
+			// map idx -> isoTime using debug swings if available
+			const idxToIso: Record<number, string> = {};
+			try {
+				const swings = (meta as any)?.debug?.swings;
+				if (Array.isArray(swings)) {
+					for (const s of swings) {
+						const i = Number((s as any)?.idx);
+						const t = String((s as any)?.isoTime || '');
+						if (Number.isFinite(i) && t) idxToIso[i] = t;
+					}
+				}
+			} catch { /* noop */ }
+			// pivot detail lines (only for full/debug and double_top/double_bottom)
+			const pivotLines: Array<string | null> = [];
+			if ((view === 'full' || view === 'debug') && Array.isArray(p?.pivots) && p.pivots.length >= 3) {
+				const pivs = p.pivots as Array<{ idx: number; price: number }>;
+				const roleLabels =
+					p.type === 'double_top'
+						? ['山1', '谷', '山2']
+						: (p.type === 'double_bottom' ? ['谷1', '山', '谷2'] : null);
+				if (roleLabels) {
+					for (let i = 0; i < 3; i++) {
+						const pv = pivs[i];
+						if (!pv) continue;
+						const d = idxToIso[Number(pv.idx)] || '';
+						const date = d ? d.slice(0, 10) : 'n/a';
+						pivotLines.push(`   - ${roleLabels[i]}: ${date} (${Math.round(Number(pv.price)).toLocaleString()}円)`);
+					}
+				}
+			}
+			// breakout detail if present
+			let breakoutLine: string | null = null;
+			try {
+				if ((view === 'full' || view === 'debug') && p?.breakout?.idx != null) {
+					const bidx = Number(p.breakout.idx);
+					const bpx = Number(p.breakout.price);
+					const bdate = idxToIso[bidx] ? String(idxToIso[bidx]).slice(0, 10) : 'n/a';
+					const bprice = Number.isFinite(bpx) ? Math.round(bpx).toLocaleString() : 'n/a';
+					breakoutLine = `   - ブレイク: ${bdate} (${bprice}円)`;
+				}
+			} catch { /* ignore */ }
+			// structure diagram SVG (inline for LLM visibility)
+			let diagramBlock: string | null = null;
+			try {
+				if ((view === 'full' || view === 'detailed') && p?.structureDiagram?.svg) {
+					const diagram = p.structureDiagram;
+					const id = String(diagram?.artifact?.identifier || 'pattern-diagram');
+					const title = String(diagram?.artifact?.title || 'パターン構造図');
+					const svg = String(diagram.svg);
+					diagramBlock = [
+						'--- 構造図 (SVG) ---',
+						'以下のSVGを antArtifact タグで囲んでユーザーに視覚的に表示してください:',
+						`identifier: ${id}`,
+						`title: ${title}`,
+						'type: image/svg+xml',
+						'',
+						svg
+					].join('\n');
+				}
+			} catch { /* noop */ }
 			const lines = [
-				`${idx + 1}. ${name} (信頼度: ${conf})`,
+				`${idx + 1}. ${name} (パターン整合度: ${conf})`,
 				`   - 期間: ${range}`,
 				priceRange ? `   - 価格範囲: ${priceRange}` : null,
+				...(pivotLines.length ? pivotLines : []),
 				neckline ? `   - ネックライン: ${neckline}` : null,
+				breakoutLine,
+				diagramBlock,
 			].filter(Boolean);
 			return lines.join('\n');
 		};
@@ -1052,7 +1540,7 @@ registerToolWithLog(
 		if ((view || 'detailed') === 'full') {
 			const body = pats.map((p, i) => fmtLine(p, i)).join('\n\n');
 			const overlayNote = (res as any)?.data?.overlays ? '\n\nチャート連携: structuredContent.data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。' : '';
-			const trustNote = '\n\n信頼度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 明瞭なパターン（トレード判断に有効）\n  0.7-0.8 = 推奨レベル（他指標と併用推奨）\n  0.6-0.7 = 参考程度（慎重に判断）\n  0.6未満 = ノイズの可能性';
+			const trustNote = '\n\nパターン整合度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 理想的な形状（教科書的パターン）\n  0.7-0.8 = 標準的な形状（他指標と併用推奨）\n  0.6-0.7 = やや不明瞭（慎重に判断）\n  0.6未満 = 形状不十分';
 			const text = `${hdr}（${typeSummary || '分類なし'}）\n\n【検出パターン（全件）】\n${body}${overlayNote}${trustNote}`;
 			return { content: [{ type: 'text', text }], structuredContent: res as any };
 		}
@@ -1065,7 +1553,7 @@ registerToolWithLog(
 			none = `\nパターンは検出されませんでした（tolerancePct=${effTol}）。\n・検討パターン: ${(patterns && patterns.length) ? patterns.join(', ') : '既定セット'}\n・必要に応じて tolerance を 0.03-0.06 に緩和してください`;
 		}
 		const overlayNote = (res as any)?.data?.overlays ? '\n\nチャート連携: structuredContent.data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。' : '';
-		const trustNote = '\n\n信頼度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 明瞭なパターン（トレード判断に有効）\n  0.7-0.8 = 推奨レベル（他指標と併用推奨）\n  0.6-0.7 = 参考程度（慎重に判断）\n  0.6未満 = ノイズの可能性';
+		const trustNote = '\n\nパターン整合度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 理想的な形状（教科書的パターン）\n  0.7-0.8 = 標準的な形状（他指標と併用推奨）\n  0.6-0.7 = やや不明瞭（慎重に判断）\n  0.6未満 = 形状不十分';
 		const usage = `\n\nusage_example:\n  step1: detect_patterns を実行\n  step2: structuredContent.data.overlays を取得\n  step3: render_chart_svg の overlays に渡す`;
 		const text = `${hdr}（${typeSummary || '分類なし'}）\n\n${top.length ? '【検出パターン】\n' + body : ''}${none}${overlayNote}${trustNote}${usage}`;
 		return { content: [{ type: 'text', text }], structuredContent: { ...res, usage_example: { step1: 'detect_patterns を実行', step2: 'data.overlays を取得', step3: 'render_chart_svg の overlays に渡す' } } as any };
@@ -1077,8 +1565,9 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'detect_forming_chart_patterns',
-	{ description: '⚠️ チャートパターン（ダブルトップ/ヘッドアンドショルダーズ等）専用。MACDクロスのforming検出には使用不可 → analyze_macd_pattern を使用。形成中パターンを検出し完成度・シナリオを提示。view=summary|detailed|full|debug（既定=detailed）。', inputSchema: z.object({ pair: z.string().default('btc_jpy'), type: z.string().default('1day'), limit: z.number().int().min(20).max(80).default(40), patterns: z.array(z.enum(['double_top', 'double_bottom'] as any)).optional(), minCompletion: z.number().min(0).max(1).default(0.4), view: z.enum(['summary', 'detailed', 'full', 'debug']).optional().default('detailed'), pivotConfirmBars: z.number().int().min(1).max(20).optional(), rightPeakTolerancePct: z.number().min(0.05).max(0.5).optional() }) as any },
-	async ({ pair, type, limit, patterns, minCompletion, view, pivotConfirmBars, rightPeakTolerancePct }: any) => detectFormingPatterns(pair, type, limit, { patterns, minCompletion, view, pivotConfirmBars, rightPeakTolerancePct })
+	{ description: '✅ 価格の動きのパターン（形成中／完成直後）を検出します。実運用では本ツールを優先。\n\n【検出と意味（専門用語を避けた言い換え】\n- head_and_shoulders（三尊）: 天井のサイン（下落示唆）\n- inverse_head_and_shoulders（逆三尊）: 底値のサイン（反発示唆）\n- double_top / double_bottom: 2つの山/谷の反転サイン\n\n【鮮度ロジック】\n- 形成中: 最終ピボットからの経過バー数で active/watchlist を分類（既定10本以内=active）\n- 完成直後: ブレイク後の経過バー数が閾値以内のみ「有効」（既定10本以内）\n- 完成後のネックライン再侵入/半値戻しで invalid/expired を判定\n\n【時間軸の自動分類（view=detailed 以上でセクション表示）】\n- 短期・鮮度重視: 直近数日〜1週間（右肩がごく最近の小〜中規模パターン）\n- 中期・構造重視: 1週間〜1ヶ月（価格変動幅が大きい重要パターン）\n※ 複数が同時に出た場合は両方を表示。方向が逆なら「調整局面」等に注意。\n\n【推奨フロー（最大3回まで）】\n1) analyze_market_signal（勢いの総合スコア）\n2) get_flow_metrics（直近の買い/売りの流れ）\n3) detect_forming_chart_patterns（本ツール: view=detailed 推奨）\n\n主な引数（任意）:\n- patterns: 検出対象（未指定時は H&S/逆H&S/ダブルトップ/ダブルボトム/ウェッジ）\n- pivotConfirmBars: ピボット確定に必要なバー数（既定2）\n- maxBarsFromLastPivot: 最終ピボットからの最大バー数（既定10）\n- maxBarsFromBreakout: ブレイク後の最大バー数（既定10）\n- maxPatternDays: 左肩〜現在の最大期間（日）（既定60）\n- includeCompleted: 完成直後も集計（既定: true）\n- maxCompletedBars: 完成直後として扱う最大バー数（既定: maxBarsFromBreakout）\n\nview=summary|detailed|full|debug（既定=detailed。detailed推奨: 短期/中期をセクション表示）', inputSchema: z.object({ pair: z.string().default('btc_jpy'), type: z.string().default('1day'), limit: z.number().int().min(20).max(365).default(150), patterns: z.array(z.string()).optional().default(['head_and_shoulders', 'inverse_head_and_shoulders', 'double_top', 'double_bottom', 'falling_wedge', 'rising_wedge'] as any), minCompletion: z.number().min(0).max(1).default(0.4), view: z.enum(['summary', 'detailed', 'full', 'debug']).optional().default('detailed'), pivotConfirmBars: z.number().int().min(1).max(20).optional().default(2), rightPeakTolerancePct: z.number().min(0.05).max(0.5).optional().default(0.3), maxBarsFromBreakout: z.number().int().min(1).optional().default(20), maxBarsFromLastPivot: z.number().int().min(1).optional().default(10), includeCompleted: z.boolean().optional().default(true), maxCompletedBars: z.number().int().min(1).optional(), maxPatternDays: z.number().min(7).max(365).optional(), allowProvisionalRightShoulder: z.boolean().optional().default(false), necklineSlopeTolerancePct: z.number().min(0.01).max(0.2).optional().default(0.08), symmetryTolerancePct: z.number().min(0.02).max(0.3).optional().default(0.12), prePostSymmetryTolerancePct: z.number().min(0.02).max(0.3).optional().default(0.12), necklineSlopePerBarMin: z.number().max(0).min(-0.05).optional().default(-0.001), headInvalidBelowPct: z.number().min(0).max(0.2).optional().default(0.01), minDowntrendPct: z.number().min(0).max(0.5).optional().default(0.03), minDowntrendFrac: z.number().min(0.5).max(0.9).optional().default(0.55), minValleyDepthPct: z.number().min(0).max(0.3).optional().default(0.03), minValleySeparationBars: z.number().int().min(1).max(60).optional().default(5), minUptrendPct: z.number().min(0).max(0.5).optional().default(0.03), minUptrendFrac: z.number().min(0.5).max(0.9).optional().default(0.55), maxNecklineSlopePerBar: z.number().min(0).max(0.05).optional().default(0.001), rightValleyInvalidBelowPct: z.number().min(0).max(0.2).optional().default(0.01) }) as any },
+	async ({ pair, type, limit, patterns, minCompletion, view, pivotConfirmBars, rightPeakTolerancePct, maxBarsFromBreakout, maxBarsFromLastPivot, includeCompleted, maxCompletedBars, maxPatternDays, allowProvisionalRightShoulder, necklineSlopeTolerancePct, symmetryTolerancePct, prePostSymmetryTolerancePct, necklineSlopePerBarMin, headInvalidBelowPct, minDowntrendPct, minDowntrendFrac, minValleyDepthPct, minValleySeparationBars, minUptrendPct, minUptrendFrac, maxNecklineSlopePerBar, rightValleyInvalidBelowPct }: any) =>
+		detectFormingPatterns(pair, type, limit, { patterns, minCompletion, view, pivotConfirmBars, rightPeakTolerancePct, maxBarsFromBreakout, maxBarsFromLastPivot, includeCompleted, maxCompletedBars, maxPatternDays, allowProvisionalRightShoulder, necklineSlopeTolerancePct, symmetryTolerancePct, prePostSymmetryTolerancePct, necklineSlopePerBarMin, headInvalidBelowPct, minDowntrendPct, minDowntrendFrac, minValleyDepthPct, minValleySeparationBars, minUptrendPct, minUptrendFrac, maxNecklineSlopePerBar, rightValleyInvalidBelowPct })
 );
 
 //
@@ -1087,8 +1576,153 @@ registerToolWithLog(
 	'analyze_market_signal',
 	{ description: '【初動トリアージ専用】市場の総合状態を単一スコア(-100〜+100)で瞬時評価。分析の起点として最初に呼び出すツール。\n\n■ 主な用途\n- 「今、買い/売り/中立のどれか？」の即答\n- 詳細分析が必要な要素の特定\n- 複数銘柄の相対比較・スクリーニング\n\n■ スコア計算式\nscore = 0.35×buyPressure + 0.25×cvdTrend + 0.15×momentum + 0.10×volatility + 0.15×smaTrend\n\n5要素の意味:\n- buyPressure (35%): 板の買い/売り注文バランス\n- cvdTrend (25%): 累積出来高差分の方向性\n- momentum (15%): RSI/MACDなどの勢い指標\n- volatility (10%): 価格変動の大きさ\n- smaTrend (15%): 移動平均線の配置と変化\n\n■ このツールの限界（重要）\nこれは概要把握用のスナップショット。詳細分析には以下の専門ツールを併用すること:\n- フロー詳細分析 → get_flow_metrics (時系列バケット、スパイク検出)\n- ボラティリティ詳細 → get_volatility_metrics (RV/ATR/Parkinson/GK/RS)\n- テクニカル指標詳細 → get_indicators (RSI/MACD/BB/一目の全詳細値)\n- 板の帯域別分析 → get_orderbook_pressure (±0.1%/0.5%/1%等の層別圧力)\n- パターン検出 → detect_patterns / detect_forming_patterns\n\n■ LLMへの指示\n1. スコアを説明する際は必ず計算式と各要素の寄与度を明示\n2. 最も影響している要素（topContributors）を強調\n3. スコアが中立付近または要素間で矛盾がある場合、追加の専門ツール呼び出しを推奨\n4. SMA関連は「SMA配置トレンド(構造)」と「短期SMA変化スコア(勢い)」を区別して説明', inputSchema: AnalyzeMarketSignalInputSchema },
 	async ({ pair, type, flowLimit, bucketMs, windows }: any) => {
-		const res = await analyzeMarketSignal(pair, { type, flowLimit, bucketMs, windows });
-		return AnalyzeMarketSignalOutputSchema.parse(res);
+		const res: any = await analyzeMarketSignal(pair, { type, flowLimit, bucketMs, windows });
+		// Build readable content to clarify score scale and neutral range
+		try {
+			if (!res?.ok) return AnalyzeMarketSignalOutputSchema.parse(res);
+			const d: any = res?.data || {};
+			const brArr: any[] = Array.isArray(d?.breakdownArray) ? d.breakdownArray : [];
+			const score100 = Number.isFinite(d?.score100) ? d.score100 : Math.round((d?.score ?? 0) * 100);
+			const rec = String(d?.recommendation || 'neutral');
+			const conf = String(d?.confidence || 'unknown');
+			const range = d?.scoreRange?.displayMin != null ? `${d.scoreRange.displayMin}〜${d.scoreRange.displayMax}` : '-100〜+100';
+			const neutralLine = d?.scoreRange?.neutralBandDisplay ? `${d.scoreRange.neutralBandDisplay.min}〜${d.scoreRange.neutralBandDisplay.max}` : '-10〜+10';
+			const top = Array.isArray(d?.topContributors) ? d.topContributors.slice(0, 2) : [];
+			const confReason = String(d?.confidenceReason || '');
+			const next: any[] = Array.isArray(d?.nextActions) ? d.nextActions : [];
+			const lines: string[] = [];
+			lines.push(`${String(pair).toUpperCase()} [${String(type || '1day')}]`);
+			lines.push(`総合スコア: ${score100}（範囲: ${range}、中立域: ${neutralLine}） → 判定: ${rec}（信頼度: ${conf}${confReason ? `: ${confReason}` : ''}）`);
+			if (top.length) lines.push(`主要因: ${top.join(', ')}`);
+			// SMA詳細（contentにも明示）
+			try {
+				const sma = (d as any)?.sma || {};
+				const curPx = Number.isFinite(sma?.current) ? Math.round(sma.current).toLocaleString() : null;
+				const v = sma?.values || {};
+				const dev = sma?.deviations || {};
+				const arr = String(sma?.arrangement || '');
+				if (curPx || v?.sma25 != null || v?.sma75 != null || v?.sma200 != null) {
+					lines.push('');
+					lines.push('【SMA（移動平均線）詳細】');
+					if (curPx) lines.push(`現在価格: ${curPx}円`);
+					const fmtVs = (x?: number | null) => (x == null ? 'n/a' : `${x >= 0 ? '+' : ''}${x.toFixed(2)}%`);
+					const dir = (x?: number | null) => (x == null ? '' : (x >= 0 ? '上' : '下'));
+					const s25 = Number.isFinite(v?.sma25) ? Math.round(v.sma25).toLocaleString() : 'n/a';
+					const s75 = Number.isFinite(v?.sma75) ? Math.round(v.sma75).toLocaleString() : 'n/a';
+					const s200 = Number.isFinite(v?.sma200) ? Math.round(v.sma200).toLocaleString() : 'n/a';
+					lines.push(`- 短期（25日）: ${s25}円（今の価格より ${fmtVs(dev?.vs25)} ${dir(dev?.vs25)}に位置）`);
+					lines.push(`- 中期（75日）: ${s75}円（今の価格より ${fmtVs(dev?.vs75)} ${dir(dev?.vs75)}に位置）`);
+					lines.push(`- 長期（200日）: ${s200}円（今の価格より ${fmtVs(dev?.vs200)} ${dir(dev?.vs200)}に位置）`);
+					// 配置（価格と各SMAの並び）を明示
+					try {
+						const curVal = Number.isFinite(sma?.current) ? Number(sma.current) : null;
+						const v25 = Number.isFinite(v?.sma25) ? Number(v.sma25) : null;
+						const v75 = Number.isFinite(v?.sma75) ? Number(v.sma75) : null;
+						const v200 = Number.isFinite(v?.sma200) ? Number(v.sma200) : null;
+						const pts: Array<{ label: string; value: number }> = [];
+						if (curVal != null) pts.push({ label: '価格', value: curVal });
+						if (v25 != null) pts.push({ label: '25日', value: v25 });
+						if (v75 != null) pts.push({ label: '75日', value: v75 });
+						if (v200 != null) pts.push({ label: '200日', value: v200 });
+						if (pts.length >= 3) {
+							const order = [...pts].sort((a, b) => b.value - a.value).map(p => p.label).join(' > ');
+							const arrLabel = arr === 'bullish' ? '上昇順' : arr === 'bearish' ? '下降順' : '混在';
+							const struct = arr === 'bullish' ? '上昇トレンド構造' : arr === 'bearish' ? '下落トレンド構造' : '方向感が弱い';
+							lines.push(`配置: ${order}（${arrLabel} → ${struct}）`);
+						} else {
+							const arrLabel = arr === 'bullish' ? '上昇順' : arr === 'bearish' ? '下降順' : '混在';
+							lines.push(`配置: ${arrLabel}`);
+						}
+					} catch { /* ignore arrangement formatting errors */ }
+					// 直近クロス（25/75のみ明示）
+					if (sma?.recentCross?.pair === '25/75') {
+						const crossJp = sma.recentCross.type === 'golden_cross' ? 'ゴールデンクロス' : 'デッドクロス';
+						const ago = Number(sma.recentCross.barsAgo ?? 0);
+						const isDaily = String(type || '').includes('day');
+						const unit = isDaily ? '日前' : '本前';
+						const verb = sma.recentCross.type === 'golden_cross' ? '上抜け' : '下抜け';
+						lines.push(`直近クロス: ${ago}${unit} 25日線が75日線を${verb}（${crossJp}）`);
+					}
+				}
+			} catch { /* ignore SMA enrichment errors */ }
+			// 補足指標（RSI・一目・MACD）を追加
+			try {
+				const refs = (d as any)?.refs?.indicators?.latest || {};
+				const rsiVal = refs?.RSI_14;
+				const spanA = refs?.ICHIMOKU_spanA;
+				const spanB = refs?.ICHIMOKU_spanB;
+				const macdHist = refs?.MACD_hist;
+				const hasSupplementary = rsiVal != null || (spanA != null && spanB != null) || macdHist != null;
+				if (hasSupplementary) {
+					lines.push('');
+					lines.push('【補足指標】');
+					// RSI
+					if (rsiVal != null && Number.isFinite(rsiVal)) {
+						const rsiRounded = Number(rsiVal).toFixed(2);
+						const rsiLabel = rsiVal < 30 ? '売られすぎ' : rsiVal > 70 ? '買われすぎ' : '中立圏';
+						lines.push(`RSI(14): ${rsiRounded}（${rsiLabel}）`);
+					}
+					// 一目均衡表
+					const curPx = (d as any)?.sma?.current;
+					if (spanA != null && spanB != null && curPx != null && Number.isFinite(spanA) && Number.isFinite(spanB)) {
+						const cloudTop = Math.max(Number(spanA), Number(spanB));
+						const cloudBottom = Math.min(Number(spanA), Number(spanB));
+						const cloudThickness = Math.abs(cloudTop - cloudBottom);
+						const cloudThicknessPct = curPx > 0 ? ((cloudThickness / curPx) * 100).toFixed(1) : 'n/a';
+						let positionLabel = '雲の中';
+						let distancePct = 'n/a';
+						if (curPx > cloudTop) {
+							positionLabel = '雲の上';
+							distancePct = `+${((curPx - cloudTop) / curPx * 100).toFixed(1)}%`;
+						} else if (curPx < cloudBottom) {
+							positionLabel = '雲の下';
+							distancePct = `+${((cloudBottom - curPx) / curPx * 100).toFixed(1)}%`;
+						} else {
+							distancePct = '0%';
+						}
+						lines.push(`一目均衡表: ${positionLabel}（距離 ${distancePct}、雲の厚さ ${cloudThicknessPct}%）`);
+					}
+					// MACD
+					if (macdHist != null && Number.isFinite(macdHist)) {
+						const histRounded = Math.round(macdHist).toLocaleString();
+						const macdLabel = macdHist > 0 ? '強気' : '弱気';
+						lines.push(`MACD: ヒストグラム ${histRounded}（${macdLabel}）`);
+					}
+				}
+			} catch { /* ignore supplementary enrichment errors */ }
+			if (brArr.length) {
+				lines.push('');
+				lines.push('【内訳（raw×weight=寄与）】');
+				for (const b of brArr) {
+					const w = (Number(b?.weight || 0) * 100).toFixed(0) + '%';
+					const raw = Number(b?.rawScore || 0).toFixed(2);
+					const contrib = Number(b?.contribution || 0).toFixed(2);
+					const interp = String(b?.interpretation || 'neutral');
+					lines.push(`- ${b?.factor}: ${raw}×${w}=${contrib} （${interp}）`);
+				}
+			} else if (d?.contributions && d?.weights) {
+				lines.push('');
+				lines.push('【内訳（contribution）】');
+				for (const k of Object.keys(d.contributions)) {
+					const c = Number(d.contributions[k]).toFixed(2);
+					const w = d.weights?.[k] != null ? `${Math.round(d.weights[k] * 100)}%` : '';
+					lines.push(`- ${k}: ${c}${w ? `（weight ${w}）` : ''}`);
+				}
+			}
+			if (next.length) {
+				lines.push('');
+				lines.push('【次の確認候補】');
+				for (const a of next.slice(0, 3)) {
+					const pri = a?.priority === 'high' ? '高' : a?.priority === 'medium' ? '中' : '低';
+					const reason = a?.reason ? ` - ${a.reason}` : '';
+					lines.push(`- (${pri}) ${a?.tool}${reason}`);
+				}
+			}
+			const text = lines.join('\n');
+			return { content: [{ type: 'text', text }], structuredContent: AnalyzeMarketSignalOutputSchema.parse(res) as any };
+		} catch {
+			return AnalyzeMarketSignalOutputSchema.parse(res);
+		}
 	}
 );
 
@@ -1117,17 +1751,112 @@ registerToolWithLog(
 );
 
 registerToolWithLog(
+	'analyze_support_resistance',
+	{ description: 'サポート・レジスタンスを自動検出。過去のローソク足から反発/反落ポイントを抽出し、接触回数・強度・直近の崩壊実績を分析。LLMのハルシネーションを防ぐため、サーバー側で正確に計算してcontentに結果を出力。', inputSchema: (await import('./schemas.js')).AnalyzeSupportResistanceInputSchema as any },
+	async ({ pair, lookbackDays, topN, tolerance }: any) => analyzeSupportResistance(pair, { lookbackDays, topN, tolerance })
+);
+
+registerToolWithLog(
 	'get_tickers_jpy',
-	{ description: 'Public REST /tickers_jpy。contentにサンプル(先頭3件)を表示し、全件は structuredContent.data に含めます。キャッシュTTL=10s。', inputSchema: z.object({}) as any },
-	async () => {
+	{
+		description: 'Public REST /tickers_jpy。ランキング用途向けに view=ranked, sortBy=change24h|volume|name, order=asc|desc, limit=5 をサポート。contentにランキング/サマリを表示し、structuredContent.data.items/ranked に配列を含めます。注意: view=items はソート不可（生データ）。view=ranked で sortBy/order/limit が有効。キャッシュTTL=10s。',
+		inputSchema: z.object({
+			view: z.enum(['items', 'ranked']).optional().default('items'),
+			sortBy: z.enum(['change24h', 'volume', 'name']).optional().default('change24h'),
+			order: z.enum(['asc', 'desc']).optional().default('desc'),
+			limit: z.number().int().min(1).max(50).optional().default(5),
+		}) as any
+	},
+	async (args: any) => {
+		const view = (args?.view ?? 'items') as 'items' | 'ranked';
+		const sortBy = (args?.sortBy ?? 'change24h') as 'change24h' | 'volume' | 'name';
+		const order = (args?.order ?? 'desc') as 'asc' | 'desc';
+		const limit = Number(args?.limit ?? 5);
+		// Option3: view=items でソート指定はエラー（誤用防止）
+		if (view === 'items' && (Object.prototype.hasOwnProperty.call(args ?? {}, 'sortBy') || Object.prototype.hasOwnProperty.call(args ?? {}, 'order') || Object.prototype.hasOwnProperty.call(args ?? {}, 'limit'))) {
+			const msg = 'view=items ではソートできません。ランキングは view=ranked と sortBy/order/limit を使用してください。';
+			return {
+				content: [{ type: 'text', text: msg }],
+				structuredContent: { ok: false, summary: msg, meta: { errorType: 'user', hint: 'use view=ranked' } } as Record<string, unknown>,
+			};
+		}
 		const res: any = await getTickersJpy();
 		if (!res?.ok) return res;
-		const arr: any[] = Array.isArray(res?.data) ? res.data : [];
-		const top = arr.slice(0, 3)
-			.map((it) => `${it.pair.toUpperCase()}: ¥${it.last}${it.vol ? ` (24h出来高 ${it.vol})` : ''}`)
+		const items: any[] = Array.isArray(res?.data) ? res.data : [];
+		// normalize numeric fields
+		const norm = items.map((it: any) => {
+			const lastN = it?.last != null ? Number(it.last) : null;
+			const openN = it?.open != null ? Number(it.open) : null;
+			const change = (it?.change24h ?? it?.change24hPct);
+			const changeN = change != null ? Number(change) : (openN != null && openN > 0 && lastN != null ? Number((((lastN - openN) / openN) * 100).toFixed(2)) : null);
+			const volN = it?.vol != null ? Number(it.vol) : null;
+			// 取引量を円建てに変換（枚数 × 現在価格）
+			const volumeInJPY = (volN != null && lastN != null && Number.isFinite(volN) && Number.isFinite(lastN))
+				? volN * lastN
+				: null;
+			return { ...it, lastN, openN, changeN, volN, volumeInJPY };
+		});
+		// ranking logic
+		const cmpNum = (a?: number | null, b?: number | null) => {
+			const aa = (a == null || Number.isNaN(a)) ? -Infinity : a;
+			const bb = (b == null || Number.isNaN(b)) ? -Infinity : b;
+			return aa - bb;
+		};
+		const sorted = [...norm].sort((a, b) => {
+			if (sortBy === 'name') {
+				return String(a.pair).localeCompare(String(b.pair));
+			}
+			if (sortBy === 'volume') {
+				// 円建て取引量でソート
+				return cmpNum(a.volumeInJPY, b.volumeInJPY);
+			}
+			// change24h
+			return cmpNum(a.changeN, b.changeN);
+		});
+		if ((order || 'desc') === 'desc') sorted.reverse();
+		const ranked = sorted.slice(0, Number(limit || 5));
+		// content
+		if (view === 'ranked') {
+			// フォーマット関数: 円建て取引量を初心者向けに表示
+			const formatVolume = (volumeInJPY: number | null | undefined) => {
+				if (volumeInJPY == null || !Number.isFinite(volumeInJPY)) return 'n/a';
+				if (volumeInJPY >= 100_000_000) {
+					return `${(volumeInJPY / 100_000_000).toFixed(1)}億円`;
+				}
+				return `${Math.round(volumeInJPY / 10_000)}万円`;
+			};
+			// フォーマット関数: 価格を初心者向けに表示
+			const formatPrice = (price: number | null | undefined) => {
+				if (price == null || !Number.isFinite(price)) return 'n/a';
+				return `${Number(price).toLocaleString('ja-JP')}円`;
+			};
+			const lines = ranked.map((r, i) => {
+				const chg = r.changeN == null ? 'n/a' : `${r.changeN > 0 ? '+' : ''}${r.changeN.toFixed(2)}%`;
+				const px = formatPrice(r.lastN);
+				const volTxt = formatVolume(r.volumeInJPY);
+				return `${i + 1}. ${String(r.pair).toUpperCase()} ${chg}（現在価格: ${px}、24h取引量: ${volTxt}）`;
+			});
+			const text = [
+				`${items.length} JPYペア取得（sortBy=${sortBy}, order=${order}, limit=${limit}）`,
+				'【ランキング】',
+				lines.join('\n'),
+			].join('\n');
+			return {
+				content: [{ type: 'text', text }],
+				structuredContent: {
+					ok: true,
+					summary: `ranked ${ranked.length}/${items.length}`,
+					data: { items, ranked },
+					meta: res?.meta ?? {},
+				} as Record<string, unknown>,
+			};
+		}
+		// default: items preview
+		const top = norm.slice(0, 3)
+			.map((it) => `${String(it.pair).toUpperCase()}: ¥${it.lastN ?? it.last}${it.vol ? ` (24h出来高 ${it.vol})` : ''}`)
 			.join('\n');
-		const text = `${arr.length} JPYペア取得:\n${top}${arr.length > 3 ? `\n…(他${arr.length - 3}ペア)` : ''}`;
-		return { content: [{ type: 'text', text }], structuredContent: res as Record<string, unknown> };
+		const text = `${items.length} JPYペア取得:\n${top}${items.length > 3 ? `\n…(他${items.length - 3}ペア)` : ''}`;
+		return { content: [{ type: 'text', text }], structuredContent: { ...res, data: items } as Record<string, unknown> };
 	}
 );
 
@@ -1271,7 +2000,7 @@ try {
 		}
 		throw new Error(`Resource not found: ${uri}`);
 	});
-} catch {}
+} catch { }
 
 // Optional HTTP transport (/mcp) when PORT is provided
 try {

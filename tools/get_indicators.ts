@@ -331,6 +331,7 @@ export default async function getIndicators(
     SMA_75: sma_75_series.at(-1),
     SMA_200: sma_200_series.at(-1),
     RSI_14: rsi14_series.at(-1),
+    RSI_14_series: rsi14_series,
     BB_upper: bb2.upper.at(-1),
     BB_middle: bb2.middle.at(-1),
     BB_lower: bb2.lower.at(-1),

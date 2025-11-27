@@ -132,7 +132,7 @@ export default async function analyzeSmaSnapshot(
     }
 
     // Extended smas object with distancePct/Abs and slope metrics
-    const smasExt: Record<string, { value: number | null; distancePct: number | null; distanceAbs: number | null; slope: 'rising' | 'falling' | 'flat'; slopePctPerBar: number | null; slopePctTotal: number | null; barsWindow: number | null; slopePctPerDay?: number | null }> = {};
+    const smasExt: Record<string, { value: number | null; distancePct: number | null; distanceAbs: number | null; slope: 'rising' | 'falling' | 'flat'; slopePctPerBar: number | null; slopePctTotal: number | null; barsWindow: number | null; slopePctPerDay?: number | null; pricePosition?: 'above' | 'below' | 'equal' }> = {};
     for (const p of periods) {
       const val = map[`SMA_${p}`];
       const distancePct = (close != null && val != null && val !== 0) ? Number((((close - val) / val) * 100).toFixed(2)) : null;
@@ -144,18 +144,20 @@ export default async function analyzeSmaSnapshot(
       const barsWindow = rates.barsWindow;
       const entry: any = { value: val, distancePct, distanceAbs, slope, slopePctPerBar, slopePctTotal, barsWindow };
       if (type === '1day') entry.slopePctPerDay = slopePctPerBar;
+      if (close != null && val != null) entry.pricePosition = close > val ? 'above' : close < val ? 'below' : 'equal';
       smasExt[String(p)] = entry;
     }
 
     // Multi-line content summary
-    const topPeriods = [25, 75, 200].filter(p => periods.includes(p));
+    const topPeriods = Array.from(new Set(periods)).sort((a, b) => a - b);
     const distanceLines = topPeriods.map(p => {
       const it = smasExt[String(p)];
-      const valStr = it.value != null ? it.value : 'n/a';
+      const valStr = it?.value != null ? it.value : 'n/a';
       const pctStr = it.distancePct != null ? `${it.distancePct >= 0 ? '+' : ''}${it.distancePct}%` : 'n/a';
       const absStr = it.distanceAbs != null ? `${it.distanceAbs >= 0 ? '+' : ''}${Number(it.distanceAbs).toLocaleString()}円` : 'n/a';
-      const slopeRate = it.slopePctPerBar != null ? `${it.slopePctPerBar >= 0 ? '+' : ''}${it.slopePctPerBar}%/${type === '1day' ? 'day' : 'bar'}` : null;
-      return `SMA(${p}): ${valStr} (${pctStr}, ${absStr}) slope=${it.slope}${slopeRate ? ` (${slopeRate})` : ''}`;
+      const slopeRate = it?.slopePctPerBar != null ? `${it.slopePctPerBar >= 0 ? '+' : ''}${it.slopePctPerBar}%/${type === '1day' ? 'day' : 'bar'}` : null;
+      const pos = it?.pricePosition ? (it.pricePosition === 'above' ? '（価格は上）' : it.pricePosition === 'below' ? '（価格は下）' : '（同水準）') : '';
+      return `SMA(${p}): ${valStr} (${pctStr}, ${absStr}) slope=${it?.slope}${slopeRate ? ` (${slopeRate})` : ''}${pos}`;
     });
     const recentLines = recentCrosses.slice(-3).reverse().map(rc => `${rc.type} ${rc.pair.join('/')} - ${rc.barsAgo} bars ago (${rc.date})`);
     const summaryText = [

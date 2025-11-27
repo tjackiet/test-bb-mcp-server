@@ -1,7 +1,7 @@
 import getDepth from './get_depth.js';
 import { ensurePair, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
-import { formatSummary } from '../lib/formatter.js';
+import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
 import { GetOrderbookPressureOutputSchema } from '../src/schemas.js';
 
 type SideLevels = Array<[string, string]>; // [price, size]
@@ -22,6 +22,7 @@ export default async function getOrderbookPressure(pair: string = 'btc_jpy', _de
     const snap: any = await getDepth(chk.pair, { maxLevels: 200 });
     if (!snap?.ok) return GetOrderbookPressureOutputSchema.parse(fail(snap?.summary || 'failed', (snap?.meta as any)?.errorType || 'internal')) as any;
 
+    const timestamp = snap?.data?.timestamp ?? Date.now();
     const asks = snap.data.asks as SideLevels;
     const bids = snap.data.bids as SideLevels;
     const baseMid = midFromDepth(asks, bids);
@@ -83,9 +84,24 @@ export default async function getOrderbookPressure(pair: string = 'btc_jpy', _de
     })();
 
     const summary = formatSummary({ pair: chk.pair, latest: baseMid ?? undefined, extra: `bands=${bandsPct.join(',')}; tag=${strongestTag ?? 'none'}` });
+
+    // タイムスタンプ付きテキスト出力
+    const text = [
+      `📸 ${formatTimestampJST(timestamp)}`,
+      '',
+      summary,
+      '',
+      '📊 板圧力分析:',
+      ...bands.map((b: any) =>
+        `±${(b.widthPct * 100).toFixed(2)}%: 買い ${b.baseBidSize.toFixed(2)} BTC / 売り ${b.baseAskSize.toFixed(2)} BTC (圧力: ${(b.netDeltaPct * 100).toFixed(1)}%)${b.tag ? ` [${b.tag}]` : ''}`
+      ),
+      '',
+      `💡 総合評価: ${strongestTag ?? '均衡'}`,
+    ].filter(Boolean).join('\n');
+
     const data = { bands, aggregates: { netDelta: Number(bands.reduce((s: number, b: any) => s + b.netDelta, 0).toFixed(8)), strongestTag } };
     const meta = createMeta(chk.pair, { delayMs: 0 });
-    return GetOrderbookPressureOutputSchema.parse(ok(summary, data as any, meta as any)) as any;
+    return GetOrderbookPressureOutputSchema.parse(ok(text, data as any, meta as any)) as any;
   } catch (e: any) {
     return GetOrderbookPressureOutputSchema.parse(fail(e?.message || 'internal error', 'internal')) as any;
   }

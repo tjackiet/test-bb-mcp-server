@@ -66,21 +66,71 @@ export default async function analyzeMarketSignal(
     const sma75 = indRes?.data?.indicators?.SMA_75 as number | null | undefined;
     const sma200 = indRes?.data?.indicators?.SMA_200 as number | null | undefined;
     let smaTrendFactor = 0;
+    let smaArrangement: 'bullish' | 'bearish' | 'mixed' = 'mixed';
+    let smaDeviations: { vs25?: number; vs75?: number; vs200?: number } = {};
     if (latestClose != null && sma25 != null && sma75 != null) {
       // alignment bonus
       const alignedUp = latestClose > sma25 && (sma25 as number) > (sma75 as number);
       const alignedDown = latestClose < sma25 && (sma25 as number) < (sma75 as number);
       if (alignedUp) smaTrendFactor += 0.6; else if (alignedDown) smaTrendFactor -= 0.6;
+      smaArrangement = alignedUp ? 'bullish' : (alignedDown ? 'bearish' : 'mixed');
       // distance to SMA200 (above -> positive, below -> negative), normalized by 5% band
       if (sma200 != null) {
         const dist = (latestClose - (sma200 as number)) / (sma200 as number);
         smaTrendFactor += clamp(dist / 0.05, -0.4, 0.4);
       }
       smaTrendFactor = clamp(smaTrendFactor, -1, 1);
+      // deviations (percent) vs SMA
+      const pct = (val: number | null | undefined) => (val != null && latestClose != null && val !== 0) ? ((latestClose - val) / val) : undefined;
+      smaDeviations = {
+        vs25: pct(sma25 ?? null),
+        vs75: pct(sma75 ?? null),
+        vs200: pct(sma200 ?? null),
+      };
     }
+    // SMA position classification relative to all SMAs
+    let smaPosition: 'above_all' | 'below_all' | 'mixed' = 'mixed';
+    if (latestClose != null && sma25 != null && sma75 != null && sma200 != null) {
+      if (latestClose > sma25 && latestClose > sma75 && latestClose > sma200) smaPosition = 'above_all';
+      else if (latestClose < sma25 && latestClose < sma75 && latestClose < sma200) smaPosition = 'below_all';
+      else smaPosition = 'mixed';
+    }
+    // Recent cross detection for 25/75 using normalized closes (fallback if indicator series not available)
+    function simpleSMA(values: number[], window: number): number[] {
+      const out: number[] = [];
+      if (!Number.isFinite(window as any) || window <= 1) return out;
+      let sum = 0;
+      for (let i = 0; i < values.length; i++) {
+        sum += values[i];
+        if (i >= window) sum -= values[i - window];
+        if (i >= window - 1) out.push(sum / window);
+      }
+      return out;
+    }
+    let recentCross: { type: 'golden_cross' | 'death_cross'; pair: '25/75'; barsAgo: number } | null = null;
+    try {
+      const closes: number[] = Array.isArray((indRes?.data as any)?.normalized) ? ((indRes as any).data.normalized as any[]).map((c: any) => Number(c?.close)).filter((v) => Number.isFinite(v)) : [];
+      if (closes.length >= 80) {
+        const sma25Series = simpleSMA(closes, 25);
+        const sma75Series = simpleSMA(closes, 75);
+        const m = Math.min(sma25Series.length, sma75Series.length);
+        const off = closes.length - m; // alignment offset to original closes indices
+        for (let j = m - 1; j >= 1; j--) {
+          const prevDiff = sma25Series[j - 1] - sma75Series[j - 1];
+          const currDiff = sma25Series[j] - sma75Series[j];
+          if ((prevDiff <= 0 && currDiff > 0) || (prevDiff >= 0 && currDiff < 0)) {
+            const typeCross = (prevDiff <= 0 && currDiff > 0) ? 'golden_cross' : 'death_cross';
+            const barsAgo = Math.max(0, closes.length - 1 - (off + j));
+            recentCross = { type: typeCross, pair: '25/75', barsAgo };
+            break;
+          }
+        }
+      }
+    } catch { /* ignore cross calc errors */ }
 
     // Composite score
-    const weights = { buyPressure: 0.35, cvdTrend: 0.25, momentum: 0.15, volatility: 0.1, smaTrend: 0.15 } as const;
+    // トレンド重視型（初心者向け）: 中長期トレンドを重視し、瞬間的な板の変動を抑制
+    const weights = { smaTrend: 0.35, momentum: 0.30, cvdTrend: 0.20, volatility: 0.10, buyPressure: 0.05 } as const;
     const contribution_buy = buyPressure * weights.buyPressure;
     const contribution_cvd = cvdTrend * weights.cvdTrend;
     const contribution_mom = momentumFactor * weights.momentum;
@@ -159,11 +209,11 @@ export default async function analyzeMarketSignal(
     };
 
     const breakdownData: Breakdown = {
-      buyPressure: { rawValue: Number(buyPressure.toFixed(3)), weight: 0.35, contribution: Number(contribution_buy.toFixed(3)), interpretation: buyPressure >= 0.4 ? 'strong' : buyPressure >= 0.15 ? 'moderate' : buyPressure <= -0.15 ? 'weak' : 'neutral' },
-      cvdTrend: { rawValue: Number(cvdTrend.toFixed(3)), weight: 0.25, contribution: Number(contribution_cvd.toFixed(3)), interpretation: cvdTrend >= 0.4 ? 'strong' : cvdTrend >= 0.15 ? 'moderate' : cvdTrend <= -0.15 ? 'weak' : 'neutral' },
-      momentum: { rawValue: Number(momentumFactor.toFixed(3)), weight: 0.15, contribution: Number(contribution_mom.toFixed(3)), interpretation: momentumFactor >= 0.35 ? 'strong' : momentumFactor >= 0.1 ? 'moderate' : momentumFactor <= -0.1 ? 'weak' : 'neutral' },
+      buyPressure: { rawValue: Number(buyPressure.toFixed(3)), weight: 0.05, contribution: Number(contribution_buy.toFixed(3)), interpretation: buyPressure >= 0.4 ? 'strong' : buyPressure >= 0.15 ? 'moderate' : buyPressure <= -0.15 ? 'weak' : 'neutral' },
+      cvdTrend: { rawValue: Number(cvdTrend.toFixed(3)), weight: 0.20, contribution: Number(contribution_cvd.toFixed(3)), interpretation: cvdTrend >= 0.4 ? 'strong' : cvdTrend >= 0.15 ? 'moderate' : cvdTrend <= -0.15 ? 'weak' : 'neutral' },
+      momentum: { rawValue: Number(momentumFactor.toFixed(3)), weight: 0.30, contribution: Number(contribution_mom.toFixed(3)), interpretation: momentumFactor >= 0.35 ? 'strong' : momentumFactor >= 0.1 ? 'moderate' : momentumFactor <= -0.1 ? 'weak' : 'neutral' },
       volatility: { rawValue: Number(volatilityFactor.toFixed(3)), weight: 0.10, contribution: Number(contribution_vol.toFixed(3)), interpretation: volatilityFactor >= 0.35 ? 'strong' : volatilityFactor >= 0.1 ? 'moderate' : volatilityFactor <= -0.1 ? 'weak' : 'neutral' },
-      smaTrend: { rawValue: Number(smaTrendFactor.toFixed(3)), weight: 0.15, contribution: Number(contribution_sma.toFixed(3)), interpretation: smaTrendFactor >= 0.35 ? 'strong' : smaTrendFactor >= 0.1 ? 'moderate' : smaTrendFactor <= -0.1 ? 'weak' : 'neutral' },
+      smaTrend: { rawValue: Number(smaTrendFactor.toFixed(3)), weight: 0.35, contribution: Number(contribution_sma.toFixed(3)), interpretation: smaTrendFactor >= 0.35 ? 'strong' : smaTrendFactor >= 0.1 ? 'moderate' : smaTrendFactor <= -0.1 ? 'weak' : 'neutral' },
     };
 
     const confidence = calculateConfidence(contributionsData, score);
@@ -191,7 +241,7 @@ export default async function analyzeMarketSignal(
         actions.push({ priority: 'medium', tool: 'get_orderbook_pressure', reason: `板圧力寄与が大(${breakdown.buyPressure.contribution.toFixed(2)})。帯域別分析推奨`, suggestedParams: { bandsPct: [0.001, 0.005, 0.01] } });
       }
       if (Math.abs(scoreVal) < 0.3) {
-        actions.push({ priority: 'medium', tool: 'detect_forming_chart_patterns', reason: `スコア中立圏(${scoreVal.toFixed(3)})。レンジ・パターン形成可能性`, suggestedParams: { limit: 40 } });
+        actions.push({ priority: 'medium', tool: 'detect_forming_chart_patterns', reason: `スコア中立圏(${scoreVal.toFixed(3)})。レンジ・パターン形成可能性`, suggestedParams: { view: 'detailed' } });
       }
       if (conf.level === 'low') {
         actions.push({ priority: 'high', tool: 'multiple_analysis', reason: '要素間で矛盾。複数角度からの検証必須' });
@@ -205,7 +255,8 @@ export default async function analyzeMarketSignal(
     const confidenceEmoji = confidence.level === 'high' ? '✅' : confidence.level === 'medium' ? '⚠️' : '🔴';
     const nextActionsText = nextActions.slice(0, 2).map((action) => {
       const priorityEmoji = action.priority === 'high' ? '🔴' : action.priority === 'medium' ? '🟡' : '🟢';
-      return `${priorityEmoji} ${action.tool}`;
+      const params = action.suggestedParams ? ` ${JSON.stringify(action.suggestedParams)}` : '';
+      return `${priorityEmoji} ${action.tool}${params}`;
     }).join(', ');
     const summaryText = formatSummary({
       pair: chk.pair,
@@ -225,15 +276,22 @@ export default async function analyzeMarketSignal(
       return a;
     })();
 
+    // Direction states helper
+    const toState = (v: number) => (v > 0.1 ? 'up' : (v < -0.1 ? 'down' : 'flat'));
+    const momentumState = toState(momentumFactor);
+    const cvdState = toState(cvdTrend);
+    // Timeframe recommendation (simple): suggest 4hour when annualized RV is high
+    const recommendedTimeframes: string[] = ['1day', ...(rvNum > 0.6 ? ['4hour'] : [])];
+
     const data = {
       score,
       recommendation,
       tags,
-      formula: 'score = 0.35*buyPressure + 0.25*cvdTrend + 0.15*momentum + 0.10*volatility + 0.15*smaTrend',
-      weights: { buyPressure: 0.35, cvdTrend: 0.25, momentum: 0.15, volatility: 0.10, smaTrend: 0.15 },
+      formula: 'score = 0.35*smaTrend + 0.30*momentum + 0.20*cvdTrend + 0.10*volatility + 0.05*buyPressure',
+      weights: { smaTrend: 0.35, momentum: 0.30, cvdTrend: 0.20, volatility: 0.10, buyPressure: 0.05 },
       contributions: contributionsData,
       breakdown: breakdownData,
-      topContributors: ['buyPressure', 'cvdTrend', 'smaTrend', 'momentum', 'volatility']
+      topContributors: ['smaTrend', 'momentum', 'cvdTrend', 'volatility', 'buyPressure']
         .map((k) => [k, { buyPressure: contribution_buy, cvdTrend: contribution_cvd, smaTrend: contribution_sma, momentum: contribution_mom, volatility: contribution_vol }[k as 'buyPressure'] as number])
         .sort((a, b) => Math.abs((b[1] as number)) - Math.abs((a[1] as number)))
         .slice(0, 2)
@@ -255,6 +313,24 @@ export default async function analyzeMarketSignal(
         cvdSlope,
         horizon,
       },
+      states: {
+        momentum: momentumState,
+        cvdTrend: cvdState,
+      },
+      sma: {
+        current: latestClose ?? null,
+        values: { sma25: sma25 ?? null, sma75: sma75 ?? null, sma200: sma200 ?? null },
+        deviations: {
+          vs25: smaDeviations.vs25 != null ? Number((smaDeviations.vs25 * 100).toFixed(2)) : null,
+          vs75: smaDeviations.vs75 != null ? Number((smaDeviations.vs75 * 100).toFixed(2)) : null,
+          vs200: smaDeviations.vs200 != null ? Number((smaDeviations.vs200 * 100).toFixed(2)) : null,
+        },
+        arrangement: smaArrangement,
+        position: smaPosition,
+        distanceFromSma25Pct: smaDeviations.vs25 != null ? Number((smaDeviations.vs25 * 100).toFixed(2)) : null,
+        recentCross,
+      },
+      recommendedTimeframes,
       refs: {
         flow: { aggregates: flowRes.data.aggregates, lastBuckets: buckets.slice(-Math.min(5, buckets.length)) },
         volatility: { aggregates: volRes.data.aggregates },
@@ -262,11 +338,80 @@ export default async function analyzeMarketSignal(
       },
     };
 
+    // Enrich summary with brief human-readable lines (SMA and states, next actions)
+    // Build rich content for human readability
+    const score100 = Math.round(score * 100);
+    const priceNowStr = latestClose != null ? `${Math.round(latestClose).toLocaleString()}円` : 'n/a';
+    const fmtPctStr = (v?: number | null) => (v == null ? 'n/a' : `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`);
+    const relToNow = (sma?: number | null) => {
+      if (sma == null || latestClose == null || latestClose === 0) return 'n/a';
+      const rel = (sma - latestClose) / latestClose * 100;
+      return `${rel >= 0 ? '+' : ''}${rel.toFixed(2)}%${rel >= 0 ? '上' : '下'}`;
+    };
+    const sma25Line = sma25 != null ? `${Math.round(sma25).toLocaleString()}円（現在より${relToNow(sma25)}）` : 'n/a';
+    const sma75Line = sma75 != null ? `${Math.round(sma75).toLocaleString()}円（現在より${relToNow(sma75)}）` : 'n/a';
+    const sma200Line = sma200 != null ? `${Math.round(sma200).toLocaleString()}円（現在より${relToNow(sma200)}）` : 'n/a';
+    const arrangementStr = smaArrangement === 'bullish' ? '上向き（短期 > 長期）' : (smaArrangement === 'bearish' ? '下向き（短期 < 長期）' : '混在');
+    const buyLabel = buyPressure > 0.2 ? '買い優勢' : (buyPressure > 0.05 ? 'やや買い優勢' : (buyPressure < -0.2 ? '売り優勢' : (buyPressure < -0.05 ? 'やや売り優勢' : '拮抗')));
+    const cvdLabel = cvdState === 'up' ? '上昇中' : (cvdState === 'down' ? '下降中' : '横ばい');
+    const momLabel = momentumState === 'up' ? '上昇中' : (momentumState === 'down' ? '下降中' : '横ばい');
+    const volLabel = volatilityFactor > 0.2 ? '落ち着いている' : (volatilityFactor < -0.2 ? '荒い' : '中庸');
+    const nextLines = nextActions.slice(0, 2).map((a, i) => {
+      const num = `${i + 1}.`;
+      const params = a.suggestedParams ? ` ${JSON.stringify(a.suggestedParams)}` : '';
+      return `${num} ${a.tool}${params}`;
+    });
+    // Build simple order string for arrangement preview
+    const orderStr = (() => {
+      if (latestClose == null || sma25 == null || sma75 == null || sma200 == null) return '';
+      if (smaArrangement === 'bearish') return '200 > 75 > 25 > 現在価格';
+      if (smaArrangement === 'bullish') return '現在価格 > 25 > 75 > 200';
+      return '';
+    })();
+    const trendLabel = smaArrangement === 'bearish' ? '弱気' : (smaArrangement === 'bullish' ? '強気' : '不明瞭');
+    const positionLabel = (() => {
+      if (smaPosition === 'above_all') return '全平均の上';
+      if (smaPosition === 'below_all') return '全平均の下';
+      return '一部の平均と交差';
+    })();
+    const crossLine = (() => {
+      if (!recentCross) return '';
+      const jpType = recentCross.type === 'golden_cross' ? 'ゴールデンクロス' : 'デッドクロス';
+      const action = recentCross.type === 'golden_cross' ? '上抜け' : '下抜け';
+      const ago = recentCross.barsAgo || 0;
+      return `直近クロス: ${ago}日前に${jpType}（25日が75日を${action}）`;
+    })();
+
+    const fullText = [
+      `${String(chk.pair).toUpperCase()} [${String(type)}]`,
+      `総合スコア: ${score100}（${recommendation}、信頼度: ${confidence.level}）`,
+      `※ トレンド重視型（中長期35%+30% / 短期20% / 瞬間5%）`,
+      '',
+      '【価格情報】',
+      `現在価格: ${priceNowStr}`,
+      '',
+      '【SMA詳細】',
+      `- 短期（25日平均）: ${sma25Line}`,
+      `- 中期（75日平均）: ${sma75Line}`,
+      `- 長期（200日平均）: ${sma200Line}`,
+      `配置: ${smaArrangement === 'bearish' ? '下降順' : (smaArrangement === 'bullish' ? '上昇順' : '混在')}${orderStr ? `（${orderStr}）` : ''} → トレンド: ${trendLabel}`,
+      `位置: ${positionLabel}`,
+      ...(crossLine ? [crossLine] : []),
+      '',
+      '【各要素の詳細】',
+      `- 平均価格の配置（重み35%）: ${smaTrendFactor.toFixed(2)}（${arrangementStr}）`,
+      `- 勢いの変化（重み30%）: ${momentumFactor.toFixed(2)}（${momLabel}${rsi != null ? `、RSI=${Math.round(rsi)}` : ''}）`,
+      `- 出来高の流れ（重み20%）: ${cvdTrend.toFixed(2)}（${cvdLabel}）`,
+      `- 値動きの荒さ（重み10%）: ${volatilityFactor.toFixed(2)}（${volLabel}）`,
+      `- 板の買い圧力（重み5%）: ${buyPressure.toFixed(2)}（${buyLabel}）`,
+      '',
+      '【次の確認推奨】',
+      ...(nextLines.length ? nextLines : ['- 該当なし']),
+    ].join('\n');
+
     const meta = createMeta(chk.pair, { type, windows, bucketMs, flowLimit });
-    return AnalyzeMarketSignalOutputSchema.parse(ok(summary, data as any, meta as any)) as any;
+    return AnalyzeMarketSignalOutputSchema.parse(ok(fullText, data as any, meta as any)) as any;
   } catch (e: any) {
     return AnalyzeMarketSignalOutputSchema.parse(fail(e?.message || 'internal error', 'internal')) as any;
   }
 }
-
-

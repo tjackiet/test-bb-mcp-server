@@ -100,6 +100,7 @@ export interface SmaSeriesFixed {
 export type ChartIndicators = IchimokuSeries & BollingerBandsSeries & SmaSeriesFixed & {
 	// RSI is latest-value only even in chart payload
 	RSI_14?: number | null;
+	RSI_14_series?: NumericSeries;
 };
 
 export interface ChartMeta {
@@ -279,9 +280,33 @@ export type CandleType =
 	| '1week'
 	| '1month';
 
+export interface KeyPoint {
+	index: number;
+	date: string | null;
+	close: number;
+	changePct?: number | null;
+}
+
+export interface KeyPoints {
+	today: KeyPoint | null;
+	sevenDaysAgo: KeyPoint | null;
+	thirtyDaysAgo: KeyPoint | null;
+	ninetyDaysAgo: KeyPoint | null;
+}
+
+export interface VolumeStats {
+	recent7DaysAvg: number;
+	previous7DaysAvg: number;
+	last30DaysAvg: number | null;
+	changePct: number;
+	judgment: string;
+}
+
 export interface GetCandlesData {
 	raw: any;
 	normalized: Candle[];
+	keyPoints?: KeyPoints;
+	volumeStats?: VolumeStats | null;
 }
 
 export interface GetCandlesMeta {

@@ -2,7 +2,7 @@ import getTicker from './get_ticker.js';
 import getDepth from './get_depth.js';
 import { ok, fail } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
-import { formatSummary } from '../lib/formatter.js';
+import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
 
 export default async function getOrderbookStatistics(
   pair: string = 'btc_jpy',
@@ -16,6 +16,9 @@ export default async function getOrderbookStatistics(
     const [tkr, dep]: any = await Promise.all([getTicker(chk.pair), getDepth(chk.pair, { maxLevels: 200 })]);
     if (!tkr?.ok) return fail(tkr?.summary || 'ticker failed', (tkr?.meta as any)?.errorType || 'internal');
     if (!dep?.ok) return fail(dep?.summary || 'depth failed', (dep?.meta as any)?.errorType || 'internal');
+
+    // タイムスタンプを取得
+    const timestamp = dep?.data?.timestamp ?? Date.now();
 
     // normalize raw depth from get_depth (bids/asks arrays [price,size])
     const asks: Array<[number, number]> = Array.isArray(dep?.data?.asks) ? dep.data.asks.map(([p, s]: any) => [Number(p), Number(s)]) : [];
@@ -93,6 +96,8 @@ export default async function getOrderbookStatistics(
     };
 
     const text = [
+      `📸 ${formatTimestampJST(timestamp)}`,
+      '',
       '=== ' + String(pair).toUpperCase() + ' 板統計分析 ===',
       '💰 現在価格: ' + (basic.currentPrice != null ? `${basic.currentPrice.toLocaleString()}円` : 'n/a'),
       basic.spread != null ? `   スプレッド: ${basic.spread}円 (${((basic.spreadPct || 0) * 100).toFixed(6)}%)` : '',

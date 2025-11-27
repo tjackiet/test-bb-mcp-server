@@ -165,7 +165,13 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
       await fs.mkdir(assetsDir, { recursive: true });
       const outputPath = path.join(assetsDir, `depth-${pair}-${Date.now()}.svg`);
       await fs.writeFile(outputPath, svg);
-      return ok<RenderData, RenderMeta>(`${formatPair(pair)} depth chart saved to ${outputPath}`, { filePath: outputPath, svg }, { pair: pair as Pair, type: 'depth', bbMode: 'default' });
+      // Note: meta.type should reflect timeframe for schema compatibility (not 'depth')
+      const metaOut: RenderMeta = { pair: pair as Pair, type: String((args as any)?.type || '1day'), bbMode: 'default' };
+      return ok<RenderData, RenderMeta>(
+        `${formatPair(pair)} depth chart saved to ${outputPath}`,
+        { filePath: outputPath, svg },
+        metaOut
+      );
     } catch (e: any) {
       return fail(e?.message || 'failed to render depth', 'internal');
     }

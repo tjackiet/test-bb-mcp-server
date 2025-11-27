@@ -22,16 +22,19 @@ async function fetchTickerForPair(pair: string, timeoutMs = 4000): Promise<{ pai
   try {
     const json = (await fetchJson(url, { timeoutMs, retries: 2 })) as TickerRaw;
     const d: any = json?.data ?? {};
+    const last = d.last != null ? Number(d.last) : null;
+    const open = d.open != null ? Number(d.open) : null;
+    const change24hPct = (open != null && open > 0 && last != null) ? Number((((last - open) / open) * 100).toFixed(2)) : null;
     return {
       pair,
-      last: d.last != null ? Number(d.last) : null,
+      last,
       buy: d.buy != null ? Number(d.buy) : null,
       sell: d.sell != null ? Number(d.sell) : null,
       volume: d.vol != null ? Number(d.vol) : null,
       timestamp: d.timestamp != null ? Number(d.timestamp) : null,
       isoTime: toIsoTime(d.timestamp),
-      // 公開APIに24h変化率が無いため、当面はnull（将来、軽量取得手段があれば差し替え）
-      change24hPct: null,
+      // 24h変化率（open: 24時間前始値, last: 最新約定）
+      change24hPct,
     };
   } catch {
     return { pair, last: null, buy: null, sell: null, volume: null, timestamp: null, isoTime: null, change24hPct: null };
@@ -76,30 +79,8 @@ export default async function getTickers(market: Market = 'all') {
     const pairs = pickPairs(market);
     const items = await withConcurrency(pairs, (p) => fetchTickerForPair(p));
 
-    // 24h変化率を推定: 日足終値の直近2本から計算（ticker.last が無ければ終値を使用）
-    const enriched = await withConcurrency(
-      items.map((it) => it.pair),
-      async (pair) => {
-        try {
-          const cRes: any = await getCandles(pair, '1day', undefined as any, 2);
-          const cs = (cRes?.ok ? (cRes.data?.normalized as any[]) : []) as Array<{ close: number }>;
-          const lastClose = cs.at(-1)?.close;
-          const prevClose = cs.length >= 2 ? cs[cs.length - 2].close : undefined;
-          const base = (items.find((x) => x.pair === pair)?.last ?? lastClose) as number | null;
-          let change24hPct: number | null = null;
-          if (base != null && prevClose != null && prevClose > 0) {
-            change24hPct = Number((((base - prevClose) / prevClose) * 100).toFixed(2));
-          }
-          return { pair, change24hPct };
-        } catch {
-          return { pair, change24hPct: null };
-        }
-      },
-      4
-    );
-    const changeMap = new Map<string, number | null>();
-    for (const e of enriched) changeMap.set(e.pair, e.change24hPct ?? null);
-    const itemsWithChange = items.map((it) => ({ ...it, change24hPct: changeMap.get(it.pair) ?? null }));
+    // 24h変化率は /ticker の open/last から計算済み
+    const itemsWithChange = items;
 
     // 24h出来高(円)を推定: last * volume（いずれかがnullならnull）
     const itemsWithJpy = itemsWithChange.map((it) => {

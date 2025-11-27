@@ -20,10 +20,24 @@ async function testTimeout() {
   if ((res as any)?.ok) throw new Error('expected timeout fail');
 }
 
+async function testCacheFallbackAfterFailure() {
+  // 1) seed cache from file
+  process.env.TICKERS_JPY_URL = 'file://tools/tests/fixtures/tickers_jpy_sample.json';
+  const ok1 = await getTickersJpy({ bypassCache: true });
+  if (!(ok1 as any)?.ok) throw new Error('seed cache failed');
+  // 2) simulate failure but allow cache usage
+  process.env.TICKERS_JPY_URL = 'about:timeout';
+  process.env.TICKERS_JPY_TIMEOUT_MS = '10';
+  process.env.TICKERS_JPY_RETRIES = '0';
+  const res = await getTickersJpy({ bypassCache: false });
+  if (!(res as any)?.ok) throw new Error('expected cache fallback success');
+}
+
 async function main() {
   try {
     await testSuccessFromFile();
     await testTimeout();
+    await testCacheFallbackAfterFailure();
     // network test is optional in CI-less local run; skip if offline
     try { await testSuccessFromNetwork(); } catch { /* ignore */ }
     console.log('PASS: tests completed');

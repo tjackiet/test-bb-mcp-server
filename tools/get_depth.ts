@@ -1,7 +1,7 @@
 import { ensurePair, createMeta } from '../lib/validate.js';
 import { fetchJson } from '../lib/http.js';
 import { ok, fail } from '../lib/result.js';
-import { formatSummary } from '../lib/formatter.js';
+import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
 import { GetDepthOutputSchema } from '../src/schemas.js';
 
 export interface GetDepthOptions { timeoutMs?: number; maxLevels?: number }
@@ -23,9 +23,10 @@ export default async function getDepth(
     // 簡易サマリ（最良気配と件数）
     const bestAsk = asks[0]?.[0] ?? null;
     const bestBid = bids[0]?.[0] ?? null;
+    const mid = bestBid && bestAsk ? Number(((Number(bestBid) + Number(bestAsk)) / 2).toFixed(2)) : null;
     const summary = formatSummary({
       pair: chk.pair,
-      latest: bestBid && bestAsk ? Number(((Number(bestBid) + Number(bestAsk)) / 2).toFixed(2)) : undefined,
+      latest: mid ?? undefined,
       extra: `levels: bids=${bids.length} asks=${asks.length}`,
     });
 
@@ -68,8 +69,18 @@ export default async function getDepth(
         ],
       },
     };
+
+    // タイムスタンプ付きテキスト出力
+    const text = [
+      `📸 ${formatTimestampJST(data.timestamp)}`,
+      '',
+      summary,
+      `板の層数: 買い ${bids.length}層 / 売り ${asks.length}層`,
+      mid ? `中値: ${mid.toLocaleString()}円` : '',
+    ].filter(Boolean).join('\n');
+
     const meta = createMeta(chk.pair);
-    return GetDepthOutputSchema.parse(ok(summary, data as any, meta as any));
+    return GetDepthOutputSchema.parse(ok(text, data as any, meta as any));
   } catch (err: any) {
     const isAbort = err?.name === 'AbortError';
     const message = isAbort ? `タイムアウト (${timeoutMs}ms)` : err?.message || 'ネットワークエラー';

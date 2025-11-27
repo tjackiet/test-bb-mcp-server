@@ -235,6 +235,7 @@ export const IndicatorsInternalSchema = z.object({
   SMA_75: z.number().nullable().optional(),
   SMA_200: z.number().nullable().optional(),
   RSI_14: z.number().nullable().optional(),
+  RSI_14_series: NumericSeriesSchema.optional(),
   BB_upper: z.number().nullable().optional(),
   BB_middle: z.number().nullable().optional(),
   BB_lower: z.number().nullable().optional(),
@@ -355,7 +356,34 @@ export const GetOrderbookOutputSchema = z.union([
 ]);
 
 // Candles
-export const GetCandlesDataSchemaOut = z.object({ raw: z.unknown(), normalized: z.array(CandleSchema) });
+export const KeyPointSchema = z.object({
+  index: z.number(),
+  date: z.string().nullable(),
+  close: z.number(),
+  changePct: z.number().nullable().optional(),
+});
+
+export const KeyPointsSchema = z.object({
+  today: KeyPointSchema.nullable(),
+  sevenDaysAgo: KeyPointSchema.nullable(),
+  thirtyDaysAgo: KeyPointSchema.nullable(),
+  ninetyDaysAgo: KeyPointSchema.nullable(),
+});
+
+export const VolumeStatsSchema = z.object({
+  recent7DaysAvg: z.number(),
+  previous7DaysAvg: z.number(),
+  last30DaysAvg: z.number().nullable(),
+  changePct: z.number(),
+  judgment: z.string(),
+});
+
+export const GetCandlesDataSchemaOut = z.object({ 
+  raw: z.unknown(), 
+  normalized: z.array(CandleSchema),
+  keyPoints: KeyPointsSchema.optional(),
+  volumeStats: VolumeStatsSchema.nullable().optional(),
+});
 export const GetCandlesMetaSchemaOut = z.object({ pair: z.string(), fetchedAt: z.string(), type: CandleTypeEnum.or(z.string()), count: z.number() });
 export const GetCandlesOutputSchema = z.union([
   z.object({ ok: z.literal(true), summary: z.string(), data: GetCandlesDataSchemaOut, meta: GetCandlesMetaSchemaOut }),
@@ -562,6 +590,9 @@ export const TickerJpyItemSchema = z.object({
   last: z.string(),
   vol: z.string(),
   timestamp: z.number(),
+  // 追加: 24h変化率（%）。open/last から算出
+  change24h: z.number().nullable().optional(),
+  change24hPct: z.number().nullable().optional(),
 });
 export const GetTickersJpyOutputSchema = z.union([
   z.object({ ok: z.literal(true), summary: z.string(), data: z.array(TickerJpyItemSchema), meta: z.object({ cache: z.object({ hit: z.boolean(), key: z.string() }).optional(), ts: z.string() }).passthrough() }),
@@ -655,6 +686,11 @@ export const DetectedPatternSchema = z.object({
   range: z.object({ start: z.string(), end: z.string() }),
   pivots: z.array(z.object({ idx: z.number().int(), price: z.number() })).optional(),
   neckline: z.array(z.object({ x: z.number().int().optional(), y: z.number() })).length(2).optional(),
+  // Optional: structure diagram (static SVG artifact to help beginners grok the pattern shape)
+  structureDiagram: z.object({
+    svg: z.string(),
+    artifact: z.object({ identifier: z.string(), title: z.string() }),
+  }).optional(),
   aftermath: z
     .object({
       breakoutDate: z.string().nullable().optional(),
@@ -708,6 +744,7 @@ export const DetectPatternsOutputSchema = z.union([
             reason: z.string().optional(),
             indices: z.array(z.number().int()).optional(),
             points: z.array(z.object({ role: z.string(), idx: z.number().int(), price: z.number(), isoTime: z.string().optional() })).optional(),
+            details: z.any().optional(),
           })).optional(),
         })
         .optional(),
@@ -726,7 +763,7 @@ export const GetVolMetricsInputSchema = z.object({
   annualize: z.boolean().optional().default(true),
   tz: z.string().optional().default('UTC'),
   cacheTtlMs: z.number().int().optional().default(60_000),
-  view: z.enum(['summary', 'detailed', 'full']).optional().default('summary'),
+  view: z.enum(['summary', 'detailed', 'full', 'beginner']).optional().default('summary'),
 });
 
 export const GetVolMetricsDataSchemaOut = z.object({
@@ -851,6 +888,30 @@ export const AnalyzeMarketSignalDataSchemaOut = z.object({
     cvdSlope: z.number(),
     horizon: z.number().int(),
   }),
+  // Enriched SMA block for LLM-friendly grounding
+  sma: z.object({
+    current: z.number().nullable(),
+    values: z.object({
+      sma25: z.number().nullable(),
+      sma75: z.number().nullable(),
+      sma200: z.number().nullable(),
+    }),
+    deviations: z.object({
+      vs25: z.number().nullable(),
+      vs75: z.number().nullable(),
+      vs200: z.number().nullable(),
+    }),
+    arrangement: z.enum(['bullish', 'bearish', 'mixed']),
+    position: z.enum(['above_all', 'below_all', 'mixed']),
+    distanceFromSma25Pct: z.number().nullable().optional(),
+    recentCross: z.object({
+      type: z.enum(['golden_cross', 'death_cross']),
+      pair: z.literal('25/75'),
+      barsAgo: z.number().int(),
+    }).nullable().optional(),
+  }).optional(),
+  // Optional helper fields
+  recommendedTimeframes: z.array(z.string()).optional(),
   refs: z.object({
     flow: z.object({ aggregates: z.unknown(), lastBuckets: z.array(z.unknown()) }),
     volatility: z.object({ aggregates: z.unknown() }),
@@ -1052,5 +1113,62 @@ export const AnalyzeSmaSnapshotMetaSchemaOut = z.object({ pair: z.string(), fetc
 
 export const AnalyzeSmaSnapshotOutputSchema = z.union([
   z.object({ ok: z.literal(true), summary: z.string(), data: AnalyzeSmaSnapshotDataSchemaOut, meta: AnalyzeSmaSnapshotMetaSchemaOut }),
+  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
+]);
+
+// === Support Resistance Analysis ===
+export const AnalyzeSupportResistanceInputSchema = z.object({
+  pair: z.string().optional().default('btc_jpy'),
+  lookbackDays: z.number().int().min(30).max(200).optional().default(90),
+  topN: z.number().int().min(1).max(5).optional().default(3),
+  tolerance: z.number().min(0.001).max(0.05).optional().default(0.015),
+});
+
+const TouchEventSchema = z.object({
+  date: z.string(),
+  price: z.number(),
+  bounceStrength: z.number(),
+  type: z.enum(['support', 'resistance']),
+});
+
+const SupportResistanceLevelSchema = z.object({
+  price: z.number(),
+  pctFromCurrent: z.number(),
+  strength: z.number().int().min(1).max(3),
+  label: z.string(),
+  touchCount: z.number().int(),
+  touches: z.array(TouchEventSchema),
+  recentBreak: z.object({
+    date: z.string(),
+    price: z.number(),
+    breakPct: z.number(),
+  }).optional(),
+});
+
+export const AnalyzeSupportResistanceDataSchemaOut = z.object({
+  currentPrice: z.number(),
+  analysisDate: z.string(),
+  lookbackDays: z.number().int(),
+  supports: z.array(SupportResistanceLevelSchema),
+  resistances: z.array(SupportResistanceLevelSchema),
+  detectionCriteria: z.object({
+    supportBounceMin: z.number(),
+    resistanceRejectMin: z.number(),
+    recentBreakWindow: z.number().int(),
+    tolerance: z.number(),
+  }),
+}).passthrough();
+
+export const AnalyzeSupportResistanceMetaSchemaOut = z.object({
+  pair: z.string(),
+  fetchedAt: z.string(),
+  lookbackDays: z.number().int(),
+  topN: z.number().int(),
+  supportCount: z.number().int(),
+  resistanceCount: z.number().int(),
+}).passthrough();
+
+export const AnalyzeSupportResistanceOutputSchema = z.union([
+  z.object({ ok: z.literal(true), summary: z.string(), content: z.array(z.object({ type: z.literal('text'), text: z.string() })).optional(), data: AnalyzeSupportResistanceDataSchemaOut, meta: AnalyzeSupportResistanceMetaSchemaOut }),
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);
