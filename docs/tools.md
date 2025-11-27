@@ -26,14 +26,16 @@
 - analyze_ichimoku_snapshot: 一目の状態をスナップショット（判定フラグ付）
 - analyze_bb_snapshot: BB の広がりと終値位置（z 値等）
 - analyze_sma_snapshot: SMA 整列/クロス分析（bullish/bearish/mixed）
-- orderbook_statistics: 板の厚み・流動性分布・偏りの統計
+- analyze_support_resistance: サポート・レジスタンス自動検出（反発/反落ポイント分析）
+- get_orderbook_statistics: 板の厚み・流動性分布・偏りの統計
 - get_orderbook_pressure: 価格帯ごとの買い/売り圧力比
 
 ## 視覚化（最終提示）
 - render_chart_svg: ローソク/折れ線/一目/BB/SMA/Depth を SVG で描画
   - 返却 `data.svg` を `image/svg+xml` としてそのまま表示（自前描画は不可）
   - Claude で LLM がうまくアーティファクトを出力できない場合は、以下のプロンプトを加えるのがおすすめです。
-    - 「identifier と title を追加して、アーティファクトとして表示して」 
+    - 「identifier と title を追加して、アーティファクトとして表示して」
+- render_depth_svg: 板（Depth）の厚みを可視化する SVG チャート描画 
 
 ---
 
@@ -51,7 +53,7 @@
 | 8 | 分析 | get_indicators | 指標: SMA/RSI/BB/一目 | まとめ計算 |
 | 9 | 分析 | get_flow_metrics | CVD/アグレッサー比/スパイク | 流れ把握 |
 | 10 | 分析 | get_volatility_metrics | RV/ATR など | 銘柄比較 |
-| 11 | 分析 | orderbook_statistics | 板の厚み・流動性分布・偏り | 安定度評価 |
+| 11 | 分析 | get_orderbook_statistics | 板の厚み・流動性分布・偏り | 安定度評価 |
 | 12 | 分析 | detect_whale_events | 大口取引イベント推定 | 影響把握 |
 | 13 | 分析 | get_orderbook_pressure | 価格帯ごとの買い/売り圧力比 | バランス可視化 |
 | 14 | 分析 | detect_patterns | 完成パターン検出 | 事後の値動き把握 |
@@ -60,9 +62,11 @@
 | 17 | 分析 | analyze_ichimoku_snapshot | 一目スナップショット | 判定フラグ |
 | 18 | 分析 | analyze_bb_snapshot | BB の状態分析 | ボラ強弱 |
 | 19 | 分析 | analyze_sma_snapshot | SMA 整列/クロス分析 | 方向判定 |
-| 20 | 分析 | detect_macd_cross | 直近 MACD クロス検出 | 短期転換 |
-| 21 | 分析 | analyze_macd_pattern | MACD 形成状況・過去統計 | 確度評価 |
-| 22 | 表示 | render_chart_svg | チャート SVG 描画（指標対応） | 一目/SMA/BB/Depth |
+| 20 | 分析 | analyze_support_resistance | サポート・レジスタンス自動検出 | 反発/反落分析 |
+| 21 | 分析 | detect_macd_cross | 直近 MACD クロス検出 | 短期転換 |
+| 22 | 分析 | analyze_macd_pattern | MACD 形成状況・過去統計 | 確度評価 |
+| 23 | 表示 | render_chart_svg | チャート SVG 描画（指標対応） | 一目/SMA/BB/Depth |
+| 24 | 表示 | render_depth_svg | 板の深度を可視化する SVG 描画 | 買い/売り圧力の視覚化 |
 
 ---
 
