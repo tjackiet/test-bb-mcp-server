@@ -1,5 +1,21 @@
 import getIndicators from './get_indicators.js';
 import { ok, fail } from '../lib/result.js';
+
+/**
+ * detect_forming_patterns - リアルタイム監視・早期警告向けパターン検出
+ * 
+ * 設計思想:
+ * - 目的: 現在形成中のパターンを早期に検出し、ブレイク/無効化を素早く通知
+ * - 特徴: シンプルなピーク/バレー検出（前後1本との比較）で素早い反応を優先
+ * - ブレイク検出: ATR * 0.5 バッファ、最初のブレイクで即座に invalid 判定
+ * - 用途: 「今forming中か？」「いつ無効化されたか？」
+ * 
+ * 注意: detect_patterns との違い
+ * - 本ツールはシンプルなピボット検出を使用するため、回帰線の傾きが異なる
+ * - detect_patterns はより厳密なスイング検出（swingDepth 基準）を使用
+ * - 結果として、ブレイク日が数日ずれる場合があるが、これは設計上の意図的な違い
+ * - forming: 早期警告に有利 / patterns: 統計的信頼性に有利
+ */
 import { createMeta } from '../lib/validate.js';
 import type { Pair } from '../src/types/domain.d.ts';
 import detectPatterns from './detect_patterns.js';
@@ -676,23 +692,96 @@ export default async function detectFormingPatterns(
         const nearUpper = Number.isFinite(lastClose) ? (Math.abs(lastClose - up.valueAt(endIdx)) <= atr * 0.3) : false;
         const nearLower = Number.isFinite(lastClose) ? (Math.abs(lastClose - lo.valueAt(endIdx)) <= atr * 0.3) : false;
 
-        // 無効化の判定（最優先）
-        if (Number.isFinite(lastClose) && Number.isFinite(invalidationPrice)) {
-          if (wedgeType === 'falling_wedge') {
-            // 下降ウェッジ（上昇転換パターン）: 現在価格が無効化ライン下回ると無効
-            if (lastClose < invalidationPrice!) {
-              status = 'invalid';
-            } else if (lastClose < invalidationPrice! * 1.02) {
-              // 無効化ラインから2%圏内は警告
-              status = 'near_invalidation';
+        // 【重要】パターン形成期間中〜最新までのブレイク検出
+        // 持続的なブレイク（ラインに戻らず継続）の開始位置を検出
+        const breakDetection = (() => {
+          const breakIdx = (() => {
+            // パターン形成がある程度進んでから（最低20本または期間の30%経過後）スキャン開始
+            const patternBars = endIdx - startIdx;
+            const scanStart = startIdx + Math.max(20, Math.floor(patternBars * 0.3));
+            const scanEnd = Math.max(endIdx, lastIdx);
+
+            let firstBreakOfCurrentSequence = -1;
+
+            for (let i = scanStart; i <= scanEnd; i++) {
+              const close = Number(candles[i]?.close ?? NaN);
+              if (!Number.isFinite(close)) continue;
+
+              const uLine = up.valueAt(i);
+              const lLine = lo.valueAt(i);
+              if (!Number.isFinite(uLine) || !Number.isFinite(lLine)) continue;
+
+              if (wedgeType === 'falling_wedge') {
+                // 下側ラインを実体ベースで下抜け（ATR * 0.5 バッファ）
+                if (close < lLine - atr * 0.5) {
+                  if (firstBreakOfCurrentSequence === -1) {
+                    firstBreakOfCurrentSequence = i; // 新しいブレイクシーケンス開始
+                  }
+                } else if (close > lLine + atr * 0.2) {
+                  // ラインを明確に上回った場合のみブレイクシーケンスをリセット
+                  firstBreakOfCurrentSequence = -1;
+                }
+              } else {
+                // 上側ラインを実体ベースで上抜け（ATR * 0.5 バッファ）
+                if (close > uLine + atr * 0.5) {
+                  if (firstBreakOfCurrentSequence === -1) {
+                    firstBreakOfCurrentSequence = i; // 新しいブレイクシーケンス開始
+                  }
+                } else if (close < uLine - atr * 0.2) {
+                  // ラインを明確に下回った場合のみブレイクシーケンスをリセット
+                  firstBreakOfCurrentSequence = -1;
+                }
+              }
             }
-          } else {
-            // 上昇ウェッジ（下落転換パターン）: 現在価格が無効化ライン上回ると無効
-            if (lastClose > invalidationPrice!) {
-              status = 'invalid';
-            } else if (lastClose > invalidationPrice! * 0.98) {
-              // 無効化ラインから2%圏内は警告
-              status = 'near_invalidation';
+            return firstBreakOfCurrentSequence;
+          })();
+
+          return {
+            detected: breakIdx !== -1,
+            breakIdx,
+            breakIsoTime: breakIdx !== -1 ? isoAt(breakIdx) : null,
+            barsAgo: breakIdx !== -1 ? (lastIdx - breakIdx) : null,
+            breakPrice: breakIdx !== -1 ? Number(candles[breakIdx]?.close ?? NaN) : null,
+          };
+        })();
+
+        // ブレイク検出時は即座にinvalidステータス
+        if (breakDetection.detected) {
+          status = 'invalid';
+        }
+
+        // 現在価格を取得
+        const currentPrice = Number(candles[lastIdx]?.close ?? NaN);
+
+        // ブレイク未検出の場合のみ、追加の無効化判定を実施
+        if (!breakDetection.detected && Number.isFinite(currentPrice)) {
+          // ラインを最新（lastIdx）まで延長
+          const uAtCurrent = up.valueAt(lastIdx);
+          const lAtCurrent = lo.valueAt(lastIdx);
+
+          if (Number.isFinite(uAtCurrent) && Number.isFinite(lAtCurrent)) {
+            const atrBuffer = atr * 0.5;
+
+            if (wedgeType === 'falling_wedge') {
+              // 下降ウェッジ（上昇転換パターン）
+              const invalidLine = lAtCurrent - atrBuffer;
+
+              if (currentPrice < invalidLine) {
+                status = 'invalid';
+              } else if (currentPrice < lAtCurrent) {
+                // 下側ラインを実体で下回っている場合も無効化寸前
+                status = 'near_invalidation';
+              }
+            } else {
+              // 上昇ウェッジ（下落転換パターン）
+              const invalidLine = uAtCurrent + atrBuffer;
+
+              if (currentPrice > invalidLine) {
+                status = 'invalid';
+              } else if (currentPrice > uAtCurrent) {
+                // 上側ラインを実体で上回っている場合も無効化寸前
+                status = 'near_invalidation';
+              }
             }
           }
         }
@@ -706,7 +795,7 @@ export default async function detectFormingPatterns(
         const obj: any = {
           type: wedgeType,
           status,
-          currentPrice: Number.isFinite(lastClose) ? Math.round(lastClose) : undefined,
+          currentPrice: Number.isFinite(currentPrice) ? Math.round(currentPrice) : undefined,
           upperLine: { slope: up.slope, intercept: up.intercept, r2: Number(up.r2.toFixed(3)), touchPoints: upTouchesIdx },
           lowerLine: { slope: lo.slope, intercept: lo.intercept, r2: Number(lo.r2.toFixed(3)), touchPoints: loTouchesIdx },
           completion: Number(completion.toFixed(2)),
@@ -719,6 +808,26 @@ export default async function detectFormingPatterns(
           candleType: type,
           formationPeriod: formation,
           confidence: Number(confidence.toFixed(2)),
+          debug: {
+            endIdx,
+            lastIdx,
+            priceAtEnd: Number.isFinite(lastClose) ? Math.round(lastClose) : null,
+            priceAtLast: Number.isFinite(currentPrice) ? Math.round(currentPrice) : null,
+            lowerLineAtEnd: Number.isFinite(lo.valueAt(endIdx)) ? Math.round(lo.valueAt(endIdx)) : null,
+            lowerLineAtLast: Number.isFinite(lo.valueAt(lastIdx)) ? Math.round(lo.valueAt(lastIdx)) : null,
+            upperLineAtEnd: Number.isFinite(up.valueAt(endIdx)) ? Math.round(up.valueAt(endIdx)) : null,
+            upperLineAtLast: Number.isFinite(up.valueAt(lastIdx)) ? Math.round(up.valueAt(lastIdx)) : null,
+            invalidationLine: wedgeType === 'falling_wedge'
+              ? (Number.isFinite(lo.valueAt(lastIdx)) ? Math.round(lo.valueAt(lastIdx) - atr * 0.5) : null)
+              : (Number.isFinite(up.valueAt(lastIdx)) ? Math.round(up.valueAt(lastIdx) + atr * 0.5) : null),
+            breakDetection: {
+              detected: breakDetection.detected,
+              breakIdx: breakDetection.breakIdx !== -1 ? breakDetection.breakIdx : null,
+              breakIsoTime: breakDetection.breakIsoTime,
+              barsAgo: breakDetection.barsAgo,
+              breakPrice: (breakDetection.breakPrice !== null && Number.isFinite(breakDetection.breakPrice)) ? Math.round(breakDetection.breakPrice) : null,
+            },
+          },
         };
         patterns.push(obj);
         wedgeDebug.push({
@@ -1701,1465 +1810,1091 @@ export default async function detectFormingPatterns(
         }
       }
     }
+  }
 
-    // filter by completion and scale appropriateness（巨大すぎるパターンは形成中リストから除外）
-    // === Deduplication of overlapping patterns of the same type ===
-    function getIdxRange(p: any): { startIdx: number; endIdx: number } {
-      try {
-        const startIdx = Number(p?.confirmedPivots?.[0]?.idx ?? 0);
-        const endIdx = Number(p?.formingPivots?.[0]?.idx ?? lastIdx);
-        return {
-          startIdx: Number.isFinite(startIdx) ? startIdx : 0,
-          endIdx: Number.isFinite(endIdx) ? endIdx : lastIdx,
-        };
-      } catch {
-        return { startIdx: 0, endIdx: lastIdx };
+  // filter by completion and scale appropriateness（巨大すぎるパターンは形成中リストから除外）
+  // === Deduplication of overlapping patterns of the same type ===
+  function getIdxRange(p: any): { startIdx: number; endIdx: number } {
+    try {
+      const startIdx = Number(p?.confirmedPivots?.[0]?.idx ?? 0);
+      const endIdx = Number(p?.formingPivots?.[0]?.idx ?? lastIdx);
+      return {
+        startIdx: Number.isFinite(startIdx) ? startIdx : 0,
+        endIdx: Number.isFinite(endIdx) ? endIdx : lastIdx,
+      };
+    } catch {
+      return { startIdx: 0, endIdx: lastIdx };
+    }
+  }
+  function calcOverlapRatio(a: any, b: any): number {
+    const ar = getIdxRange(a);
+    const br = getIdxRange(b);
+    const start = Math.max(ar.startIdx, br.startIdx);
+    const end = Math.min(ar.endIdx, br.endIdx);
+    const overlap = Math.max(0, end - start);
+    const aSpan = Math.max(1, ar.endIdx - ar.startIdx);
+    const bSpan = Math.max(1, br.endIdx - br.startIdx);
+    const base = Math.min(aSpan, bSpan);
+    return overlap / base;
+  }
+  function selectBestPattern(cluster: any[]): any {
+    return [...cluster].sort((a, b) => {
+      const aEnd = getIdxRange(a).endIdx;
+      const bEnd = getIdxRange(b).endIdx;
+      if (bEnd !== aEnd) return bEnd - aEnd; // latest end first
+      const aComp = Number(a?.completion ?? 0);
+      const bComp = Number(b?.completion ?? 0);
+      if (bComp !== aComp) return bComp - aComp;
+      const aQ = Number(a?.confidence ?? 0);
+      const bQ = Number(b?.confidence ?? 0);
+      return bQ - aQ;
+    })[0];
+  }
+  function deduplicateByTypeAndOverlap(input: any[], threshold: number = 0.5): any[] {
+    const groups = input.reduce((m: Record<string, any[]>, p: any) => {
+      const t = String(p?.type || 'unknown');
+      (m[t] ||= []).push(p);
+      return m;
+    }, {});
+    const result: any[] = [];
+    for (const [t, arr] of Object.entries(groups)) {
+      const sorted = [...arr].sort((a, b) => getIdxRange(a).startIdx - getIdxRange(b).startIdx);
+      const clusters: any[][] = [];
+      for (const p of sorted) {
+        let joined = false;
+        for (const cl of clusters) {
+          // overlap with any member in cluster
+          if (cl.some(x => calcOverlapRatio(x, p) >= threshold)) {
+            cl.push(p);
+            joined = true;
+            break;
+          }
+        }
+        if (!joined) clusters.push([p]);
+      }
+      for (const cl of clusters) {
+        result.push(selectBestPattern(cl));
       }
     }
-    function calcOverlapRatio(a: any, b: any): number {
-      const ar = getIdxRange(a);
-      const br = getIdxRange(b);
-      const start = Math.max(ar.startIdx, br.startIdx);
-      const end = Math.min(ar.endIdx, br.endIdx);
-      const overlap = Math.max(0, end - start);
-      const aSpan = Math.max(1, ar.endIdx - ar.startIdx);
-      const bSpan = Math.max(1, br.endIdx - br.startIdx);
-      const base = Math.min(aSpan, bSpan);
-      return overlap / base;
+    return result;
+  }
+  const deduped = deduplicateByTypeAndOverlap(patterns, 0.5);
+  const filtered = deduped.filter(p => {
+    if (!(p?.completion >= minCompletion)) return false;
+    const status = p?.scale_validation?.status;
+    if (status && status === 'too_large') return false;
+    return true;
+  });
+  const summary = `${String(pair).toUpperCase()} [${String(type)}] ${limit}本から${filtered.length}件の形成中パターンを検出`;
+  const byType: Record<string, number> = filtered.reduce((m: any, p: any) => { m[p.type] = (m[p.type] || 0) + 1; return m; }, {});
+  const typeSummary = Object.entries(byType).map(([k, v]) => `${k}×${v}${v > 0 ? '' : ''}`).join(', ');
+
+  // === Enrichment: historicalCases for each forming pattern (past N days) ===
+  // Decide history window (in days) based on limit and timeframe to avoid too few samples
+  const daysPerBar = (tf: string): number => {
+    const map: Record<string, number> = {
+      '1min': 1 / (24 * 60),
+      '5min': 5 / (24 * 60),
+      '15min': 15 / (24 * 60),
+      '30min': 30 / (24 * 60),
+      '1hour': 1 / 24,
+      '4hour': 4 / 24,
+      '8hour': 8 / 24,
+      '12hour': 12 / 24,
+      '1day': 1,
+      '1week': 7,
+      '1month': 30,
+    };
+    return map[tf] ?? 1;
+  };
+  const historyDays = Math.max(30, Math.round(Number(limit) * daysPerBar(String(type))));
+  async function enrichWithHistory(fp: any): Promise<any> {
+    try {
+      const wantType = String(fp?.type);
+      const histLimit = Math.max(120, limit * 3);
+      const det: any = await detectPatterns(pair, type as any, histLimit, { patterns: [wantType as any] });
+      if (!det?.ok) return fp;
+      const now = Date.now();
+      const withinDays = (iso?: string, days: number = historyDays) => {
+        if (!iso) return false;
+        const t = Date.parse(iso);
+        if (!Number.isFinite(t)) return false;
+        return (now - t) <= days * 86400000;
+      };
+      const pats: any[] = Array.isArray(det?.data?.patterns) ? det.data.patterns : [];
+      const sameRecent = pats.filter(p => String(p?.type) === wantType && withinDays(p?.range?.end, historyDays));
+      const count = sameRecent.length;
+      if (!count) {
+        fp.historicalCases = { count: 0, avgBreakoutMove: 0, successRate: 0, examples: [] };
+        return fp;
+      }
+      const success = sameRecent.filter(p => p?.aftermath?.breakoutConfirmed === true).length;
+      const moves7 = sameRecent
+        .map(p => Number(p?.aftermath?.priceMove?.days7?.return))
+        .filter((v: any) => Number.isFinite(v)) as number[];
+      const avgBreakoutMove = moves7.length ? Number((moves7.reduce((s, v) => s + v, 0) / moves7.length).toFixed(2)) : 0;
+      const pickExamples = [...sameRecent].slice(0, 10) // cap for safety
+        .map(p => {
+          const r3 = p?.aftermath?.priceMove?.days3?.return;
+          const r7 = p?.aftermath?.priceMove?.days7?.return;
+          const r14 = p?.aftermath?.priceMove?.days14?.return;
+          const candidates = [r3, r7, r14].filter((v: any) => typeof v === 'number') as number[];
+          const chosen = candidates.length ? candidates.reduce((m, v) => Math.abs(v) > Math.abs(m) ? v : m, 0) : null;
+          const nlA = p?.neckline?.[0]?.y;
+          const nlB = p?.neckline?.[1]?.y;
+          const neckline = Number.isFinite(nlB) ? nlB : (Number.isFinite(nlA) ? nlA : null);
+          return {
+            completedDate: String(p?.range?.end || ''),
+            necklineBreak: neckline != null ? Math.round(Number(neckline)) : null,
+            maxMoveAfter: chosen != null ? Number(chosen.toFixed(2)) : null,
+            daysToTarget: (p?.aftermath?.daysToTarget ?? null),
+          };
+        })
+        .sort((a, b) => {
+          const av = typeof a.maxMoveAfter === 'number' ? Math.abs(a.maxMoveAfter) : -Infinity;
+          const bv = typeof b.maxMoveAfter === 'number' ? Math.abs(b.maxMoveAfter) : -Infinity;
+          return bv - av;
+        })
+        .slice(0, 3);
+      fp.historicalCases = {
+        count,
+        avgBreakoutMove,
+        successRate: Number((success / count).toFixed(2)),
+        examples: pickExamples,
+      };
+      return fp;
+    } catch {
+      return fp;
     }
-    function selectBestPattern(cluster: any[]): any {
-      return [...cluster].sort((a, b) => {
-        const aEnd = getIdxRange(a).endIdx;
-        const bEnd = getIdxRange(b).endIdx;
-        if (bEnd !== aEnd) return bEnd - aEnd; // latest end first
-        const aComp = Number(a?.completion ?? 0);
-        const bComp = Number(b?.completion ?? 0);
-        if (bComp !== aComp) return bComp - aComp;
-        const aQ = Number(a?.confidence ?? 0);
-        const bQ = Number(b?.confidence ?? 0);
-        return bQ - aQ;
-      })[0];
+  }
+  const enriched = await Promise.all(filtered.map(enrichWithHistory));
+  // Impact score: freshness (bars since last pivot), completion, pattern importance
+  const patternWeight = (t: string): number => {
+    if (t === 'head_and_shoulders' || t === 'inverse_head_and_shoulders') return 1.0;
+    if (t === 'double_top' || t === 'double_bottom') return 0.85;
+    if (t.startsWith('triple_')) return 0.80;
+    return 0.70;
+  };
+  const impactScore = (p: any): number => {
+    const formingIdx = Number(p?.formingPivots?.[0]?.idx ?? p?.confirmedPivots?.[p?.confirmedPivots?.length - 1]?.idx ?? lastIdx);
+    const barsSince = Math.max(0, lastIdx - formingIdx);
+    const freshness = 1 - Math.min(1, barsSince / Math.max(1, maxBarsFromLastPivot));
+    const comp = Math.max(0, Math.min(1, Number(p?.completion ?? 0)));
+    const w = patternWeight(String(p?.type || ''));
+    // scale factor (favor larger structural patterns), plus slight penalty if scale not appropriate
+    const durationDays = (() => {
+      const startIdx = Number(p?.confirmedPivots?.[0]?.idx ?? lastIdx);
+      const endIdx = Number(p?.formingPivots?.[0]?.idx ?? lastIdx);
+      const bars = Math.max(0, endIdx - startIdx);
+      return Math.round(bars * daysPerBarCalc(String(type)));
+    })();
+    const scaleBoost = durationDays >= 60 ? 1.5 : durationDays >= 30 ? 1.2 : 1.0;
+    const scale = String(p?.scale_validation?.status || 'appropriate');
+    const scalePenalty = scale === 'appropriate' ? 1 : (scale === 'too_large' ? 0.92 : 0.95);
+    return (0.35 * freshness + 0.35 * comp + 0.10 * w + 0.20 * scaleBoost) * scalePenalty;
+  };
+  const sortedEnriched = [...enriched].sort((a, b) => impactScore(b) - impactScore(a));
+
+  // === Context categorization (short-term freshness vs structural impact) ===
+  const currentPriceCtx = Number(candles[lastIdx]?.close);
+  function getBarsSinceLastPivot(p: any): number {
+    const formingIdx = Number(p?.formingPivots?.[0]?.idx ?? p?.confirmedPivots?.[p?.confirmedPivots?.length - 1]?.idx ?? lastIdx);
+    return Math.max(0, lastIdx - formingIdx);
+  }
+  function getDurationDays(p: any): number {
+    const startIdx = Number(p?.confirmedPivots?.[0]?.idx ?? lastIdx);
+    const endIdx = Number(p?.formingPivots?.[0]?.idx ?? lastIdx);
+    const bars = Math.max(0, endIdx - startIdx);
+    return Math.round(bars * daysPerBarCalc(String(type)));
+  }
+  function getAmplitudeAbs(p: any): number {
+    try {
+      const nlA = p?.neckline?.[0]?.y;
+      const nlB = p?.neckline?.[1]?.y;
+      const nl = Number.isFinite(nlB) ? Number(nlB) : (Number.isFinite(nlA) ? Number(nlA) : null);
+      const cps = Array.isArray(p?.confirmedPivots) ? p.confirmedPivots : [];
+      const byRole = (role: string) => cps.find((cp: any) => String(cp?.role) === role);
+      const typeStr = String(p?.type || '');
+      let headLike: any = null;
+      if (typeStr === 'head_and_shoulders' || typeStr === 'inverse_head_and_shoulders') {
+        headLike = byRole('head') || cps[1] || cps[0] || null;
+      } else if (typeStr === 'double_top') {
+        headLike = byRole('left_peak') || cps[0] || null;
+      } else if (typeStr === 'double_bottom') {
+        headLike = byRole('peak') || cps[1] || cps[0] || null;
+      } else {
+        headLike = cps[1] || cps[0] || null;
+      }
+      const hp = Number(headLike?.price);
+      if (Number.isFinite(hp) && Number.isFinite(nl)) return Math.abs(hp - (nl as number));
+    } catch { /* ignore */ }
+    try {
+      const cps = Array.isArray(p?.confirmedPivots) ? p.confirmedPivots : [];
+      if (!cps.length) return 0;
+      const prices = cps.map((cp: any) => Number(cp?.price)).filter((v: any) => Number.isFinite(v));
+      if (!prices.length) return 0;
+      const maxv = Math.max(...prices);
+      const minv = Math.min(...prices);
+      return Math.abs(maxv - minv);
+    } catch { return 0; }
+  }
+  function analyzePatternContext(p: any) {
+    const barsSince = getBarsSinceLastPivot(p);
+    const freshness = Math.max(0, 1 - (barsSince / Math.max(1, maxBarsFromLastPivot)));
+    const amplitude = getAmplitudeAbs(p);
+    const durationDays = getDurationDays(p);
+    const price = Number.isFinite(currentPriceCtx) ? currentPriceCtx : Math.max(1e-12, Number(p?.formingPivots?.[0]?.price ?? p?.confirmedPivots?.[0]?.price ?? 1));
+    const marketImpact = (amplitude / Math.max(1e-12, price)) * Math.max(1, durationDays);
+    let category: 'short_term' | 'structural' | 'watchlist' = 'watchlist';
+    let label = '要監視';
+    let timeframe = '参考情報';
+    let priority = 'balanced';
+    // invalidation by neckline re-cross (2% buffer)
+    const typeStr = String(p?.type || '');
+    const nlA = p?.neckline?.[0]?.y, nlB = p?.neckline?.[1]?.y;
+    const nl = Number.isFinite(nlB) ? Number(nlB) : (Number.isFinite(nlA) ? Number(nlA) : null);
+    const buf = 0.02;
+    let isInvalidated = false;
+    if (Number.isFinite(nl)) {
+      if (typeStr === 'inverse_head_and_shoulders' || typeStr === 'double_bottom' || typeStr === 'triple_bottom') {
+        // bullish patterns invalid if price is well below neckline (after previous cross) – here treated as invalid snapshot
+        if (currentPriceCtx < (nl as number) * (1 - buf)) isInvalidated = true;
+      } else if (typeStr === 'head_and_shoulders' || typeStr === 'double_top' || typeStr === 'triple_top') {
+        // bearish patterns invalid if price is well above neckline
+        if (currentPriceCtx > (nl as number) * (1 + buf)) isInvalidated = true;
+      }
     }
-    function deduplicateByTypeAndOverlap(input: any[], threshold: number = 0.5): any[] {
-      const groups = input.reduce((m: Record<string, any[]>, p: any) => {
-        const t = String(p?.type || 'unknown');
-        (m[t] ||= []).push(p);
-        return m;
-      }, {});
-      const result: any[] = [];
-      for (const [t, arr] of Object.entries(groups)) {
-        const sorted = [...arr].sort((a, b) => getIdxRange(a).startIdx - getIdxRange(b).startIdx);
-        const clusters: any[][] = [];
-        for (const p of sorted) {
-          let joined = false;
-          for (const cl of clusters) {
-            // overlap with any member in cluster
-            if (cl.some(x => calcOverlapRatio(x, p) >= threshold)) {
-              cl.push(p);
-              joined = true;
-              break;
+    if (freshness > 0.7 && marketImpact < 4.0) {
+      category = 'short_term'; label = '短期・鮮度重視'; timeframe = '直近数日〜1週間'; priority = 'freshness';
+    } else if (marketImpact >= 4.0 && freshness >= 0.05) {
+      category = 'structural'; label = '中期・構造重視'; timeframe = '1週間〜1ヶ月'; priority = 'impact';
+    } else if (freshness > 0.05) {
+      category = 'watchlist'; label = '要監視'; timeframe = '参考情報'; priority = 'balanced';
+    }
+    if (isInvalidated) { category = 'watchlist'; label = '無効化済み'; timeframe = '参考情報（既にブレイク）'; priority = 'low'; }
+    return { category, label, timeframe, priority, freshness: Number(freshness.toFixed(2)), marketImpact: Number(marketImpact.toFixed(2)), durationDays, amplitude, isInvalidated };
+  }
+  const categorized = (() => {
+    const cats = { short_term: [] as any[], structural: [] as any[], watchlist: [] as any[], invalid: [] as any[] };
+    for (const p of sortedEnriched) {
+      const ctx = analyzePatternContext(p);
+      const sc = impactScore(p);
+      const barsSince = getBarsSinceLastPivot(p);
+      const withCtx = { ...p, context: ctx, _impactScore: sc, _barsSince: barsSince };
+
+      // 無効化されたパターンは invalidカテゴリに
+      if (p.status === 'invalid' || p.status === 'near_invalidation') {
+        (cats as any).invalid.push(withCtx);
+      } else {
+        (cats as any)[ctx.category].push(withCtx);
+      }
+    }
+    for (const k of Object.keys(cats) as Array<keyof typeof cats>) {
+      (cats as any)[k].sort((a: any, b: any) => b._impactScore - a._impactScore);
+    }
+    return cats;
+  })();
+  const hasDifferentCategories = (categorized.short_term.length > 0 && categorized.structural.length > 0);
+  const isBullish = (t: string) => (t === 'inverse_head_and_shoulders' || t === 'double_bottom' || t === 'triple_bottom');
+  const isBearish = (t: string) => (t === 'head_and_shoulders' || t === 'double_top' || t === 'triple_top');
+  function periodOverlap(a: any, b: any): boolean {
+    const aStart = Number(a?.confirmedPivots?.[0]?.idx ?? 0);
+    const aEnd = Number(a?.formingPivots?.[0]?.idx ?? lastIdx);
+    const bStart = Number(b?.confirmedPivots?.[0]?.idx ?? 0);
+    const bEnd = Number(b?.formingPivots?.[0]?.idx ?? lastIdx);
+    return !(aEnd < bStart || bEnd < aStart);
+  }
+  const relationships: Array<{ pattern1: string; pattern2: string; overlap: boolean; conflict?: 'directional' | null; note?: string }> = [];
+  try {
+    const all = sortedEnriched;
+    for (let i = 0; i < all.length; i++) {
+      for (let j = i + 1; j < all.length; j++) {
+        const pa = all[i], pb = all[j];
+        const conflict = (isBullish(String(pa?.type)) && isBearish(String(pb?.type))) || (isBearish(String(pa?.type)) && isBullish(String(pb?.type)));
+        const overlap = periodOverlap(pa, pb);
+        if (conflict || overlap) {
+          relationships.push({
+            pattern1: String(pa?.type),
+            pattern2: String(pb?.type),
+            overlap,
+            conflict: conflict ? 'directional' : null,
+            note: conflict ? '短期と中期で方向性が異なる可能性' : undefined,
+          });
+        }
+      }
+    }
+  } catch { /* ignore */ }
+
+  // === Long-term (weekly/monthly) “current-involved” patterns ===
+  async function detectLongTermCurrentInvolved(tf: string) {
+    try {
+      // leave currentRelevanceDays undefined to allow timeframe-aware default inside detect_patterns
+      const out: any = await detectPatterns(pair, tf as any, 200, { requireCurrentInPattern: true });
+      if (!out?.ok) return { tf, items: [] as any[] };
+      const items: any[] = Array.isArray(out?.data?.patterns) ? out.data.patterns : [];
+      return { tf, items };
+    } catch { return { tf, items: [] as any[] }; }
+  }
+  const longLimit = Math.max(limit * 3, 120);
+  const [ltWeek, ltMonth, recentCompleted] = await Promise.all([
+    detectLongTermCurrentInvolved('1week'),
+    detectLongTermCurrentInvolved('1month'),
+    // recently completed on current timeframe (within 7 days)
+    (async () => {
+      try {
+        const relDays = Math.round(maxCompletedBars * (daysPerBar(String(type)) || 1));
+        const out: any = await detectPatterns(pair, type as any, longLimit, { requireCurrentInPattern: false, currentRelevanceDays: relDays });
+        if (!out?.ok) return [] as any[];
+        const pats: any[] = Array.isArray(out?.data?.patterns) ? out.data.patterns : [];
+        // Post-filter by end date within relDays to avoid older items混入
+        const now = Date.now();
+        const recent = pats.filter((p: any) => {
+          const t = Date.parse(p?.range?.end || p?.range?.current || '');
+          return Number.isFinite(t) && (now - t) <= relDays * 86400000;
+        });
+        return recent;
+      } catch { return [] as any[]; }
+    })(),
+  ]);
+
+  // content formatting
+  if (view === 'debug') {
+    const last5 = candles.slice(-5).map(c => Math.round(c.close).toLocaleString());
+    const windowStart = isoAt(0);
+    const windowEnd = isoAt(lastIdx);
+    const highestInWindow = (() => {
+      let mx = -Infinity, mIdx = -1;
+      for (let i = 0; i < n; i++) {
+        const h = Number(candles[i]?.high);
+        if (Number.isFinite(h) && h > mx) { mx = h; mIdx = i; }
+      }
+      return { price: Number.isFinite(mx) ? Math.round(mx) : null, idx: mIdx };
+    })();
+    // Build simple candidates for debug (completion >= 0.10)
+    const candidates: Array<{ title: string; adopt: boolean; detail: string[]; completion: number }> = [];
+    if (lastPeak && lastValley && lastValley.idx > lastPeak.idx) {
+      const currentPrice = priceAt(lastIdx);
+      const leftPct = currentPrice / Math.max(1, lastPeak.price);
+      const ratio = (currentPrice - lastValley.price) / Math.max(1e-12, lastPeak.price - lastValley.price);
+      let progress = Math.max(0, Math.min(1, ratio));
+      if (last3Down()) progress = Math.min(1, progress + 0.2);
+      const comp = Math.min(1, 0.66 + progress * 0.34);
+      if (comp >= 0.10) {
+        const title = `double_top (完成度: ${Math.round(comp * 100)}%)`;
+        const adopt = comp >= minCompletion;
+        const detail = [
+          `  - 左肩: ${Math.round(lastPeak.price).toLocaleString()}円（idx=${lastPeak.idx}, 確定）`,
+          `  - 谷: ${Math.round(lastValley.price).toLocaleString()}円（idx=${lastValley.idx}, 確定）`,
+          `  - 右肩: 検出中（現在${Math.round(currentPrice).toLocaleString()}円, 左肩の${(leftPct * 100).toFixed(1)}%）`,
+        ];
+        candidates.push({ title, adopt, detail, completion: comp });
+      }
+    }
+    if (lastPeak && lastValley && lastPeak.idx > lastValley.idx) {
+      const currentPrice = priceAt(lastIdx);
+      const leftPct = currentPrice / Math.max(1, lastValley.price);
+      const ratio = (lastPeak.price - currentPrice) / Math.max(1e-12, lastPeak.price - lastValley.price);
+      let progress = Math.max(0, Math.min(1, ratio));
+      if (!last3Down()) progress = Math.min(1, progress + 0.2);
+      const comp = Math.min(1, 0.66 + progress * 0.34);
+      if (comp >= 0.10) {
+        const title = `double_bottom (完成度: ${Math.round(comp * 100)}%)`;
+        const adopt = comp >= minCompletion;
+        const detail = [
+          `  - 左谷: ${Math.round(lastValley.price).toLocaleString()}円（idx=${lastValley.idx}, 確定）`,
+          `  - 山: ${Math.round(lastPeak.price).toLocaleString()}円（idx=${lastPeak.idx}, 確定）`,
+          `  - 右谷: 検出中（現在${Math.round(currentPrice).toLocaleString()}円, 左谷の${(leftPct * 100).toFixed(1)}%）`,
+        ];
+        candidates.push({ title, adopt, detail, completion: comp });
+      }
+    }
+    // H&S candidate debug (use same conditions as detector for adopt)
+    if (peaks.length >= 2) {
+      const left = [...peaks].find(p => isPivotConfirmed(p.idx, lastIdx));
+      const head = [...peaks].reverse().find(p => isPivotConfirmed(p.idx, lastIdx) && left && p.idx > left.idx && p.price > left.price * 1.05);
+      const postValley = valleys.find(v => head && v.idx > head.idx && isPivotConfirmed(v.idx, lastIdx));
+      if (left && head && postValley) {
+        const currentPrice = priceAt(lastIdx);
+        const nearLeft = currentPrice / Math.max(1, left.price);
+        let closeness = 1 - Math.abs(currentPrice - left.price) / Math.max(1e-12, left.price * rightPeakTolerancePct);
+        closeness = Math.max(0, Math.min(1, closeness));
+        let progress = closeness;
+        if (last3Down()) progress = Math.min(1, progress + 0.2);
+        const comp = Math.min(1, 0.75 + 0.25 * progress);
+        if (comp >= 0.10) {
+          const title = `head_and_shoulders (完成度: ${Math.round(comp * 100)}%)`;
+          const adopt = comp >= minCompletion && nearLeft >= (1 - rightPeakTolerancePct) && nearLeft <= (1 + rightPeakTolerancePct) && (currentPrice > postValley.price && currentPrice < head.price);
+          const detail = [
+            `  - 左肩: ${Math.round(left.price).toLocaleString()}円（idx=${left.idx}, 確定）`,
+            `  - 頭: ${Math.round(head.price).toLocaleString()}円（idx=${head.idx}, 確定）`,
+            `  - 頭後の谷: ${Math.round(postValley.price).toLocaleString()}円（idx=${postValley.idx}, 確定）`,
+            `  - 右肩: 検出中（現在${Math.round(currentPrice).toLocaleString()}円, 左肩の${(nearLeft * 100).toFixed(1)}%）`,
+          ];
+          candidates.push({ title, adopt, detail, completion: comp });
+        }
+      }
+    }
+    // Inverse H&S candidate debug
+    if (valleys.length >= 2) {
+      const left = [...valleys].find(v => isPivotConfirmed(v.idx, lastIdx));
+      const head = [...valleys].reverse().find(v => isPivotConfirmed(v.idx, lastIdx) && left && v.idx > left.idx && v.price < left.price * (1 - 0.05));
+      const postPeak = peaks.find(p => head && p.idx > head.idx && isPivotConfirmed(p.idx, lastIdx));
+      if (left && head && postPeak) {
+        const currentPrice = priceAt(lastIdx);
+        const nearLeft = currentPrice / Math.max(1, left.price);
+        let closeness = 1 - Math.abs(currentPrice - left.price) / Math.max(1e-12, left.price * rightPeakTolerancePct);
+        closeness = Math.max(0, Math.min(1, closeness));
+        let progress = closeness;
+        if (!last3Down()) progress = Math.min(1, progress + 0.2);
+        const comp = Math.min(1, 0.75 + 0.25 * progress);
+        if (comp >= 0.10) {
+          const title = `inverse_head_and_shoulders (完成度: ${Math.round(comp * 100)}%)`;
+          const adopt = comp >= minCompletion && nearLeft >= (1 - rightPeakTolerancePct) && nearLeft <= (1 + rightPeakTolerancePct) && (currentPrice < postPeak.price && currentPrice > head.price);
+          const detail = [
+            `  - 左肩: ${Math.round(left.price).toLocaleString()}円（idx=${left.idx}, 確定）`,
+            `  - 頭: ${Math.round(head.price).toLocaleString()}円（idx=${head.idx}, 確定）`,
+            `  - 頭後の山: ${Math.round(postPeak.price).toLocaleString()}円（idx=${postPeak.idx}, 確定）`,
+            `  - 右肩: 検出中（現在${Math.round(currentPrice).toLocaleString()}円, 左肩の${(nearLeft * 100).toFixed(1)}%）`,
+          ];
+          candidates.push({ title, adopt, detail, completion: comp });
+        }
+      }
+    }
+
+    // What-if: 期間内の最高値idxを「頭」として採用した場合の検証ブロック
+    const whatIfBlock = (() => {
+      const highestIdx = highestInWindow.idx;
+      const highestPrice = Number(candles[highestIdx]?.high);
+      if (!Number.isFinite(highestPrice) || highestIdx < 0) return '';
+      const barsWindow = Math.max(5, Math.round(maxPatternDays / Math.max(1e-12, daysPerBarCalc(String(type)))));
+      const confirmedPeaksForHead = peaks.filter(p => isPivotConfirmed(p.idx, lastIdx));
+      const leftCandidates = confirmedPeaksForHead.filter(p => p.idx < highestIdx && (highestIdx - p.idx) <= barsWindow && highestPrice > p.price * 1.05);
+      const left = leftCandidates.length ? leftCandidates[leftCandidates.length - 1] : null;
+      let postValley = valleys.find(v => v.idx > highestIdx && isPivotConfirmed(v.idx, lastIdx));
+      let provisionalValley: { idx: number; price: number } | null = null;
+      let usedValley: { idx: number; price: number } | null = null;
+      let provisionalPenalty = 1.0;
+      if (!postValley) {
+        const start = Math.min(lastIdx - 1, Math.max(highestIdx + 1, 0));
+        if (start > highestIdx) {
+          let minIdx = start;
+          let minLow = candles[start].low;
+          for (let j = start; j <= lastIdx; j++) {
+            const low = candles[j].low;
+            if (low < minLow) { minLow = low; minIdx = j; }
+          }
+          provisionalValley = { idx: minIdx, price: minLow };
+          usedValley = provisionalValley;
+          provisionalPenalty = 0.85;
+        }
+      } else {
+        usedValley = postValley;
+      }
+      // 右肩候補の選定（確定ピーク優先、なければ暫定で最高値）
+      let rightPenalty = 1.0;
+      let rightShoulder: { idx: number; price: number } | null = null;
+      if (left && usedValley) {
+        const rightPeakCandidates = peaks.filter(p =>
+          p.idx > usedValley.idx &&
+          isPivotConfirmed(p.idx, lastIdx) &&
+          p.price < highestPrice &&
+          Math.abs(p.price - left.price) / Math.max(1, left.price) <= rightPeakTolerancePct
+        );
+        rightShoulder = rightPeakCandidates.length ? rightPeakCandidates[rightPeakCandidates.length - 1] : null;
+        if (!rightShoulder) {
+          let maxIdx = Math.min(lastIdx, usedValley.idx + 1);
+          let maxHigh = candles[maxIdx]?.high ?? -Infinity;
+          for (let j = usedValley.idx + 1; j <= lastIdx; j++) {
+            const hi = candles[j].high;
+            if (hi > maxHigh) { maxHigh = hi; maxIdx = j; }
+          }
+          if (Number.isFinite(maxHigh)) {
+            const near = Math.abs(maxHigh - left.price) / Math.max(1, left.price) <= rightPeakTolerancePct;
+            if (near && maxHigh < highestPrice) {
+              rightShoulder = { idx: maxIdx, price: maxHigh };
+              rightPenalty = 0.9;
             }
           }
-          if (!joined) clusters.push([p]);
-        }
-        for (const cl of clusters) {
-          result.push(selectBestPattern(cl));
         }
       }
-      return result;
-    }
-    const deduped = deduplicateByTypeAndOverlap(patterns, 0.5);
-    const filtered = deduped.filter(p => {
-      if (!(p?.completion >= minCompletion)) return false;
-      const status = p?.scale_validation?.status;
-      if (status && status === 'too_large') return false;
-      return true;
-    });
-    const summary = `${String(pair).toUpperCase()} [${String(type)}] ${limit}本から${filtered.length}件の形成中パターンを検出`;
-    const byType: Record<string, number> = filtered.reduce((m: any, p: any) => { m[p.type] = (m[p.type] || 0) + 1; return m; }, {});
-    const typeSummary = Object.entries(byType).map(([k, v]) => `${k}×${v}${v > 0 ? '' : ''}`).join(', ');
+      const currentPrice = priceAt(lastIdx);
+      let reason = '' as string;
+      let compPct = 0;
+      let adopt = false;
+      let rightNearPct: number | null = null;
+      if (!left) {
+        reason = 'left_shoulder_not_found';
+      } else if (!usedValley) {
+        reason = 'post_head_valley_not_found';
+      } else if (!rightShoulder) {
+        reason = 'right_shoulder_not_found';
+      } else {
+        const rsPrice = rightShoulder.price;
+        const nearLeft = rsPrice / Math.max(1, left.price);
+        rightNearPct = nearLeft * 100;
+        const between = rsPrice > usedValley.price && rsPrice < highestPrice;
+        let closeness = 1 - Math.abs(rsPrice - left.price) / Math.max(1e-12, left.price * rightPeakTolerancePct);
+        closeness = Math.max(0, Math.min(1, closeness));
+        let progress = closeness;
+        if (last3Down()) progress = Math.min(1, progress + 0.2);
+        const completion = Math.min(1, 0.75 + 0.25 * progress) * provisionalPenalty * rightPenalty;
+        compPct = Math.round(completion * 100);
+        const formationBars = left ? Math.max(0, lastIdx - left.idx) : 0;
+        const patternDays = Math.round(formationBars * daysPerBarCalc(String(type)));
+        const minDaysOk = patternDays >= getMinPatternDays('head_and_shoulders');
+        const nearOk = nearLeft >= (1 - rightPeakTolerancePct) && nearLeft <= (1 + rightPeakTolerancePct);
+        if (!minDaysOk) reason = 'pattern_too_short';
+        else if (!nearOk) reason = 'right_shoulder_not_near_left';
+        else if (!between) reason = 'price_not_between_head_and_valley';
+        else if (completion < minCompletion) reason = 'minCompletion_not_met';
+        else { adopt = true; reason = 'adopted'; }
+      }
+      const lines: string[] = [];
+      lines.push('【idx=224を頭とした場合】');
+      lines.push(`- 左肩: ${left ? `idx=${left.idx} price=${Math.round(left.price).toLocaleString()}` : 'n/a'}`);
+      lines.push(`- 頭: idx=${highestIdx} price=${Math.round(highestPrice).toLocaleString()}`);
+      lines.push(`- 頭後の谷: ${usedValley ? `idx=${usedValley.idx} price=${Math.round(usedValley.price).toLocaleString()}${provisionalValley ? '（暫定）' : ''}` : 'n/a'}`);
+      lines.push(`- 右肩候補: ${rightShoulder ? `idx=${rightShoulder.idx} price=${Math.round(rightShoulder.price).toLocaleString()}` : 'n/a'}${rightNearPct != null ? `（左肩の${rightNearPct.toFixed(1)}%）` : ''}`);
+      lines.push(`- 完成度: ${compPct}%`);
+      lines.push(`- 却下理由: ${adopt ? '採用条件を満たす' : (reason || 'unknown')}`);
+      lines.push('');
+      return lines.join('\n');
+    })();
 
-    // === Enrichment: historicalCases for each forming pattern (past N days) ===
-    // Decide history window (in days) based on limit and timeframe to avoid too few samples
-    const daysPerBar = (tf: string): number => {
-      const map: Record<string, number> = {
-        '1min': 1 / (24 * 60),
-        '5min': 5 / (24 * 60),
-        '15min': 15 / (24 * 60),
-        '30min': 30 / (24 * 60),
-        '1hour': 1 / 24,
-        '4hour': 4 / 24,
-        '8hour': 8 / 24,
-        '12hour': 12 / 24,
-        '1day': 1,
-        '1week': 7,
-        '1month': 30,
-      };
-      return map[tf] ?? 1;
-    };
-    const historyDays = Math.max(30, Math.round(Number(limit) * daysPerBar(String(type))));
-    async function enrichWithHistory(fp: any): Promise<any> {
-      try {
-        const wantType = String(fp?.type);
-        const histLimit = Math.max(120, limit * 3);
-        const det: any = await detectPatterns(pair, type as any, histLimit, { patterns: [wantType as any] });
-        if (!det?.ok) return fp;
-        const now = Date.now();
-        const withinDays = (iso?: string, days: number = historyDays) => {
-          if (!iso) return false;
-          const t = Date.parse(iso);
-          if (!Number.isFinite(t)) return false;
-          return (now - t) <= days * 86400000;
-        };
-        const pats: any[] = Array.isArray(det?.data?.patterns) ? det.data.patterns : [];
-        const sameRecent = pats.filter(p => String(p?.type) === wantType && withinDays(p?.range?.end, historyDays));
-        const count = sameRecent.length;
-        if (!count) {
-          fp.historicalCases = { count: 0, avgBreakoutMove: 0, successRate: 0, examples: [] };
-          return fp;
-        }
-        const success = sameRecent.filter(p => p?.aftermath?.breakoutConfirmed === true).length;
-        const moves7 = sameRecent
-          .map(p => Number(p?.aftermath?.priceMove?.days7?.return))
-          .filter((v: any) => Number.isFinite(v)) as number[];
-        const avgBreakoutMove = moves7.length ? Number((moves7.reduce((s, v) => s + v, 0) / moves7.length).toFixed(2)) : 0;
-        const pickExamples = [...sameRecent].slice(0, 10) // cap for safety
-          .map(p => {
-            const r3 = p?.aftermath?.priceMove?.days3?.return;
-            const r7 = p?.aftermath?.priceMove?.days7?.return;
-            const r14 = p?.aftermath?.priceMove?.days14?.return;
-            const candidates = [r3, r7, r14].filter((v: any) => typeof v === 'number') as number[];
-            const chosen = candidates.length ? candidates.reduce((m, v) => Math.abs(v) > Math.abs(m) ? v : m, 0) : null;
-            const nlA = p?.neckline?.[0]?.y;
-            const nlB = p?.neckline?.[1]?.y;
-            const neckline = Number.isFinite(nlB) ? nlB : (Number.isFinite(nlA) ? nlA : null);
-            return {
-              completedDate: String(p?.range?.end || ''),
-              necklineBreak: neckline != null ? Math.round(Number(neckline)) : null,
-              maxMoveAfter: chosen != null ? Number(chosen.toFixed(2)) : null,
-              daysToTarget: (p?.aftermath?.daysToTarget ?? null),
-            };
-          })
-          .sort((a, b) => {
-            const av = typeof a.maxMoveAfter === 'number' ? Math.abs(a.maxMoveAfter) : -Infinity;
-            const bv = typeof b.maxMoveAfter === 'number' ? Math.abs(b.maxMoveAfter) : -Infinity;
-            return bv - av;
-          })
-          .slice(0, 3);
-        fp.historicalCases = {
-          count,
-          avgBreakoutMove,
-          successRate: Number((success / count).toFixed(2)),
-          examples: pickExamples,
-        };
-        return fp;
-      } catch {
-        return fp;
-      }
-    }
-    const enriched = await Promise.all(filtered.map(enrichWithHistory));
-    // Impact score: freshness (bars since last pivot), completion, pattern importance
-    const patternWeight = (t: string): number => {
-      if (t === 'head_and_shoulders' || t === 'inverse_head_and_shoulders') return 1.0;
-      if (t === 'double_top' || t === 'double_bottom') return 0.85;
-      if (t.startsWith('triple_')) return 0.80;
-      return 0.70;
-    };
-    const impactScore = (p: any): number => {
+    // debugではスケール理由で除外せず、minCompletionだけで可視化（影響度順に並べる）
+    const visible = patterns.filter(p => p?.completion >= minCompletion);
+    const impactScoreDebug = (p: any): number => {
       const formingIdx = Number(p?.formingPivots?.[0]?.idx ?? p?.confirmedPivots?.[p?.confirmedPivots?.length - 1]?.idx ?? lastIdx);
       const barsSince = Math.max(0, lastIdx - formingIdx);
       const freshness = 1 - Math.min(1, barsSince / Math.max(1, maxBarsFromLastPivot));
       const comp = Math.max(0, Math.min(1, Number(p?.completion ?? 0)));
       const w = patternWeight(String(p?.type || ''));
-      // scale factor (favor larger structural patterns), plus slight penalty if scale not appropriate
-      const durationDays = (() => {
-        const startIdx = Number(p?.confirmedPivots?.[0]?.idx ?? lastIdx);
-        const endIdx = Number(p?.formingPivots?.[0]?.idx ?? lastIdx);
-        const bars = Math.max(0, endIdx - startIdx);
-        return Math.round(bars * daysPerBarCalc(String(type)));
-      })();
-      const scaleBoost = durationDays >= 60 ? 1.5 : durationDays >= 30 ? 1.2 : 1.0;
-      const scale = String(p?.scale_validation?.status || 'appropriate');
-      const scalePenalty = scale === 'appropriate' ? 1 : (scale === 'too_large' ? 0.92 : 0.95);
-      return (0.35 * freshness + 0.35 * comp + 0.10 * w + 0.20 * scaleBoost) * scalePenalty;
+      return 0.5 * freshness + 0.4 * comp + 0.1 * w;
     };
-    const sortedEnriched = [...enriched].sort((a, b) => impactScore(b) - impactScore(a));
-
-    // === Context categorization (short-term freshness vs structural impact) ===
-    const currentPriceCtx = Number(candles[lastIdx]?.close);
-    function getBarsSinceLastPivot(p: any): number {
-      const formingIdx = Number(p?.formingPivots?.[0]?.idx ?? p?.confirmedPivots?.[p?.confirmedPivots?.length - 1]?.idx ?? lastIdx);
-      return Math.max(0, lastIdx - formingIdx);
-    }
-    function getDurationDays(p: any): number {
-      const startIdx = Number(p?.confirmedPivots?.[0]?.idx ?? lastIdx);
-      const endIdx = Number(p?.formingPivots?.[0]?.idx ?? lastIdx);
-      const bars = Math.max(0, endIdx - startIdx);
-      return Math.round(bars * daysPerBarCalc(String(type)));
-    }
-    function getAmplitudeAbs(p: any): number {
-      try {
-        const nlA = p?.neckline?.[0]?.y;
-        const nlB = p?.neckline?.[1]?.y;
-        const nl = Number.isFinite(nlB) ? Number(nlB) : (Number.isFinite(nlA) ? Number(nlA) : null);
-        const cps = Array.isArray(p?.confirmedPivots) ? p.confirmedPivots : [];
-        const byRole = (role: string) => cps.find((cp: any) => String(cp?.role) === role);
-        const typeStr = String(p?.type || '');
-        let headLike: any = null;
-        if (typeStr === 'head_and_shoulders' || typeStr === 'inverse_head_and_shoulders') {
-          headLike = byRole('head') || cps[1] || cps[0] || null;
-        } else if (typeStr === 'double_top') {
-          headLike = byRole('left_peak') || cps[0] || null;
-        } else if (typeStr === 'double_bottom') {
-          headLike = byRole('peak') || cps[1] || cps[0] || null;
-        } else {
-          headLike = cps[1] || cps[0] || null;
-        }
-        const hp = Number(headLike?.price);
-        if (Number.isFinite(hp) && Number.isFinite(nl)) return Math.abs(hp - (nl as number));
-      } catch { /* ignore */ }
-      try {
-        const cps = Array.isArray(p?.confirmedPivots) ? p.confirmedPivots : [];
-        if (!cps.length) return 0;
-        const prices = cps.map((cp: any) => Number(cp?.price)).filter((v: any) => Number.isFinite(v));
-        if (!prices.length) return 0;
-        const maxv = Math.max(...prices);
-        const minv = Math.min(...prices);
-        return Math.abs(maxv - minv);
-      } catch { return 0; }
-    }
-    function analyzePatternContext(p: any) {
-      const barsSince = getBarsSinceLastPivot(p);
-      const freshness = Math.max(0, 1 - (barsSince / Math.max(1, maxBarsFromLastPivot)));
-      const amplitude = getAmplitudeAbs(p);
-      const durationDays = getDurationDays(p);
-      const price = Number.isFinite(currentPriceCtx) ? currentPriceCtx : Math.max(1e-12, Number(p?.formingPivots?.[0]?.price ?? p?.confirmedPivots?.[0]?.price ?? 1));
-      const marketImpact = (amplitude / Math.max(1e-12, price)) * Math.max(1, durationDays);
-      let category: 'short_term' | 'structural' | 'watchlist' = 'watchlist';
-      let label = '要監視';
-      let timeframe = '参考情報';
-      let priority = 'balanced';
-      // invalidation by neckline re-cross (2% buffer)
-      const typeStr = String(p?.type || '');
-      const nlA = p?.neckline?.[0]?.y, nlB = p?.neckline?.[1]?.y;
-      const nl = Number.isFinite(nlB) ? Number(nlB) : (Number.isFinite(nlA) ? Number(nlA) : null);
-      const buf = 0.02;
-      let isInvalidated = false;
-      if (Number.isFinite(nl)) {
-        if (typeStr === 'inverse_head_and_shoulders' || typeStr === 'double_bottom' || typeStr === 'triple_bottom') {
-          // bullish patterns invalid if price is well below neckline (after previous cross) – here treated as invalid snapshot
-          if (currentPriceCtx < (nl as number) * (1 - buf)) isInvalidated = true;
-        } else if (typeStr === 'head_and_shoulders' || typeStr === 'double_top' || typeStr === 'triple_top') {
-          // bearish patterns invalid if price is well above neckline
-          if (currentPriceCtx > (nl as number) * (1 + buf)) isInvalidated = true;
-        }
-      }
-      if (freshness > 0.7 && marketImpact < 4.0) {
-        category = 'short_term'; label = '短期・鮮度重視'; timeframe = '直近数日〜1週間'; priority = 'freshness';
-      } else if (marketImpact >= 4.0 && freshness >= 0.05) {
-        category = 'structural'; label = '中期・構造重視'; timeframe = '1週間〜1ヶ月'; priority = 'impact';
-      } else if (freshness > 0.05) {
-        category = 'watchlist'; label = '要監視'; timeframe = '参考情報'; priority = 'balanced';
-      }
-      if (isInvalidated) { category = 'watchlist'; label = '無効化済み'; timeframe = '参考情報（既にブレイク）'; priority = 'low'; }
-      return { category, label, timeframe, priority, freshness: Number(freshness.toFixed(2)), marketImpact: Number(marketImpact.toFixed(2)), durationDays, amplitude, isInvalidated };
-    }
-    const categorized = (() => {
-      const cats = { short_term: [] as any[], structural: [] as any[], watchlist: [] as any[], invalid: [] as any[] };
-      for (const p of sortedEnriched) {
-        const ctx = analyzePatternContext(p);
-        const sc = impactScore(p);
-        const barsSince = getBarsSinceLastPivot(p);
-        const withCtx = { ...p, context: ctx, _impactScore: sc, _barsSince: barsSince };
-
-        // 無効化されたパターンは invalidカテゴリに
-        if (p.status === 'invalid' || p.status === 'near_invalidation') {
-          (cats as any).invalid.push(withCtx);
-        } else {
-          (cats as any)[ctx.category].push(withCtx);
-        }
-      }
-      for (const k of Object.keys(cats) as Array<keyof typeof cats>) {
-        (cats as any)[k].sort((a: any, b: any) => b._impactScore - a._impactScore);
-      }
-      return cats;
-    })();
-    const hasDifferentCategories = (categorized.short_term.length > 0 && categorized.structural.length > 0);
-    const isBullish = (t: string) => (t === 'inverse_head_and_shoulders' || t === 'double_bottom' || t === 'triple_bottom');
-    const isBearish = (t: string) => (t === 'head_and_shoulders' || t === 'double_top' || t === 'triple_top');
-    function periodOverlap(a: any, b: any): boolean {
-      const aStart = Number(a?.confirmedPivots?.[0]?.idx ?? 0);
-      const aEnd = Number(a?.formingPivots?.[0]?.idx ?? lastIdx);
-      const bStart = Number(b?.confirmedPivots?.[0]?.idx ?? 0);
-      const bEnd = Number(b?.formingPivots?.[0]?.idx ?? lastIdx);
-      return !(aEnd < bStart || bEnd < aStart);
-    }
-    const relationships: Array<{ pattern1: string; pattern2: string; overlap: boolean; conflict?: 'directional' | null; note?: string }> = [];
-    try {
-      const all = sortedEnriched;
-      for (let i = 0; i < all.length; i++) {
-        for (let j = i + 1; j < all.length; j++) {
-          const pa = all[i], pb = all[j];
-          const conflict = (isBullish(String(pa?.type)) && isBearish(String(pb?.type))) || (isBearish(String(pa?.type)) && isBullish(String(pb?.type)));
-          const overlap = periodOverlap(pa, pb);
-          if (conflict || overlap) {
-            relationships.push({
-              pattern1: String(pa?.type),
-              pattern2: String(pb?.type),
-              overlap,
-              conflict: conflict ? 'directional' : null,
-              note: conflict ? '短期と中期で方向性が異なる可能性' : undefined,
-            });
-          }
-        }
-      }
-    } catch { /* ignore */ }
-
-    // === Long-term (weekly/monthly) “current-involved” patterns ===
-    async function detectLongTermCurrentInvolved(tf: string) {
-      try {
-        // leave currentRelevanceDays undefined to allow timeframe-aware default inside detect_patterns
-        const out: any = await detectPatterns(pair, tf as any, 200, { requireCurrentInPattern: true });
-        if (!out?.ok) return { tf, items: [] as any[] };
-        const items: any[] = Array.isArray(out?.data?.patterns) ? out.data.patterns : [];
-        return { tf, items };
-      } catch { return { tf, items: [] as any[] }; }
-    }
-    const longLimit = Math.max(limit * 3, 120);
-    const [ltWeek, ltMonth, recentCompleted] = await Promise.all([
-      detectLongTermCurrentInvolved('1week'),
-      detectLongTermCurrentInvolved('1month'),
-      // recently completed on current timeframe (within 7 days)
-      (async () => {
-        try {
-          const relDays = Math.round(maxCompletedBars * (daysPerBar(String(type)) || 1));
-          const out: any = await detectPatterns(pair, type as any, longLimit, { requireCurrentInPattern: false, currentRelevanceDays: relDays });
-          if (!out?.ok) return [] as any[];
-          const pats: any[] = Array.isArray(out?.data?.patterns) ? out.data.patterns : [];
-          // Post-filter by end date within relDays to avoid older items混入
-          const now = Date.now();
-          const recent = pats.filter((p: any) => {
-            const t = Date.parse(p?.range?.end || p?.range?.current || '');
-            return Number.isFinite(t) && (now - t) <= relDays * 86400000;
-          });
-          return recent;
-        } catch { return [] as any[]; }
-      })(),
-    ]);
-
-    // content formatting
-    if (view === 'debug') {
-      const last5 = candles.slice(-5).map(c => Math.round(c.close).toLocaleString());
-      const windowStart = isoAt(0);
-      const windowEnd = isoAt(lastIdx);
-      const highestInWindow = (() => {
-        let mx = -Infinity, mIdx = -1;
-        for (let i = 0; i < n; i++) {
-          const h = Number(candles[i]?.high);
-          if (Number.isFinite(h) && h > mx) { mx = h; mIdx = i; }
-        }
-        return { price: Number.isFinite(mx) ? Math.round(mx) : null, idx: mIdx };
-      })();
-      // Build simple candidates for debug (completion >= 0.10)
-      const candidates: Array<{ title: string; adopt: boolean; detail: string[]; completion: number }> = [];
-      if (lastPeak && lastValley && lastValley.idx > lastPeak.idx) {
-        const currentPrice = priceAt(lastIdx);
-        const leftPct = currentPrice / Math.max(1, lastPeak.price);
-        const ratio = (currentPrice - lastValley.price) / Math.max(1e-12, lastPeak.price - lastValley.price);
-        let progress = Math.max(0, Math.min(1, ratio));
-        if (last3Down()) progress = Math.min(1, progress + 0.2);
-        const comp = Math.min(1, 0.66 + progress * 0.34);
-        if (comp >= 0.10) {
-          const title = `double_top (完成度: ${Math.round(comp * 100)}%)`;
-          const adopt = comp >= minCompletion;
-          const detail = [
-            `  - 左肩: ${Math.round(lastPeak.price).toLocaleString()}円（idx=${lastPeak.idx}, 確定）`,
-            `  - 谷: ${Math.round(lastValley.price).toLocaleString()}円（idx=${lastValley.idx}, 確定）`,
-            `  - 右肩: 検出中（現在${Math.round(currentPrice).toLocaleString()}円, 左肩の${(leftPct * 100).toFixed(1)}%）`,
-          ];
-          candidates.push({ title, adopt, detail, completion: comp });
-        }
-      }
-      if (lastPeak && lastValley && lastPeak.idx > lastValley.idx) {
-        const currentPrice = priceAt(lastIdx);
-        const leftPct = currentPrice / Math.max(1, lastValley.price);
-        const ratio = (lastPeak.price - currentPrice) / Math.max(1e-12, lastPeak.price - lastValley.price);
-        let progress = Math.max(0, Math.min(1, ratio));
-        if (!last3Down()) progress = Math.min(1, progress + 0.2);
-        const comp = Math.min(1, 0.66 + progress * 0.34);
-        if (comp >= 0.10) {
-          const title = `double_bottom (完成度: ${Math.round(comp * 100)}%)`;
-          const adopt = comp >= minCompletion;
-          const detail = [
-            `  - 左谷: ${Math.round(lastValley.price).toLocaleString()}円（idx=${lastValley.idx}, 確定）`,
-            `  - 山: ${Math.round(lastPeak.price).toLocaleString()}円（idx=${lastPeak.idx}, 確定）`,
-            `  - 右谷: 検出中（現在${Math.round(currentPrice).toLocaleString()}円, 左谷の${(leftPct * 100).toFixed(1)}%）`,
-          ];
-          candidates.push({ title, adopt, detail, completion: comp });
-        }
-      }
-      // H&S candidate debug (use same conditions as detector for adopt)
-      if (peaks.length >= 2) {
-        const left = [...peaks].find(p => isPivotConfirmed(p.idx, lastIdx));
-        const head = [...peaks].reverse().find(p => isPivotConfirmed(p.idx, lastIdx) && left && p.idx > left.idx && p.price > left.price * 1.05);
-        const postValley = valleys.find(v => head && v.idx > head.idx && isPivotConfirmed(v.idx, lastIdx));
-        if (left && head && postValley) {
-          const currentPrice = priceAt(lastIdx);
-          const nearLeft = currentPrice / Math.max(1, left.price);
-          let closeness = 1 - Math.abs(currentPrice - left.price) / Math.max(1e-12, left.price * rightPeakTolerancePct);
-          closeness = Math.max(0, Math.min(1, closeness));
-          let progress = closeness;
-          if (last3Down()) progress = Math.min(1, progress + 0.2);
-          const comp = Math.min(1, 0.75 + 0.25 * progress);
-          if (comp >= 0.10) {
-            const title = `head_and_shoulders (完成度: ${Math.round(comp * 100)}%)`;
-            const adopt = comp >= minCompletion && nearLeft >= (1 - rightPeakTolerancePct) && nearLeft <= (1 + rightPeakTolerancePct) && (currentPrice > postValley.price && currentPrice < head.price);
-            const detail = [
-              `  - 左肩: ${Math.round(left.price).toLocaleString()}円（idx=${left.idx}, 確定）`,
-              `  - 頭: ${Math.round(head.price).toLocaleString()}円（idx=${head.idx}, 確定）`,
-              `  - 頭後の谷: ${Math.round(postValley.price).toLocaleString()}円（idx=${postValley.idx}, 確定）`,
-              `  - 右肩: 検出中（現在${Math.round(currentPrice).toLocaleString()}円, 左肩の${(nearLeft * 100).toFixed(1)}%）`,
-            ];
-            candidates.push({ title, adopt, detail, completion: comp });
-          }
-        }
-      }
-      // Inverse H&S candidate debug
-      if (valleys.length >= 2) {
-        const left = [...valleys].find(v => isPivotConfirmed(v.idx, lastIdx));
-        const head = [...valleys].reverse().find(v => isPivotConfirmed(v.idx, lastIdx) && left && v.idx > left.idx && v.price < left.price * (1 - 0.05));
-        const postPeak = peaks.find(p => head && p.idx > head.idx && isPivotConfirmed(p.idx, lastIdx));
-        if (left && head && postPeak) {
-          const currentPrice = priceAt(lastIdx);
-          const nearLeft = currentPrice / Math.max(1, left.price);
-          let closeness = 1 - Math.abs(currentPrice - left.price) / Math.max(1e-12, left.price * rightPeakTolerancePct);
-          closeness = Math.max(0, Math.min(1, closeness));
-          let progress = closeness;
-          if (!last3Down()) progress = Math.min(1, progress + 0.2);
-          const comp = Math.min(1, 0.75 + 0.25 * progress);
-          if (comp >= 0.10) {
-            const title = `inverse_head_and_shoulders (完成度: ${Math.round(comp * 100)}%)`;
-            const adopt = comp >= minCompletion && nearLeft >= (1 - rightPeakTolerancePct) && nearLeft <= (1 + rightPeakTolerancePct) && (currentPrice < postPeak.price && currentPrice > head.price);
-            const detail = [
-              `  - 左肩: ${Math.round(left.price).toLocaleString()}円（idx=${left.idx}, 確定）`,
-              `  - 頭: ${Math.round(head.price).toLocaleString()}円（idx=${head.idx}, 確定）`,
-              `  - 頭後の山: ${Math.round(postPeak.price).toLocaleString()}円（idx=${postPeak.idx}, 確定）`,
-              `  - 右肩: 検出中（現在${Math.round(currentPrice).toLocaleString()}円, 左肩の${(nearLeft * 100).toFixed(1)}%）`,
-            ];
-            candidates.push({ title, adopt, detail, completion: comp });
-          }
-        }
-      }
-
-      // What-if: 期間内の最高値idxを「頭」として採用した場合の検証ブロック
-      const whatIfBlock = (() => {
-        const highestIdx = highestInWindow.idx;
-        const highestPrice = Number(candles[highestIdx]?.high);
-        if (!Number.isFinite(highestPrice) || highestIdx < 0) return '';
-        const barsWindow = Math.max(5, Math.round(maxPatternDays / Math.max(1e-12, daysPerBarCalc(String(type)))));
-        const confirmedPeaksForHead = peaks.filter(p => isPivotConfirmed(p.idx, lastIdx));
-        const leftCandidates = confirmedPeaksForHead.filter(p => p.idx < highestIdx && (highestIdx - p.idx) <= barsWindow && highestPrice > p.price * 1.05);
-        const left = leftCandidates.length ? leftCandidates[leftCandidates.length - 1] : null;
-        let postValley = valleys.find(v => v.idx > highestIdx && isPivotConfirmed(v.idx, lastIdx));
-        let provisionalValley: { idx: number; price: number } | null = null;
-        let usedValley: { idx: number; price: number } | null = null;
-        let provisionalPenalty = 1.0;
-        if (!postValley) {
-          const start = Math.min(lastIdx - 1, Math.max(highestIdx + 1, 0));
-          if (start > highestIdx) {
-            let minIdx = start;
-            let minLow = candles[start].low;
-            for (let j = start; j <= lastIdx; j++) {
-              const low = candles[j].low;
-              if (low < minLow) { minLow = low; minIdx = j; }
-            }
-            provisionalValley = { idx: minIdx, price: minLow };
-            usedValley = provisionalValley;
-            provisionalPenalty = 0.85;
-          }
-        } else {
-          usedValley = postValley;
-        }
-        // 右肩候補の選定（確定ピーク優先、なければ暫定で最高値）
-        let rightPenalty = 1.0;
-        let rightShoulder: { idx: number; price: number } | null = null;
-        if (left && usedValley) {
-          const rightPeakCandidates = peaks.filter(p =>
-            p.idx > usedValley.idx &&
-            isPivotConfirmed(p.idx, lastIdx) &&
-            p.price < highestPrice &&
-            Math.abs(p.price - left.price) / Math.max(1, left.price) <= rightPeakTolerancePct
-          );
-          rightShoulder = rightPeakCandidates.length ? rightPeakCandidates[rightPeakCandidates.length - 1] : null;
-          if (!rightShoulder) {
-            let maxIdx = Math.min(lastIdx, usedValley.idx + 1);
-            let maxHigh = candles[maxIdx]?.high ?? -Infinity;
-            for (let j = usedValley.idx + 1; j <= lastIdx; j++) {
-              const hi = candles[j].high;
-              if (hi > maxHigh) { maxHigh = hi; maxIdx = j; }
-            }
-            if (Number.isFinite(maxHigh)) {
-              const near = Math.abs(maxHigh - left.price) / Math.max(1, left.price) <= rightPeakTolerancePct;
-              if (near && maxHigh < highestPrice) {
-                rightShoulder = { idx: maxIdx, price: maxHigh };
-                rightPenalty = 0.9;
-              }
-            }
-          }
-        }
-        const currentPrice = priceAt(lastIdx);
-        let reason = '' as string;
-        let compPct = 0;
-        let adopt = false;
-        let rightNearPct: number | null = null;
-        if (!left) {
-          reason = 'left_shoulder_not_found';
-        } else if (!usedValley) {
-          reason = 'post_head_valley_not_found';
-        } else if (!rightShoulder) {
-          reason = 'right_shoulder_not_found';
-        } else {
-          const rsPrice = rightShoulder.price;
-          const nearLeft = rsPrice / Math.max(1, left.price);
-          rightNearPct = nearLeft * 100;
-          const between = rsPrice > usedValley.price && rsPrice < highestPrice;
-          let closeness = 1 - Math.abs(rsPrice - left.price) / Math.max(1e-12, left.price * rightPeakTolerancePct);
-          closeness = Math.max(0, Math.min(1, closeness));
-          let progress = closeness;
-          if (last3Down()) progress = Math.min(1, progress + 0.2);
-          const completion = Math.min(1, 0.75 + 0.25 * progress) * provisionalPenalty * rightPenalty;
-          compPct = Math.round(completion * 100);
-          const formationBars = left ? Math.max(0, lastIdx - left.idx) : 0;
-          const patternDays = Math.round(formationBars * daysPerBarCalc(String(type)));
-          const minDaysOk = patternDays >= getMinPatternDays('head_and_shoulders');
-          const nearOk = nearLeft >= (1 - rightPeakTolerancePct) && nearLeft <= (1 + rightPeakTolerancePct);
-          if (!minDaysOk) reason = 'pattern_too_short';
-          else if (!nearOk) reason = 'right_shoulder_not_near_left';
-          else if (!between) reason = 'price_not_between_head_and_valley';
-          else if (completion < minCompletion) reason = 'minCompletion_not_met';
-          else { adopt = true; reason = 'adopted'; }
-        }
-        const lines: string[] = [];
-        lines.push('【idx=224を頭とした場合】');
-        lines.push(`- 左肩: ${left ? `idx=${left.idx} price=${Math.round(left.price).toLocaleString()}` : 'n/a'}`);
-        lines.push(`- 頭: idx=${highestIdx} price=${Math.round(highestPrice).toLocaleString()}`);
-        lines.push(`- 頭後の谷: ${usedValley ? `idx=${usedValley.idx} price=${Math.round(usedValley.price).toLocaleString()}${provisionalValley ? '（暫定）' : ''}` : 'n/a'}`);
-        lines.push(`- 右肩候補: ${rightShoulder ? `idx=${rightShoulder.idx} price=${Math.round(rightShoulder.price).toLocaleString()}` : 'n/a'}${rightNearPct != null ? `（左肩の${rightNearPct.toFixed(1)}%）` : ''}`);
-        lines.push(`- 完成度: ${compPct}%`);
-        lines.push(`- 却下理由: ${adopt ? '採用条件を満たす' : (reason || 'unknown')}`);
-        lines.push('');
-        return lines.join('\n');
-      })();
-
-      // debugではスケール理由で除外せず、minCompletionだけで可視化（影響度順に並べる）
-      const visible = patterns.filter(p => p?.completion >= minCompletion);
-      const impactScoreDebug = (p: any): number => {
-        const formingIdx = Number(p?.formingPivots?.[0]?.idx ?? p?.confirmedPivots?.[p?.confirmedPivots?.length - 1]?.idx ?? lastIdx);
+    const visibleSorted = [...visible].sort((a, b) => impactScoreDebug(b) - impactScoreDebug(a));
+    const detectedBrief = visibleSorted.length
+      ? visibleSorted.map((p: any, i: number) => {
+        const left = p?.confirmedPivots?.[0];
+        const mid = p?.confirmedPivots?.[1];
+        const after = p?.confirmedPivots?.[2];
+        const right = p?.formingPivots?.[0];
+        const scaleStatus = p?.scale_validation?.status || 'unknown';
+        const comp = Math.round((p?.completion || 0) * 100);
+        const formingIdx = Number(right?.idx ?? after?.idx ?? left?.idx ?? lastIdx);
         const barsSince = Math.max(0, lastIdx - formingIdx);
-        const freshness = 1 - Math.min(1, barsSince / Math.max(1, maxBarsFromLastPivot));
-        const comp = Math.max(0, Math.min(1, Number(p?.completion ?? 0)));
-        const w = patternWeight(String(p?.type || ''));
-        return 0.5 * freshness + 0.4 * comp + 0.1 * w;
-      };
-      const visibleSorted = [...visible].sort((a, b) => impactScoreDebug(b) - impactScoreDebug(a));
-      const detectedBrief = visibleSorted.length
-        ? visibleSorted.map((p: any, i: number) => {
-          const left = p?.confirmedPivots?.[0];
-          const mid = p?.confirmedPivots?.[1];
-          const after = p?.confirmedPivots?.[2];
-          const right = p?.formingPivots?.[0];
-          const scaleStatus = p?.scale_validation?.status || 'unknown';
-          const comp = Math.round((p?.completion || 0) * 100);
-          const formingIdx = Number(right?.idx ?? after?.idx ?? left?.idx ?? lastIdx);
-          const barsSince = Math.max(0, lastIdx - formingIdx);
-          const daysSince = Math.round(barsSince * (daysPerBar(String(type)) || 1));
-          return `${i + 1}. ${p.type}（完成度${comp}% / scale=${scaleStatus} / lastPivot=${barsSince}本（約${daysSince}日））\n` +
-            `   - 左: ${left ? `idx=${left.idx} ${Math.round(left.price).toLocaleString()}円` : 'n/a'}\n` +
-            `   - 中: ${mid ? `idx=${mid.idx} ${Math.round(mid.price).toLocaleString()}円` : 'n/a'}\n` +
-            `   - 三: ${after ? `idx=${after.idx} ${Math.round(after.price).toLocaleString()}円` : 'n/a'}\n` +
-            `   - 右: ${right ? `idx=${right.idx} ${Math.round(right.price).toLocaleString()}円` : 'n/a'}`;
-        }).join('\n\n')
-        : '該当なし';
-      // Build debug context categorization for visible patterns
-      const dbgCats = { short_term: [] as any[], structural: [] as any[], watchlist: [] as any[] };
-      const dbgContextItems: string[] = [];
-      for (const p of visibleSorted) {
-        const ctx = analyzePatternContext(p);
-        (dbgCats as any)[ctx.category].push({ type: p.type, completion: p.completion, context: ctx });
-        dbgContextItems.push(
-          `- ${p.type}: category=${ctx.category} freshness=${ctx.freshness} impact=${ctx.marketImpact} days=${ctx.durationDays} amplitude=${Math.round(ctx.amplitude || 0).toLocaleString()}`
-        );
-      }
-      const dbgHasMulti = (dbgCats.short_term.length > 0 && dbgCats.structural.length > 0);
-      const contextBlock = [
-        '【Context（カテゴリ判定・デバッグ）】',
-        `- hasMultipleTimeframes: ${dbgHasMulti}`,
-        `- short_term: ${dbgCats.short_term.length}件`,
-        `- structural: ${dbgCats.structural.length}件`,
-        `- watchlist: ${dbgCats.watchlist.length}件`,
-        ...(dbgContextItems.length ? ['- items:', ...dbgContextItems] : []),
-      ].join('\n');
-      const text = [
-        `${String(pair).toUpperCase()} [${String(type)}] ${limit}本の分析`,
-        '',
-        `【ウィンドウ】start=${windowStart || 'n/a'} end=${windowEnd || 'n/a'} bars=${n}`,
-        `【最高値（期間内）】idx=${highestInWindow.idx} price=${highestInWindow.price?.toLocaleString?.() || 'n/a'}`,
-        (() => {
-          // Wedge スキャン診断（want の中身と判定結果を可視化）
-          try {
-            const wantArr = Array.from(want as any) as any[];
-            const fw = (want as any).has ? (want as any).has('falling_wedge') : (Array.isArray(wantArr) && wantArr.includes('falling_wedge'));
-            const rw = (want as any).has ? (want as any).has('rising_wedge') : (Array.isArray(wantArr) && wantArr.includes('rising_wedge'));
-            return [
-              '【Wedge スキャン診断】',
-              `- want長さ: ${Array.isArray(wantArr) ? wantArr.length : 'n/a'}`,
-              `- 要素: ${Array.isArray(wantArr) ? wantArr.join(', ') : 'n/a'}`,
-              `- falling_wedge判定: ${fw ? 'Yes' : 'No'}`,
-              `- rising_wedge判定: ${rw ? 'Yes' : 'No'}`,
-              ''
-            ].join('\n');
-          } catch {
-            return '';
-          }
-        })(),
-        (() => {
-          const wdbg = (globalThis as any).__formingWedgeDebug as Array<any> | undefined;
-          const meta: any = (globalThis as any).__formingWedgeDebugMeta;
-          const arr = Array.isArray(wdbg) ? wdbg : [];
-          const accepted = arr.filter(x => x?.accepted);
-          const rejected = arr.filter(x => !x?.accepted);
-          const tally: Record<string, number> = {};
-          for (const r of rejected) {
-            const key = String(r?.reason || 'unknown');
-            tally[key] = (tally[key] || 0) + 1;
-          }
-          const reasonKeys = ['stale_last_pivot', 'insufficient_swings', 'slope_ratio_out_of_range', 'not_converging_enough', 'insufficient_touches', 'score_below_threshold', 'gap_non_positive', 'not_same_direction', 'unknown'];
-          const lines: string[] = [];
-          lines.push(''); // spacer
-          lines.push('【Wedge candidates (forming)】');
-          lines.push(`- スキャン実行: ${meta?.scanned ? 'Yes' : 'No'}`);
-          lines.push(`- ウィンドウ数: ${Number.isFinite(Number(meta?.windows)) ? meta?.windows : 'n/a'}個`);
-          lines.push(`- 候補総数: ${arr.length}件`);
-          lines.push(`- 却下理由の内訳:`);
-          for (const k of reasonKeys) lines.push(`  * ${k}: ${tally[k] || 0}件`);
-          // 追加診断: 直近30本の範囲と極値・最後の確定ピーク/谷
-          try {
-            const curIdx = Number(meta?.currentIdx);
-            const rr = Array.isArray((meta as any)?.recentRange) ? (meta as any).recentRange : null;
-            const rwc = Number((meta as any)?.recentWindowCount);
-            const samples = Array.isArray((meta as any)?.latestWindowSamples) ? (meta as any).latestWindowSamples : [];
-            const hiIdx = Number((meta as any)?.recentHiIdx);
-            const hiPx = Number((meta as any)?.recentHiPrice);
-            const loIdx = Number((meta as any)?.recentLoIdx);
-            const loPx = Number((meta as any)?.recentLoPrice);
-            const lcp = Number((meta as any)?.lastConfirmedPeakIdx);
-            const lcpAgo = Number((meta as any)?.lastConfirmedPeakAgo);
-            const lcv = Number((meta as any)?.lastConfirmedValleyIdx);
-            const lcvAgo = Number((meta as any)?.lastConfirmedValleyAgo);
-            lines.push('');
-            lines.push('【直近30本の診断】');
-            lines.push(`- 現在のバーインデックス: ${Number.isFinite(curIdx) ? curIdx : 'n/a'}`);
-            lines.push(`- 範囲: ${Array.isArray(rr) ? `[${rr[0]}, ${rr[1]}]` : 'n/a'}`);
-            lines.push(`- 直近ウィンドウ数(<=120本以内の終端): ${Number.isFinite(rwc) ? rwc : 'n/a'}`);
-            if (samples.length) {
-              const sampleStr = samples.map((w: any) => `[${w?.startIdx},${w?.endIdx}]`).join(', ');
-              lines.push(`- 最新ウィンドウ例(5件): ${sampleStr}`);
-            }
-            lines.push(`- 最高値idx: ${Number.isFinite(hiIdx) ? hiIdx : 'n/a'} (price: ${Number.isFinite(hiPx) ? hiPx.toLocaleString() : 'n/a'})`);
-            lines.push(`- 最安値idx: ${Number.isFinite(loIdx) ? loIdx : 'n/a'} (price: ${Number.isFinite(loPx) ? loPx.toLocaleString() : 'n/a'})`);
-            lines.push(`- 最後の確定ピーク: idx=${Number.isFinite(lcp) ? lcp : 'n/a'} (${Number.isFinite(lcpAgo) ? `${lcpAgo}本前` : 'n/a'})`);
-            lines.push(`- 最後の確定谷: idx=${Number.isFinite(lcv) ? lcv : 'n/a'} (${Number.isFinite(lcvAgo) ? `${lcvAgo}本前` : 'n/a'})`);
-          } catch { /* noop */ }
+        const daysSince = Math.round(barsSince * (daysPerBar(String(type)) || 1));
+        return `${i + 1}. ${p.type}（完成度${comp}% / scale=${scaleStatus} / lastPivot=${barsSince}本（約${daysSince}日））\n` +
+          `   - 左: ${left ? `idx=${left.idx} ${Math.round(left.price).toLocaleString()}円` : 'n/a'}\n` +
+          `   - 中: ${mid ? `idx=${mid.idx} ${Math.round(mid.price).toLocaleString()}円` : 'n/a'}\n` +
+          `   - 三: ${after ? `idx=${after.idx} ${Math.round(after.price).toLocaleString()}円` : 'n/a'}\n` +
+          `   - 右: ${right ? `idx=${right.idx} ${Math.round(right.price).toLocaleString()}円` : 'n/a'}`;
+      }).join('\n\n')
+      : '該当なし';
+    // Build debug context categorization for visible patterns
+    const dbgCats = { short_term: [] as any[], structural: [] as any[], watchlist: [] as any[] };
+    const dbgContextItems: string[] = [];
+    for (const p of visibleSorted) {
+      const ctx = analyzePatternContext(p);
+      (dbgCats as any)[ctx.category].push({ type: p.type, completion: p.completion, context: ctx });
+      dbgContextItems.push(
+        `- ${p.type}: category=${ctx.category} freshness=${ctx.freshness} impact=${ctx.marketImpact} days=${ctx.durationDays} amplitude=${Math.round(ctx.amplitude || 0).toLocaleString()}`
+      );
+    }
+    const dbgHasMulti = (dbgCats.short_term.length > 0 && dbgCats.structural.length > 0);
+    const contextBlock = [
+      '【Context（カテゴリ判定・デバッグ）】',
+      `- hasMultipleTimeframes: ${dbgHasMulti}`,
+      `- short_term: ${dbgCats.short_term.length}件`,
+      `- structural: ${dbgCats.structural.length}件`,
+      `- watchlist: ${dbgCats.watchlist.length}件`,
+      ...(dbgContextItems.length ? ['- items:', ...dbgContextItems] : []),
+    ].join('\n');
+    const text = [
+      `${String(pair).toUpperCase()} [${String(type)}] ${limit}本の分析`,
+      '',
+      `【ウィンドウ】start=${windowStart || 'n/a'} end=${windowEnd || 'n/a'} bars=${n}`,
+      `【最高値（期間内）】idx=${highestInWindow.idx} price=${highestInWindow.price?.toLocaleString?.() || 'n/a'}`,
+      (() => {
+        // Wedge スキャン診断（want の中身と判定結果を可視化）
+        try {
+          const wantArr = Array.from(want as any) as any[];
+          const fw = (want as any).has ? (want as any).has('falling_wedge') : (Array.isArray(wantArr) && wantArr.includes('falling_wedge'));
+          const rw = (want as any).has ? (want as any).has('rising_wedge') : (Array.isArray(wantArr) && wantArr.includes('rising_wedge'));
+          return [
+            '【Wedge スキャン診断】',
+            `- want長さ: ${Array.isArray(wantArr) ? wantArr.length : 'n/a'}`,
+            `- 要素: ${Array.isArray(wantArr) ? wantArr.join(', ') : 'n/a'}`,
+            `- falling_wedge判定: ${fw ? 'Yes' : 'No'}`,
+            `- rising_wedge判定: ${rw ? 'Yes' : 'No'}`,
+            ''
+          ].join('\n');
+        } catch {
+          return '';
+        }
+      })(),
+      (() => {
+        const wdbg = (globalThis as any).__formingWedgeDebug as Array<any> | undefined;
+        const meta: any = (globalThis as any).__formingWedgeDebugMeta;
+        const arr = Array.isArray(wdbg) ? wdbg : [];
+        const accepted = arr.filter(x => x?.accepted);
+        const rejected = arr.filter(x => !x?.accepted);
+        const tally: Record<string, number> = {};
+        for (const r of rejected) {
+          const key = String(r?.reason || 'unknown');
+          tally[key] = (tally[key] || 0) + 1;
+        }
+        const reasonKeys = ['stale_last_pivot', 'insufficient_swings', 'slope_ratio_out_of_range', 'not_converging_enough', 'insufficient_touches', 'score_below_threshold', 'gap_non_positive', 'not_same_direction', 'unknown'];
+        const lines: string[] = [];
+        lines.push(''); // spacer
+        lines.push('【Wedge candidates (forming)】');
+        lines.push(`- スキャン実行: ${meta?.scanned ? 'Yes' : 'No'}`);
+        lines.push(`- ウィンドウ数: ${Number.isFinite(Number(meta?.windows)) ? meta?.windows : 'n/a'}個`);
+        lines.push(`- 候補総数: ${arr.length}件`);
+        lines.push(`- 却下理由の内訳:`);
+        for (const k of reasonKeys) lines.push(`  * ${k}: ${tally[k] || 0}件`);
+        // 追加診断: 直近30本の範囲と極値・最後の確定ピーク/谷
+        try {
+          const curIdx = Number(meta?.currentIdx);
+          const rr = Array.isArray((meta as any)?.recentRange) ? (meta as any).recentRange : null;
+          const rwc = Number((meta as any)?.recentWindowCount);
+          const samples = Array.isArray((meta as any)?.latestWindowSamples) ? (meta as any).latestWindowSamples : [];
+          const hiIdx = Number((meta as any)?.recentHiIdx);
+          const hiPx = Number((meta as any)?.recentHiPrice);
+          const loIdx = Number((meta as any)?.recentLoIdx);
+          const loPx = Number((meta as any)?.recentLoPrice);
+          const lcp = Number((meta as any)?.lastConfirmedPeakIdx);
+          const lcpAgo = Number((meta as any)?.lastConfirmedPeakAgo);
+          const lcv = Number((meta as any)?.lastConfirmedValleyIdx);
+          const lcvAgo = Number((meta as any)?.lastConfirmedValleyAgo);
           lines.push('');
-          lines.push('【却下された候補（最新ウィンドウから5件）】');
-          if (!rejected.length) {
-            lines.push('- なし');
-          } else {
-            // 直近（終端idxが最新から50本以内）の却下候補を優先表示
-            const recentRejected = rejected.filter((c: any) => {
-              try {
-                const e = Array.isArray(c?.indices) ? Number(c.indices[1]) : NaN;
-                return Number.isFinite(e) ? ((lastIdx - e) <= 50) : false;
-              } catch { return false; }
-            });
-            const list = (recentRejected.length ? recentRejected : rejected)
-              .slice()
+          lines.push('【直近30本の診断】');
+          lines.push(`- 現在のバーインデックス: ${Number.isFinite(curIdx) ? curIdx : 'n/a'}`);
+          lines.push(`- 範囲: ${Array.isArray(rr) ? `[${rr[0]}, ${rr[1]}]` : 'n/a'}`);
+          lines.push(`- 直近ウィンドウ数(<=120本以内の終端): ${Number.isFinite(rwc) ? rwc : 'n/a'}`);
+          if (samples.length) {
+            const sampleStr = samples.map((w: any) => `[${w?.startIdx},${w?.endIdx}]`).join(', ');
+            lines.push(`- 最新ウィンドウ例(5件): ${sampleStr}`);
+          }
+          lines.push(`- 最高値idx: ${Number.isFinite(hiIdx) ? hiIdx : 'n/a'} (price: ${Number.isFinite(hiPx) ? hiPx.toLocaleString() : 'n/a'})`);
+          lines.push(`- 最安値idx: ${Number.isFinite(loIdx) ? loIdx : 'n/a'} (price: ${Number.isFinite(loPx) ? loPx.toLocaleString() : 'n/a'})`);
+          lines.push(`- 最後の確定ピーク: idx=${Number.isFinite(lcp) ? lcp : 'n/a'} (${Number.isFinite(lcpAgo) ? `${lcpAgo}本前` : 'n/a'})`);
+          lines.push(`- 最後の確定谷: idx=${Number.isFinite(lcv) ? lcv : 'n/a'} (${Number.isFinite(lcvAgo) ? `${lcvAgo}本前` : 'n/a'})`);
+        } catch { /* noop */ }
+        lines.push('');
+        lines.push('【却下された候補（最新ウィンドウから5件）】');
+        if (!rejected.length) {
+          lines.push('- なし');
+        } else {
+          // 直近（終端idxが最新から50本以内）の却下候補を優先表示
+          const recentRejected = rejected.filter((c: any) => {
+            try {
+              const e = Array.isArray(c?.indices) ? Number(c.indices[1]) : NaN;
+              return Number.isFinite(e) ? ((lastIdx - e) <= 50) : false;
+            } catch { return false; }
+          });
+          const list = (recentRejected.length ? recentRejected : rejected)
+            .slice()
+            .sort((a: any, b: any) => {
+              const ae = Array.isArray(a?.indices) ? Number(a.indices[1]) : -Infinity;
+              const be = Array.isArray(b?.indices) ? Number(b.indices[1]) : -Infinity;
+              if (be !== ae) return be - ae; // endIdx desc
+              const as = Array.isArray(a?.indices) ? Number(a.indices[0]) : -Infinity;
+              const bs = Array.isArray(b?.indices) ? Number(b.indices[0]) : -Infinity;
+              return bs - as; // startIdx desc
+            })
+            .slice(0, 5);
+          lines.push(...list.map((c: any, i: number) => {
+            const idxs = Array.isArray(c?.indices) ? `[${c.indices[0]},${c.indices[1]}]` : 'n/a';
+            const reason = String(c?.reason || 'unknown');
+            const upT = c?.details?.touches?.up ?? c?.details?.upTouches ?? 'n/a';
+            const loT = c?.details?.touches?.lo ?? c?.details?.loTouches ?? 'n/a';
+            const conv = c?.details?.convRatio != null ? Number(c.details.convRatio).toFixed(2) : 'n/a';
+            const r2h = c?.details?.r2High != null ? Number(c.details.r2High).toFixed(3) : 'n/a';
+            const r2l = c?.details?.r2Low != null ? Number(c.details.r2Low).toFixed(3) : 'n/a';
+            const lp = c?.details?.lastPeakInWindow;
+            const lv = c?.details?.lastValleyInWindow;
+            const agoP = Number.isFinite(lp) ? `${lastIdx - Number(lp)}本前` : 'n/a';
+            const agoV = Number.isFinite(lv) ? `${lastIdx - Number(lv)}本前` : 'n/a';
+            const rHi = c?.details?.recentHiInside === true ? 'Yes' : 'No';
+            const rLo = c?.details?.recentLoInside === true ? 'Yes' : 'No';
+            const allowed = c?.details?.allowedByRecent === false ? 'false' : (c?.details?.allowedByRecent === true ? 'true' : 'n/a');
+            const staleThreshold = 30;
+            let why = '';
+            if (reason === 'stale_last_pivot') {
+              const barsSince = c?.details?.barsSince;
+              const tooOld = Number.isFinite(barsSince) ? (barsSince > staleThreshold) : false;
+              const haveRecent = (c?.details?.recentHiInside === true) || (c?.details?.recentLoInside === true);
+              why = `（barsSince=${barsSince ?? 'n/a'}${tooOld ? `>${staleThreshold}` : ''}, recentInside=${haveRecent ? 'Yes' : 'No'}）`;
+            }
+            const hiCnt = c?.details?.highsCount != null ? c.details.highsCount : 'n/a';
+            const loCnt = c?.details?.lowsCount != null ? c.details.lowsCount : 'n/a';
+            // 収束の詳細（あれば出力）
+            let convergeDetail = '';
+            if (reason === 'not_converging_enough' || (c?.details?.gapStart != null && c?.details?.gapEnd != null)) {
+              const upStart = c?.details?.upStart;
+              const upEnd = c?.details?.upEnd;
+              const loStart = c?.details?.loStart;
+              const loEnd = c?.details?.loEnd;
+              const gapStart = c?.details?.gapStart;
+              const gapEnd = c?.details?.gapEnd;
+              const convStr = (c?.details?.convRatio != null) ? Number(c.details.convRatio).toFixed(2) : 'n/a';
+              const yen = (v: any) => Number.isFinite(Number(v)) ? Math.round(Number(v)).toLocaleString() + '円' : 'n/a';
+              const calcExpr = (Number.isFinite(Number(upEnd)) && Number.isFinite(Number(loEnd)) && Number.isFinite(Number(upStart)) && Number.isFinite(Number(loStart)))
+                ? `(${yen(upEnd)} - ${yen(loEnd)}) / (${yen(upStart)} - ${yen(loStart)}) = ${convStr}`
+                : `gapEnd / gapStart = ${convStr}`;
+              convergeDetail =
+                `\n   - gapStart: ${yen(gapStart)}（開始時点の上下ライン幅）` +
+                `\n   - gapEnd: ${yen(gapEnd)}（終了時点の上下ライン幅）` +
+                `\n   - convRatio: gapEnd / gapStart = ${convStr}` +
+                `\n   - 上側ライン(startIdx): ${yen(upStart)} / 上側ライン(endIdx): ${yen(upEnd)}` +
+                `\n   - 下側ライン(startIdx): ${yen(loStart)} / 下側ライン(endIdx): ${yen(loEnd)}` +
+                `\n   - 計算: ${calcExpr}`;
+            }
+            return `${i + 1}. indices=${idxs} reason=${reason}${why}\n   - 最終ピーク in window: ${Number.isFinite(lp) ? lp : 'n/a'} (${agoP})\n   - 最終谷 in window: ${Number.isFinite(lv) ? lv : 'n/a'} (${agoV})\n   - 直近高値含む: ${rHi} / 直近安値含む: ${rLo} / allowedByRecent: ${allowed}\n   - r2={hi:${r2h}, lo:${r2l}} touches={up:${upT}, lo:${loT}} convRatio=${conv}\n   - swings={peaks:${hiCnt}, valleys:${loCnt}}${convergeDetail}`;
+          }));
+          // 長期ウィンドウ（100-120本, 終端=最新）の候補も別枠で表示
+          try {
+            const longRejected = rejected
+              .filter((c: any) => {
+                if (!Array.isArray(c?.indices)) return false;
+                const s = Number(c.indices[0]), e = Number(c.indices[1]);
+                const len = e - s;
+                return Number.isFinite(s) && Number.isFinite(e) && e >= lastIdx - 2 && len >= 100 && len <= 120;
+              })
               .sort((a: any, b: any) => {
-                const ae = Array.isArray(a?.indices) ? Number(a.indices[1]) : -Infinity;
-                const be = Array.isArray(b?.indices) ? Number(b.indices[1]) : -Infinity;
-                if (be !== ae) return be - ae; // endIdx desc
-                const as = Array.isArray(a?.indices) ? Number(a.indices[0]) : -Infinity;
-                const bs = Array.isArray(b?.indices) ? Number(b.indices[0]) : -Infinity;
+                const as = Number(a.indices[0]); const bs = Number(b.indices[0]);
                 return bs - as; // startIdx desc
               })
               .slice(0, 5);
-            lines.push(...list.map((c: any, i: number) => {
-              const idxs = Array.isArray(c?.indices) ? `[${c.indices[0]},${c.indices[1]}]` : 'n/a';
-              const reason = String(c?.reason || 'unknown');
-              const upT = c?.details?.touches?.up ?? c?.details?.upTouches ?? 'n/a';
-              const loT = c?.details?.touches?.lo ?? c?.details?.loTouches ?? 'n/a';
-              const conv = c?.details?.convRatio != null ? Number(c.details.convRatio).toFixed(2) : 'n/a';
-              const r2h = c?.details?.r2High != null ? Number(c.details.r2High).toFixed(3) : 'n/a';
-              const r2l = c?.details?.r2Low != null ? Number(c.details.r2Low).toFixed(3) : 'n/a';
-              const lp = c?.details?.lastPeakInWindow;
-              const lv = c?.details?.lastValleyInWindow;
-              const agoP = Number.isFinite(lp) ? `${lastIdx - Number(lp)}本前` : 'n/a';
-              const agoV = Number.isFinite(lv) ? `${lastIdx - Number(lv)}本前` : 'n/a';
-              const rHi = c?.details?.recentHiInside === true ? 'Yes' : 'No';
-              const rLo = c?.details?.recentLoInside === true ? 'Yes' : 'No';
-              const allowed = c?.details?.allowedByRecent === false ? 'false' : (c?.details?.allowedByRecent === true ? 'true' : 'n/a');
-              const staleThreshold = 30;
-              let why = '';
-              if (reason === 'stale_last_pivot') {
-                const barsSince = c?.details?.barsSince;
-                const tooOld = Number.isFinite(barsSince) ? (barsSince > staleThreshold) : false;
-                const haveRecent = (c?.details?.recentHiInside === true) || (c?.details?.recentLoInside === true);
-                why = `（barsSince=${barsSince ?? 'n/a'}${tooOld ? `>${staleThreshold}` : ''}, recentInside=${haveRecent ? 'Yes' : 'No'}）`;
-              }
-              const hiCnt = c?.details?.highsCount != null ? c.details.highsCount : 'n/a';
-              const loCnt = c?.details?.lowsCount != null ? c.details.lowsCount : 'n/a';
-              // 収束の詳細（あれば出力）
-              let convergeDetail = '';
-              if (reason === 'not_converging_enough' || (c?.details?.gapStart != null && c?.details?.gapEnd != null)) {
-                const upStart = c?.details?.upStart;
-                const upEnd = c?.details?.upEnd;
-                const loStart = c?.details?.loStart;
-                const loEnd = c?.details?.loEnd;
-                const gapStart = c?.details?.gapStart;
-                const gapEnd = c?.details?.gapEnd;
-                const convStr = (c?.details?.convRatio != null) ? Number(c.details.convRatio).toFixed(2) : 'n/a';
+            if (longRejected.length) {
+              lines.push('');
+              lines.push('【長期ウィンドウ（100-120本, 終端=最新）の却下候補】');
+              lines.push(...longRejected.map((c: any, i: number) => {
+                const idxs = `[${c.indices[0]},${c.indices[1]}]`;
+                const reason = String(c?.reason || 'unknown');
+                const conv = c?.details?.convRatio != null ? Number(c.details.convRatio).toFixed(2) : 'n/a';
                 const yen = (v: any) => Number.isFinite(Number(v)) ? Math.round(Number(v)).toLocaleString() + '円' : 'n/a';
-                const calcExpr = (Number.isFinite(Number(upEnd)) && Number.isFinite(Number(loEnd)) && Number.isFinite(Number(upStart)) && Number.isFinite(Number(loStart)))
-                  ? `(${yen(upEnd)} - ${yen(loEnd)}) / (${yen(upStart)} - ${yen(loStart)}) = ${convStr}`
-                  : `gapEnd / gapStart = ${convStr}`;
-                convergeDetail =
-                  `\n   - gapStart: ${yen(gapStart)}（開始時点の上下ライン幅）` +
-                  `\n   - gapEnd: ${yen(gapEnd)}（終了時点の上下ライン幅）` +
-                  `\n   - convRatio: gapEnd / gapStart = ${convStr}` +
-                  `\n   - 上側ライン(startIdx): ${yen(upStart)} / 上側ライン(endIdx): ${yen(upEnd)}` +
-                  `\n   - 下側ライン(startIdx): ${yen(loStart)} / 下側ライン(endIdx): ${yen(loEnd)}` +
-                  `\n   - 計算: ${calcExpr}`;
-              }
-              return `${i + 1}. indices=${idxs} reason=${reason}${why}\n   - 最終ピーク in window: ${Number.isFinite(lp) ? lp : 'n/a'} (${agoP})\n   - 最終谷 in window: ${Number.isFinite(lv) ? lv : 'n/a'} (${agoV})\n   - 直近高値含む: ${rHi} / 直近安値含む: ${rLo} / allowedByRecent: ${allowed}\n   - r2={hi:${r2h}, lo:${r2l}} touches={up:${upT}, lo:${loT}} convRatio=${conv}\n   - swings={peaks:${hiCnt}, valleys:${loCnt}}${convergeDetail}`;
-            }));
-            // 長期ウィンドウ（100-120本, 終端=最新）の候補も別枠で表示
-            try {
-              const longRejected = rejected
-                .filter((c: any) => {
-                  if (!Array.isArray(c?.indices)) return false;
-                  const s = Number(c.indices[0]), e = Number(c.indices[1]);
-                  const len = e - s;
-                  return Number.isFinite(s) && Number.isFinite(e) && e >= lastIdx - 2 && len >= 100 && len <= 120;
-                })
-                .sort((a: any, b: any) => {
-                  const as = Number(a.indices[0]); const bs = Number(b.indices[0]);
-                  return bs - as; // startIdx desc
-                })
-                .slice(0, 5);
-              if (longRejected.length) {
-                lines.push('');
-                lines.push('【長期ウィンドウ（100-120本, 終端=最新）の却下候補】');
-                lines.push(...longRejected.map((c: any, i: number) => {
-                  const idxs = `[${c.indices[0]},${c.indices[1]}]`;
-                  const reason = String(c?.reason || 'unknown');
-                  const conv = c?.details?.convRatio != null ? Number(c.details.convRatio).toFixed(2) : 'n/a';
-                  const yen = (v: any) => Number.isFinite(Number(v)) ? Math.round(Number(v)).toLocaleString() + '円' : 'n/a';
-                  const upStart = c?.details?.upStart, upEnd = c?.details?.upEnd;
-                  const loStart = c?.details?.loStart, loEnd = c?.details?.loEnd;
-                  const gapStart = c?.details?.gapStart, gapEnd = c?.details?.gapEnd;
-                  return `${i + 1}. indices=${idxs} reason=${reason}\n   - gapStart: ${yen(gapStart)} / gapEnd: ${yen(gapEnd)} / convRatio: ${conv}\n   - 上側(start→end): ${yen(upStart)} → ${yen(upEnd)}\n   - 下側(start→end): ${yen(loStart)} → ${yen(loEnd)}`;
-                }));
-              }
-            } catch { /* noop */ }
-          }
-          // 参考: 最初の10件をサンプル表示
-          const sample = arr.slice(0, 10).map((c: any, i: number) => {
-            const tag = c.accepted ? '✅' : '❌';
-            const idxs = Array.isArray(c?.indices) ? ` [${c.indices[0]},${c.indices[1]}]` : '';
-            const reason = c.accepted ? '' : (c.reason ? ` (${c.reason})` : '');
-            let det = '';
-            if (c.details) {
-              try { det = ` conv=${c.details?.convRatio ?? 'n/a'} upT=${c.details?.touches?.up ?? 'n/a'} loT=${c.details?.touches?.lo ?? 'n/a'} conf=${c.details?.confidence ?? 'n/a'}`; } catch { }
+                const upStart = c?.details?.upStart, upEnd = c?.details?.upEnd;
+                const loStart = c?.details?.loStart, loEnd = c?.details?.loEnd;
+                const gapStart = c?.details?.gapStart, gapEnd = c?.details?.gapEnd;
+                return `${i + 1}. indices=${idxs} reason=${reason}\n   - gapStart: ${yen(gapStart)} / gapEnd: ${yen(gapEnd)} / convRatio: ${conv}\n   - 上側(start→end): ${yen(upStart)} → ${yen(upEnd)}\n   - 下側(start→end): ${yen(loStart)} → ${yen(loEnd)}`;
+              }));
             }
-            return `  ${i + 1}. ${tag} ${c.type}${reason}${idxs}${det}`;
-          }).join('\n');
-          lines.push('');
-          lines.push(sample || '  （候補サンプルなし）');
-          lines.push('');
-          return lines.join('\n');
-        })(),
-        (() => {
-          const highestIdx = highestInWindow.idx;
-          const highestPrice = Number(candles[highestIdx]?.high);
-          const inPeaksList = peaks.some(p => p.idx === highestIdx);
-          const isConfirmed = inPeaksList && isPivotConfirmed(highestIdx, lastIdx);
-          const barsWindow = Math.max(5, Math.round(maxPatternDays / Math.max(1e-12, daysPerBarCalc(String(type)))));
-          const confirmedPeaksForHead = peaks.filter(p => isPivotConfirmed(p.idx, lastIdx));
-          const leftCandidates = confirmedPeaksForHead.filter(p => p.idx < highestIdx && (highestIdx - p.idx) <= barsWindow && highestPrice > p.price * 1.05);
-          const leftFound = leftCandidates.length > 0;
-          const postHeadValleyFound = valleys.some(v => v.idx > highestIdx && isPivotConfirmed(v.idx, lastIdx));
-          return [
-            '【最高値の詳細】',
-            `- idx=${highestIdx}`,
-            `- price=${Number.isFinite(highestPrice) ? Math.round(highestPrice).toLocaleString() : 'n/a'}`,
-            `- isConfirmedPeak: ${isConfirmed}`,
-            `- leftShoulderFound: ${leftFound}`,
-            `- postHeadValleyFound: ${postHeadValleyFound}`,
-            `- inPeaksList: ${inPeaksList}`,
-            '',
-          ].join('\n');
-        })(),
-        '',
-        '【スイング検出】',
-        `- ピーク: ${peaks.length}個`,
-        `- 谷: ${valleys.length}個`,
-        `- 最新5本: [${last5.join(', ')}]`,
-        '',
-        '【候補パターン】',
-        candidates.length
-          ? candidates
-            .map((c, i) => {
-              const reason = c.adopt ? '← 採用' : '← 却下（minCompletion未満）';
-              const det = c.detail.join('\n');
-              return `${i + 1}. ${c.title} ${reason}\n${det}`;
-            })
-            .join('\n\n')
-          : '該当なし',
-        '',
-        whatIfBlock,
-        '',
-        '【検出されたパターン】',
-        `${visible.length}件（minCompletion=${minCompletion} を満たすパターン${visible.length ? '' : 'なし'}）`,
-        visible.length ? detectedBrief : '',
-        '',
-        contextBlock,
-      ].join('\n');
-      const dbgContext = {
-        hasMultipleTimeframes: dbgHasMulti,
-        categories: {
-          short_term: dbgCats.short_term,
-          structural: dbgCats.structural,
-          watchlist: dbgCats.watchlist,
-        },
-      };
-      return ok(text, { patterns: visibleSorted, context: dbgContext, meta: { pair: pairNorm, type, count: visibleSorted.length, peaks: peaks.length, valleys: valleys.length } }, createMeta(pairNorm, { type, debug: true })) as any;
-    }
+          } catch { /* noop */ }
+        }
+        // 参考: 最初の10件をサンプル表示
+        const sample = arr.slice(0, 10).map((c: any, i: number) => {
+          const tag = c.accepted ? '✅' : '❌';
+          const idxs = Array.isArray(c?.indices) ? ` [${c.indices[0]},${c.indices[1]}]` : '';
+          const reason = c.accepted ? '' : (c.reason ? ` (${c.reason})` : '');
+          let det = '';
+          if (c.details) {
+            try { det = ` conv=${c.details?.convRatio ?? 'n/a'} upT=${c.details?.touches?.up ?? 'n/a'} loT=${c.details?.touches?.lo ?? 'n/a'} conf=${c.details?.confidence ?? 'n/a'}`; } catch { }
+          }
+          return `  ${i + 1}. ${tag} ${c.type}${reason}${idxs}${det}`;
+        }).join('\n');
+        lines.push('');
+        lines.push(sample || '  （候補サンプルなし）');
+        lines.push('');
+        return lines.join('\n');
+      })(),
+      (() => {
+        const highestIdx = highestInWindow.idx;
+        const highestPrice = Number(candles[highestIdx]?.high);
+        const inPeaksList = peaks.some(p => p.idx === highestIdx);
+        const isConfirmed = inPeaksList && isPivotConfirmed(highestIdx, lastIdx);
+        const barsWindow = Math.max(5, Math.round(maxPatternDays / Math.max(1e-12, daysPerBarCalc(String(type)))));
+        const confirmedPeaksForHead = peaks.filter(p => isPivotConfirmed(p.idx, lastIdx));
+        const leftCandidates = confirmedPeaksForHead.filter(p => p.idx < highestIdx && (highestIdx - p.idx) <= barsWindow && highestPrice > p.price * 1.05);
+        const leftFound = leftCandidates.length > 0;
+        const postHeadValleyFound = valleys.some(v => v.idx > highestIdx && isPivotConfirmed(v.idx, lastIdx));
+        return [
+          '【最高値の詳細】',
+          `- idx=${highestIdx}`,
+          `- price=${Number.isFinite(highestPrice) ? Math.round(highestPrice).toLocaleString() : 'n/a'}`,
+          `- isConfirmedPeak: ${isConfirmed}`,
+          `- leftShoulderFound: ${leftFound}`,
+          `- postHeadValleyFound: ${postHeadValleyFound}`,
+          `- inPeaksList: ${inPeaksList}`,
+          '',
+        ].join('\n');
+      })(),
+      '',
+      '【スイング検出】',
+      `- ピーク: ${peaks.length}個`,
+      `- 谷: ${valleys.length}個`,
+      `- 最新5本: [${last5.join(', ')}]`,
+      '',
+      '【候補パターン】',
+      candidates.length
+        ? candidates
+          .map((c, i) => {
+            const reason = c.adopt ? '← 採用' : '← 却下（minCompletion未満）';
+            const det = c.detail.join('\n');
+            return `${i + 1}. ${c.title} ${reason}\n${det}`;
+          })
+          .join('\n\n')
+        : '該当なし',
+      '',
+      whatIfBlock,
+      '',
+      '【検出されたパターン】',
+      `${visible.length}件（minCompletion=${minCompletion} を満たすパターン${visible.length ? '' : 'なし'}）`,
+      visible.length ? detectedBrief : '',
+      '',
+      contextBlock,
+    ].join('\n');
+    const dbgContext = {
+      hasMultipleTimeframes: dbgHasMulti,
+      categories: {
+        short_term: dbgCats.short_term,
+        structural: dbgCats.structural,
+        watchlist: dbgCats.watchlist,
+      },
+    };
+    return ok(text, { patterns: visibleSorted, context: dbgContext, meta: { pair: pairNorm, type, count: visibleSorted.length, peaks: peaks.length, valleys: valleys.length } }, createMeta(pairNorm, { type, debug: true })) as any;
+  }
 
-    // === Freshness grouping ===
-    const grouped = (() => {
-      const active: any[] = [];
-      const watchlist: any[] = [];
-      const expired: any[] = [];
-      // completed summary buckets for LLM誤解防止（構造化）
-      const completedActive: any[] = [];
-      const completedInvalidated: any[] = [];
-      const completedExpired: any[] = [];
-      // forming freshness by bars since last forming/confirmed pivot
-      for (const p of enriched) {
-        const formingIdx = Number(p?.formingPivots?.[0]?.idx ?? p?.confirmedPivots?.[p?.confirmedPivots?.length - 1]?.idx ?? lastIdx);
-        const barsSinceLastPivot = Math.max(0, lastIdx - formingIdx);
-        const status = barsSinceLastPivot <= maxBarsFromLastPivot ? 'forming_active' : 'forming_stale';
-        const target = status === 'forming_active' ? active : watchlist;
-        target.push({
-          type: p.type,
-          completion: p.completion,
-          status,
-          freshness: status === 'forming_active' ? 'アクティブ - エントリー検討可' : '形成停滞 - 要監視',
-          barsSinceLastPivot,
-          formationPeriod: p?.formationPeriod,
-        });
-      }
-      // recently completed freshness (optional) + post-breakout retracement expiry
-      if (includeCompleted && Array.isArray(recentCompleted)) {
-        // Only patterns that actually confirmed breakout (with buffer, handled in detect_patterns aftermath)
-        const onlyBrokenOut = recentCompleted.filter((p: any) => p?.aftermath?.breakoutConfirmed === true && typeof p?.aftermath?.breakoutDate === 'string');
-        const parseIdxGap = (isoEnd?: string) => {
-          const tEnd = Number.isFinite(Date.parse(String(isoEnd))) ? Date.parse(String(isoEnd)) : NaN;
-          const tLast = Number.isFinite(Date.parse(String(candles[lastIdx]?.isoTime))) ? Date.parse(String(candles[lastIdx]?.isoTime)) : NaN;
-          if (!Number.isFinite(tEnd) || !Number.isFinite(tLast)) return Infinity;
-          const days = Math.max(0, Math.round((tLast - tEnd) / 86400000));
-          const bars = Math.max(0, Math.round(days / Math.max(1e-12, daysPerBar(String(type)))));
-          return bars;
-        };
-        const idxByIso = (iso?: string) => {
-          try {
-            const t = Date.parse(String(iso));
-            if (!Number.isFinite(t)) return lastIdx;
-            let best = lastIdx;
-            for (let i = 0; i < n; i++) {
-              const ti = Date.parse(String(candles[i]?.isoTime));
-              if (Number.isFinite(ti) && ti >= t) { best = i; break; }
-            }
-            return best;
-          } catch { return lastIdx; }
-        };
-        const currentPrice = candles[lastIdx]?.close;
-        for (const p of onlyBrokenOut) {
-          // 完成日 = ブレイクアウト日（after range.end）
-          const breakoutIso = String(p?.aftermath?.breakoutDate || '');
-          const barsFromBreakout = parseIdxGap(breakoutIso);
-          // estimate breakout index and neckline/breakout price
-          const breakoutIdx = idxByIso(breakoutIso);
-          const nlA = p?.neckline?.[0]?.y;
-          const nlB = p?.neckline?.[1]?.y;
-          const breakoutPrice = Number.isFinite(nlB) ? Number(nlB) : (Number.isFinite(nlA) ? Number(nlA) : Number(candles[breakoutIdx]?.close));
-          // scan candles after breakout
-          const seg = candles.slice(Math.min(Math.max(0, breakoutIdx), n - 1));
-          const hiAfter = seg.length ? Math.max(...seg.map(c => Number(c?.high) || 0)) : breakoutPrice;
-          const loAfter = seg.length ? Math.min(...seg.map(c => Number(c?.low) || breakoutPrice)) : breakoutPrice;
-          // retracement expiry check (50%既定)
-          const retraceExpire = (() => {
-            const half = 0.5;
-            if (!Number.isFinite(breakoutPrice) || !Number.isFinite(currentPrice)) return false;
-            const typeStr = String(p?.type || '');
-            if (typeStr === 'inverse_head_and_shoulders' || typeStr === 'double_bottom' || typeStr === 'triple_bottom') {
-              const expectedRise = breakoutPrice * 0.05;
-              const actualRise = hiAfter - breakoutPrice;
-              if (actualRise >= expectedRise) {
-                const denom = Math.max(1e-12, hiAfter - breakoutPrice);
-                const retr = (hiAfter - currentPrice) / denom;
-                return retr > half;
-              }
-              return false;
-            }
-            if (typeStr === 'head_and_shoulders' || typeStr === 'double_top' || typeStr === 'triple_top') {
-              const expectedDrop = breakoutPrice * 0.05;
-              const actualDrop = breakoutPrice - loAfter;
-              if (actualDrop >= expectedDrop) {
-                const denom = Math.max(1e-12, breakoutPrice - loAfter);
-                const retr = (currentPrice - loAfter) / denom;
-                return retr > half;
-              }
-              return false;
-            }
-            return false;
-          })();
-          // neckline re-entry invalidation (fail after breakout)
-          const invalidated = (() => {
-            if (!Number.isFinite(breakoutPrice) || !Number.isFinite(currentPrice)) return false;
-            const typeStr = String(p?.type || '');
-            if (typeStr === 'inverse_head_and_shoulders' || typeStr === 'double_bottom' || typeStr === 'triple_bottom') {
-              // bullish: if price is back below neckline, treat as invalidated
-              return currentPrice < breakoutPrice;
-            }
-            if (typeStr === 'head_and_shoulders' || typeStr === 'double_top' || typeStr === 'triple_top') {
-              // bearish: if price back above neckline, invalidated
-              return currentPrice > breakoutPrice;
-            }
-            return false;
-          })();
-          // return since breakout（方向に依らず生の変化率）
-          const retPct = (() => {
-            if (!Number.isFinite(breakoutPrice) || !Number.isFinite(currentPrice)) return null;
-            return Number((((currentPrice - breakoutPrice) / Math.max(1e-12, breakoutPrice)) * 100).toFixed(2));
-          })();
-          const bullishLike = ['inverse_head_and_shoulders', 'double_bottom', 'triple_bottom'].includes(String(p?.type));
-          const invalidReason = invalidated ? (bullishLike ? 'price_below_neckline' : 'price_above_neckline') : null;
-          const obj = {
-            type: p?.type,
-            status: invalidated ? 'invalidated' as const : 'completed' as const,
-            freshness: (barsFromBreakout <= maxCompletedBars && !retraceExpire && !invalidated) ? '完成直後 - 有効範囲' : '期限切れ',
-            barsFromBreakout,
-            range: p?.range,
-            details: {
-              breakoutPrice: Number.isFinite(breakoutPrice) ? Math.round(breakoutPrice) : null,
-              hiAfter: Number.isFinite(hiAfter) ? Math.round(hiAfter) : null,
-              loAfter: Number.isFinite(loAfter) ? Math.round(loAfter) : null,
-              retracementExpired: retraceExpire || false,
-              necklineInvalidated: invalidated || false,
-              breakoutDate: breakoutIso || null,
-              currentPrice: Number.isFinite(currentPrice) ? Math.round(currentPrice) : null,
-              returnPctSinceBreakout: retPct,
-              invalidationReason: invalidReason,
-            }
-          };
-          const isActive = (barsFromBreakout <= maxCompletedBars) && !retraceExpire && !invalidated;
-          if (isActive) {
-            active.push(obj);
-            completedActive.push({
-              pattern: String(p?.type),
-              breakoutDate: breakoutIso || null,
-              barsAgo: barsFromBreakout,
-              returnPct: retPct,
-              status: 'active',
-              neckline: Number.isFinite(breakoutPrice) ? Math.round(breakoutPrice) : null,
-              currentPrice: Number.isFinite(currentPrice) ? Math.round(currentPrice) : null,
-              pivots: Array.isArray((p as any)?.pivots) ? (p as any).pivots : [],
-              range: p?.range,
-            });
-          } else if (invalidated) {
-            expired.push(obj);
-            completedInvalidated.push({
-              pattern: String(p?.type),
-              breakoutDate: breakoutIso || null,
-              barsAgo: barsFromBreakout,
-              returnPct: retPct,
-              status: 'invalidated',
-              invalidationReason: invalidReason,
-              neckline: Number.isFinite(breakoutPrice) ? Math.round(breakoutPrice) : null,
-              currentPrice: Number.isFinite(currentPrice) ? Math.round(currentPrice) : null,
-              pivots: Array.isArray((p as any)?.pivots) ? (p as any).pivots : [],
-              range: p?.range,
-            });
-          } else {
-            expired.push(obj);
-            completedExpired.push({
-              pattern: String(p?.type),
-              breakoutDate: breakoutIso || null,
-              barsAgo: barsFromBreakout,
-              returnPct: retPct,
-              status: 'expired',
-              neckline: Number.isFinite(breakoutPrice) ? Math.round(breakoutPrice) : null,
-              currentPrice: Number.isFinite(currentPrice) ? Math.round(currentPrice) : null,
-              reason: retraceExpire ? 'retracement>50%' : 'time_window_exceeded',
-              pivots: Array.isArray((p as any)?.pivots) ? (p as any).pivots : [],
-              range: p?.range,
-            });
+  // === Freshness grouping ===
+  const grouped = (() => {
+    const active: any[] = [];
+    const watchlist: any[] = [];
+    const expired: any[] = [];
+    // completed summary buckets for LLM誤解防止（構造化）
+    const completedActive: any[] = [];
+    const completedInvalidated: any[] = [];
+    const completedExpired: any[] = [];
+    // forming freshness by bars since last forming/confirmed pivot
+    for (const p of enriched) {
+      const formingIdx = Number(p?.formingPivots?.[0]?.idx ?? p?.confirmedPivots?.[p?.confirmedPivots?.length - 1]?.idx ?? lastIdx);
+      const barsSinceLastPivot = Math.max(0, lastIdx - formingIdx);
+      const status = barsSinceLastPivot <= maxBarsFromLastPivot ? 'forming_active' : 'forming_stale';
+      const target = status === 'forming_active' ? active : watchlist;
+      target.push({
+        type: p.type,
+        completion: p.completion,
+        status,
+        freshness: status === 'forming_active' ? 'アクティブ - エントリー検討可' : '形成停滞 - 要監視',
+        barsSinceLastPivot,
+        formationPeriod: p?.formationPeriod,
+      });
+    }
+    // recently completed freshness (optional) + post-breakout retracement expiry
+    if (includeCompleted && Array.isArray(recentCompleted)) {
+      // Only patterns that actually confirmed breakout (with buffer, handled in detect_patterns aftermath)
+      const onlyBrokenOut = recentCompleted.filter((p: any) => p?.aftermath?.breakoutConfirmed === true && typeof p?.aftermath?.breakoutDate === 'string');
+      const parseIdxGap = (isoEnd?: string) => {
+        const tEnd = Number.isFinite(Date.parse(String(isoEnd))) ? Date.parse(String(isoEnd)) : NaN;
+        const tLast = Number.isFinite(Date.parse(String(candles[lastIdx]?.isoTime))) ? Date.parse(String(candles[lastIdx]?.isoTime)) : NaN;
+        if (!Number.isFinite(tEnd) || !Number.isFinite(tLast)) return Infinity;
+        const days = Math.max(0, Math.round((tLast - tEnd) / 86400000));
+        const bars = Math.max(0, Math.round(days / Math.max(1e-12, daysPerBar(String(type)))));
+        return bars;
+      };
+      const idxByIso = (iso?: string) => {
+        try {
+          const t = Date.parse(String(iso));
+          if (!Number.isFinite(t)) return lastIdx;
+          let best = lastIdx;
+          for (let i = 0; i < n; i++) {
+            const ti = Date.parse(String(candles[i]?.isoTime));
+            if (Number.isFinite(ti) && ti >= t) { best = i; break; }
           }
+          return best;
+        } catch { return lastIdx; }
+      };
+      const currentPrice = candles[lastIdx]?.close;
+      for (const p of onlyBrokenOut) {
+        // 完成日 = ブレイクアウト日（after range.end）
+        const breakoutIso = String(p?.aftermath?.breakoutDate || '');
+        const barsFromBreakout = parseIdxGap(breakoutIso);
+        // estimate breakout index and neckline/breakout price
+        const breakoutIdx = idxByIso(breakoutIso);
+        const nlA = p?.neckline?.[0]?.y;
+        const nlB = p?.neckline?.[1]?.y;
+        const breakoutPrice = Number.isFinite(nlB) ? Number(nlB) : (Number.isFinite(nlA) ? Number(nlA) : Number(candles[breakoutIdx]?.close));
+        // scan candles after breakout
+        const seg = candles.slice(Math.min(Math.max(0, breakoutIdx), n - 1));
+        const hiAfter = seg.length ? Math.max(...seg.map(c => Number(c?.high) || 0)) : breakoutPrice;
+        const loAfter = seg.length ? Math.min(...seg.map(c => Number(c?.low) || breakoutPrice)) : breakoutPrice;
+        // retracement expiry check (50%既定)
+        const retraceExpire = (() => {
+          const half = 0.5;
+          if (!Number.isFinite(breakoutPrice) || !Number.isFinite(currentPrice)) return false;
+          const typeStr = String(p?.type || '');
+          if (typeStr === 'inverse_head_and_shoulders' || typeStr === 'double_bottom' || typeStr === 'triple_bottom') {
+            const expectedRise = breakoutPrice * 0.05;
+            const actualRise = hiAfter - breakoutPrice;
+            if (actualRise >= expectedRise) {
+              const denom = Math.max(1e-12, hiAfter - breakoutPrice);
+              const retr = (hiAfter - currentPrice) / denom;
+              return retr > half;
+            }
+            return false;
+          }
+          if (typeStr === 'head_and_shoulders' || typeStr === 'double_top' || typeStr === 'triple_top') {
+            const expectedDrop = breakoutPrice * 0.05;
+            const actualDrop = breakoutPrice - loAfter;
+            if (actualDrop >= expectedDrop) {
+              const denom = Math.max(1e-12, breakoutPrice - loAfter);
+              const retr = (currentPrice - loAfter) / denom;
+              return retr > half;
+            }
+            return false;
+          }
+          return false;
+        })();
+        // neckline re-entry invalidation (fail after breakout)
+        const invalidated = (() => {
+          if (!Number.isFinite(breakoutPrice) || !Number.isFinite(currentPrice)) return false;
+          const typeStr = String(p?.type || '');
+          if (typeStr === 'inverse_head_and_shoulders' || typeStr === 'double_bottom' || typeStr === 'triple_bottom') {
+            // bullish: if price is back below neckline, treat as invalidated
+            return currentPrice < breakoutPrice;
+          }
+          if (typeStr === 'head_and_shoulders' || typeStr === 'double_top' || typeStr === 'triple_top') {
+            // bearish: if price back above neckline, invalidated
+            return currentPrice > breakoutPrice;
+          }
+          return false;
+        })();
+        // return since breakout（方向に依らず生の変化率）
+        const retPct = (() => {
+          if (!Number.isFinite(breakoutPrice) || !Number.isFinite(currentPrice)) return null;
+          return Number((((currentPrice - breakoutPrice) / Math.max(1e-12, breakoutPrice)) * 100).toFixed(2));
+        })();
+        const bullishLike = ['inverse_head_and_shoulders', 'double_bottom', 'triple_bottom'].includes(String(p?.type));
+        const invalidReason = invalidated ? (bullishLike ? 'price_below_neckline' : 'price_above_neckline') : null;
+        const obj = {
+          type: p?.type,
+          status: invalidated ? 'invalidated' as const : 'completed' as const,
+          freshness: (barsFromBreakout <= maxCompletedBars && !retraceExpire && !invalidated) ? '完成直後 - 有効範囲' : '期限切れ',
+          barsFromBreakout,
+          range: p?.range,
+          details: {
+            breakoutPrice: Number.isFinite(breakoutPrice) ? Math.round(breakoutPrice) : null,
+            hiAfter: Number.isFinite(hiAfter) ? Math.round(hiAfter) : null,
+            loAfter: Number.isFinite(loAfter) ? Math.round(loAfter) : null,
+            retracementExpired: retraceExpire || false,
+            necklineInvalidated: invalidated || false,
+            breakoutDate: breakoutIso || null,
+            currentPrice: Number.isFinite(currentPrice) ? Math.round(currentPrice) : null,
+            returnPctSinceBreakout: retPct,
+            invalidationReason: invalidReason,
+          }
+        };
+        const isActive = (barsFromBreakout <= maxCompletedBars) && !retraceExpire && !invalidated;
+        if (isActive) {
+          active.push(obj);
+          completedActive.push({
+            pattern: String(p?.type),
+            breakoutDate: breakoutIso || null,
+            barsAgo: barsFromBreakout,
+            returnPct: retPct,
+            status: 'active',
+            neckline: Number.isFinite(breakoutPrice) ? Math.round(breakoutPrice) : null,
+            currentPrice: Number.isFinite(currentPrice) ? Math.round(currentPrice) : null,
+            pivots: Array.isArray((p as any)?.pivots) ? (p as any).pivots : [],
+            range: p?.range,
+          });
+        } else if (invalidated) {
+          expired.push(obj);
+          completedInvalidated.push({
+            pattern: String(p?.type),
+            breakoutDate: breakoutIso || null,
+            barsAgo: barsFromBreakout,
+            returnPct: retPct,
+            status: 'invalidated',
+            invalidationReason: invalidReason,
+            neckline: Number.isFinite(breakoutPrice) ? Math.round(breakoutPrice) : null,
+            currentPrice: Number.isFinite(currentPrice) ? Math.round(currentPrice) : null,
+            pivots: Array.isArray((p as any)?.pivots) ? (p as any).pivots : [],
+            range: p?.range,
+          });
+        } else {
+          expired.push(obj);
+          completedExpired.push({
+            pattern: String(p?.type),
+            breakoutDate: breakoutIso || null,
+            barsAgo: barsFromBreakout,
+            returnPct: retPct,
+            status: 'expired',
+            neckline: Number.isFinite(breakoutPrice) ? Math.round(breakoutPrice) : null,
+            currentPrice: Number.isFinite(currentPrice) ? Math.round(currentPrice) : null,
+            reason: retraceExpire ? 'retracement>50%' : 'time_window_exceeded',
+            pivots: Array.isArray((p as any)?.pivots) ? (p as any).pivots : [],
+            range: p?.range,
+          });
         }
       }
-      return { active, watchlist, expired, completedSummary: { active: completedActive, invalidated: completedInvalidated, expired: completedExpired } };
-    })();
+    }
+    return { active, watchlist, expired, completedSummary: { active: completedActive, invalidated: completedInvalidated, expired: completedExpired } };
+  })();
 
-    if (view === 'summary') {
-      const pickShort = categorized.short_term[0];
-      const pickStruct = categorized.structural[0];
-      const linesSum: string[] = [];
-      linesSum.push(`${summary}（${typeSummary || '分類なし'}）`);
-      linesSum.push('');
-      linesSum.push('【🔴 最重要: 現在進行形】');
-      if (pickShort || pickStruct) {
-        if (pickShort && pickStruct) {
-          linesSum.push('複数の重要なパターンが検出されています。');
-          const fmtPick = (p: any, tag: string) => {
-            const right = p?.formingPivots?.[0];
-            const formingIdx = Number(right?.idx ?? lastIdx);
-            const barsSince = Math.max(0, lastIdx - formingIdx);
-            const daysSince = Math.round(barsSince * (daysPerBar(String(type)) || 1));
-            return `【${tag}】${p.type}（完成度${Math.round(p.completion * 100)}%、右肩=${daysSince === 0 ? '今日' : `${daysSince}日前`}）`;
-          };
-          linesSum.push(fmtPick(pickShort, '短期'));
-          linesSum.push(fmtPick(pickStruct, '中期'));
-          if ((isBullish(String(pickShort?.type)) && isBearish(String(pickStruct?.type))) ||
-            (isBearish(String(pickShort?.type)) && isBullish(String(pickStruct?.type)))) {
-            linesSum.push('⚠️ 短期と中期で示唆が異なるため、調整局面の可能性');
-          }
-        } else {
-          const only = pickShort || pickStruct;
-          const tag = pickShort ? '短期' : '中期';
-          const right = only?.formingPivots?.[0];
+  if (view === 'summary') {
+    const pickShort = categorized.short_term[0];
+    const pickStruct = categorized.structural[0];
+    const linesSum: string[] = [];
+    linesSum.push(`${summary}（${typeSummary || '分類なし'}）`);
+    linesSum.push('');
+    linesSum.push('【🔴 最重要: 現在進行形】');
+    if (pickShort || pickStruct) {
+      if (pickShort && pickStruct) {
+        linesSum.push('複数の重要なパターンが検出されています。');
+        const fmtPick = (p: any, tag: string) => {
+          const right = p?.formingPivots?.[0];
           const formingIdx = Number(right?.idx ?? lastIdx);
           const barsSince = Math.max(0, lastIdx - formingIdx);
           const daysSince = Math.round(barsSince * (daysPerBar(String(type)) || 1));
-          linesSum.push(`【${tag}】${only.type}（完成度${Math.round(only.completion * 100)}%、右肩=${daysSince === 0 ? '今日' : `${daysSince}日前`}）`);
-        }
-      } else {
-        // フォールバック（カテゴリ無し）: impact順で上位2件を簡潔に
-        const top2 = sortedEnriched.slice(0, 2).map((p: any) => `- ${p.type}（完成度${Math.round(p.completion * 100)}%）`);
-        linesSum.push(top2.length ? top2.join('\n') : '該当なし');
-      }
-      linesSum.push('');
-      linesSum.push('【🟡 重要: 長期視点】');
-      linesSum.push(`週足: ${ltWeek.items.length ? ltWeek.items.map((p: any) => `${p.type}（ネックライン${p?.neckline?.[1]?.y != null ? Math.round(p.neckline[1].y).toLocaleString() : 'n/a'}円）`).slice(0, 3).join(' / ') : '該当なし'}`);
-      linesSum.push(`月足: ${ltMonth.items.length ? ltMonth.items.map((p: any) => `${p.type}（ネックライン${p?.neckline?.[1]?.y != null ? Math.round(p.neckline[1].y).toLocaleString() : 'n/a'}円）`).slice(0, 3).join(' / ') : '該当なし'}`);
-      linesSum.push('');
-      const recentDaysSum = Math.round(maxCompletedBars * (daysPerBar(String(type)) || 1));
-      linesSum.push(`【🟢 参考: 最近完成（${recentDaysSum}日以内）】`);
-      // セクション分離（有効 / 無効化 / 期限切れ）
-      const comp = (grouped as any)?.completedSummary || { active: [], invalidated: [], expired: [] };
-      const fmtArr = (arr: any[], tag: 'active' | 'invalidated' | 'expired') => {
-        if (!arr?.length) return '- 該当なし';
-        return arr.slice(0, 3).map((p: any) => {
-          const date = String(p?.breakoutDate || '').slice(0, 10) || 'n/a';
-          const ret = (typeof p?.returnPct === 'number') ? `${p.returnPct >= 0 ? '+' : ''}${p.returnPct.toFixed(2)}%` : 'n/a';
-          const neck = Number.isFinite(p?.neckline) ? Math.round(Number(p.neckline)).toLocaleString() : 'n/a';
-          const nowPx = Number.isFinite(p?.currentPrice) ? Math.round(Number(p.currentPrice)).toLocaleString() : 'n/a';
-          if (tag === 'active') return `- ${p.pattern}（${date} 完成, ${ret}）`;
-          if (tag === 'invalidated') return `- ${p.pattern}（${date} 完成 → ❌無効化, 理由: ${p?.invalidationReason || 'unknown'} / NL: ${neck}円 / 現在: ${nowPx}円）`;
-          return `- ${p.pattern}（${date} 完成 → 期限切れ, ${ret} / NL: ${neck}円）`;
-        }).join('\n');
-      };
-      linesSum.push('【✅ 有効なブレイク】');
-      linesSum.push(fmtArr(comp.active, 'active'));
-      linesSum.push('');
-      linesSum.push('【❌ 無効化されたパターン】');
-      linesSum.push(fmtArr(comp.invalidated, 'invalidated'));
-      const text = linesSum.join('\n');
-      const context = {
-        hasMultipleTimeframes: hasDifferentCategories,
-        categories: {
-          short_term: categorized.short_term.map((p: any) => ({ type: p.type, completion: p.completion, context: p.context })),
-          structural: categorized.structural.map((p: any) => ({ type: p.type, completion: p.completion, context: p.context })),
-          watchlist: categorized.watchlist.map((p: any) => ({ type: p.type, completion: p.completion, context: p.context })),
-        },
-        relationships,
-      };
-      return ok(text, { patterns: sortedEnriched, grouped, context, meta: { pair: pairNorm, type, count: enriched.length } }, createMeta(pairNorm, { type })) as any;
-    }
-
-    // optional: pattern metadata for reliability/complexity and typical formation window
-    const PATTERN_METADATA: Record<string, { minDays: number; typicalDays: number; maxDays?: number; reliability: 'high' | 'medium' | 'low'; complexity: 'simple' | 'moderate' | 'complex'; note?: string }> = {
-      'double_top': { minDays: 14, typicalDays: 21, maxDays: 60, reliability: 'high', complexity: 'simple', note: 'ネックラインのブレイク＋出来高増が確認条件' },
-      'double_bottom': { minDays: 14, typicalDays: 21, maxDays: 60, reliability: 'high', complexity: 'simple', note: 'ネックライン上抜け時の出来高が重要' },
-      'triple_top': { minDays: 21, typicalDays: 60, maxDays: 180, reliability: 'high', complexity: 'moderate', note: '3点の等高性に注意（±2-3%）' },
-      'triple_bottom': { minDays: 21, typicalDays: 60, maxDays: 180, reliability: 'high', complexity: 'moderate', note: '3点の等安性に注意（±2-3%）' },
-      'head_and_shoulders': { minDays: 21, typicalDays: 60, maxDays: 365, reliability: 'high', complexity: 'moderate', note: 'ネックライン傾き・左右対称性で信頼度変化' },
-      'inverse_head_and_shoulders': { minDays: 21, typicalDays: 60, maxDays: 365, reliability: 'high', complexity: 'moderate', note: '完成後の戻り売りを想定' },
-      'triangle_descending': { minDays: 28, typicalDays: 60, maxDays: 90, reliability: 'high', complexity: 'moderate', note: 'フラットサポートの実体割れ＋出来高で信頼度上昇' },
-      'triangle_ascending': { minDays: 28, typicalDays: 60, maxDays: 90, reliability: 'medium', complexity: 'moderate' },
-      'triangle_symmetrical': { minDays: 21, typicalDays: 60, maxDays: 84, reliability: 'medium', complexity: 'moderate' },
-      'pennant': { minDays: 7, typicalDays: 14, maxDays: 21, reliability: 'medium', complexity: 'moderate' },
-      'flag': { minDays: 14, typicalDays: 21, maxDays: 28, reliability: 'medium', complexity: 'simple' },
-    };
-    const typicalString = (d: number) => {
-      if (d < 7) return `${d}日`;
-      const w = Math.round(d / 7);
-      return `${w}週間`;
-    };
-
-    const fmt = (p: any, i: number) => {
-      const start = p?.range?.start?.slice(0, 10) || 'n/a';
-      // Wedge specific formatting (falling/rising)
-      const tStr = String(p?.type || '');
-      if (tStr === 'falling_wedge' || tStr === 'rising_wedge') {
-        const rangeEndIso = (p?.range?.current as string) || '';
-        const endFmt = fmtDate(rangeEndIso);
-        const up = p?.upperLine || {};
-        const lo = p?.lowerLine || {};
-        const upSlope = (Number.isFinite(Number(up?.slope)) ? Number(up.slope).toFixed(6) : 'n/a');
-        const loSlope = (Number.isFinite(Number(lo?.slope)) ? Number(lo.slope).toFixed(6) : 'n/a');
-        const upR2 = (Number.isFinite(Number(up?.r2)) ? Number(up.r2).toFixed(3) : 'n/a');
-        const loR2 = (Number.isFinite(Number(lo?.r2)) ? Number(lo.r2).toFixed(3) : 'n/a');
-        const upT = Array.isArray(up?.touchPoints) ? up.touchPoints.length : (Number.isFinite(Number(up?.touches)) ? Number(up.touches) : 'n/a');
-        const loT = Array.isArray(lo?.touchPoints) ? lo.touchPoints.length : (Number.isFinite(Number(lo?.touches)) ? Number(lo.touches) : 'n/a');
-        const conv = Number.isFinite(Number(p?.convergenceRatio)) ? Number(p.convergenceRatio).toFixed(3) : 'n/a';
-        const compPct = Number.isFinite(Number(p?.completion)) ? Math.round(Number(p.completion) * 100) : 'n/a';
-        const apexDate = p?.apexDate ? fmtDate(String(p.apexDate)) : 'n/a';
-        const d2a = Number.isFinite(Number(p?.daysToApex)) ? `${p.daysToApex}日` : 'n/a';
-        const target = Number.isFinite(Number(p?.breakoutTarget)) ? Math.round(Number(p.breakoutTarget)).toLocaleString() + '円' : 'n/a';
-        const inval = Number.isFinite(Number(p?.invalidationPrice)) ? Math.round(Number(p.invalidationPrice)).toLocaleString() + '円' : 'n/a';
-        const formation = p?.formationPeriod?.formatted || '';
-        const status = String(p?.status || 'active');
-        const conf = Number.isFinite(Number(p?.confidence)) ? Number(p.confidence).toFixed(2) : 'n/a';
-
-        // 無効化警告の生成
-        const currentPrice = Number.isFinite(Number(p?.currentPrice)) ? Number(p.currentPrice) : null;
-        const invalidationPrice = Number.isFinite(Number(p?.invalidationPrice)) ? Number(p.invalidationPrice) : null;
-        let invalidationWarning: string | null = null;
-
-        if (status === 'invalid' && currentPrice != null && invalidationPrice != null) {
-          const pctBelow = ((currentPrice - invalidationPrice) / invalidationPrice * 100);
-          const direction = p.type === 'falling_wedge' ? '下回' : '上回';
-          invalidationWarning = `   ⚠️ 【無効化済み】現在価格¥${currentPrice.toLocaleString()}が無効化ライン¥${invalidationPrice.toLocaleString()}を${pctBelow.toFixed(1)}%${direction}っており、このパターンは既に無効化されています`;
-        } else if (status === 'near_invalidation' && currentPrice != null && invalidationPrice != null) {
-          const pctToInvalidation = Math.abs((invalidationPrice - currentPrice) / currentPrice * 100);
-          invalidationWarning = `   ⚠️ 【警告】現在価格¥${currentPrice.toLocaleString()}が無効化ライン¥${invalidationPrice.toLocaleString()}まで${pctToInvalidation.toFixed(1)}%圏内です`;
-        }
-
-        const lines = [
-          `${i + 1}. ${tStr} (完成度: ${compPct}%, パターン整合度: ${conf})`,
-          `   - 期間: ${fmtDate(start)} 〜 ${endFmt}${formation ? `（${formation}）` : ''}`,
-          `   - 上側ライン: slope=${upSlope}, r2=${upR2}, touches=${upT}`,
-          `   - 下側ライン: slope=${loSlope}, r2=${loR2}, touches=${loT}`,
-          `   - 収束率: ${conv}（小さいほど収束）`,
-          `   - アペックス: ${apexDate}（残り${d2a}）`,
-          status === 'invalid' || status === 'near_invalidation'
-            ? `   - 現在価格: ¥${currentPrice?.toLocaleString() || 'n/a'}`
-            : null,
-          `   - ブレイク目標: ${target} / 無効化: ${inval}`,
-          `   - 状態: ${status}${status === 'invalid' ? '（無効化済み）' : status === 'near_invalidation' ? '（無効化寸前）' : ''}`,
-          invalidationWarning,
-        ].filter(Boolean);
-        return lines.join('\n');
-      }
-      // confirmed pivots by role（順序に依存しない安全な参照）
-      const cps = Array.isArray(p?.confirmedPivots) ? p.confirmedPivots : [];
-      const byRole = (role: string) => cps.find((cp: any) => String(cp?.role) === role);
-      const left = byRole('left_shoulder') || cps[0];
-      const headPivot = byRole('head') || cps.find((cp: any) => String(cp?.role).includes('head')) || cps[1];
-      const preHeadPeak = byRole('pre_head_peak');
-      const postHeadPeak = byRole('post_head_peak');
-      const preHeadValley = byRole('pre_head_valley');
-      const postHeadValley = byRole('post_head_valley');
-      // legacy fallbacks
-      const valleyOrPeak = headPivot || cps[1];
-      const afterHead = postHeadPeak || postHeadValley || cps[2];
-      const forming = p.formingPivots?.[0];
-      const formingRole = String(forming?.role || '');
-      const nl = Array.isArray(p.neckline) && p.neckline.length === 2 ? p.neckline : null;
-      const nlStr = nl ? (nl[0].y === nl[1].y ? `${Math.round(nl[0].y).toLocaleString()}円（水平）` : `${Math.round(nl[0].y).toLocaleString()}円 → ${Math.round(nl[1].y).toLocaleString()}円`) : 'n/a';
-      // 形成期間は右肩確定時点まで（確定していない場合のみ現在まで）
-      const periodBars = Number.isFinite(p?.formationPeriod?.bars) ? Number(p.formationPeriod.bars) : Math.max(0, (forming?.idx ?? lastIdx) - (left?.idx ?? 0));
-      const periodFmt = formatPeriod(periodBars, type);
-      // 表示上の範囲はネックラインアンカー（range.start ↔ range.current）を優先
-      // まず「肩区間（range）」を優先し、なければフォールバック
-      const rangeStartIso = (p?.range?.start as string) || (p?.rangeAnchors?.startIso as string) || (p?.formationPeriod?.start as string) || (left?.isoTime as string);
-      const rangeEndIso = (p?.range?.current as string) || (p?.rangeAnchors?.endIso as string) || (p?.formationPeriod?.end as string) || (forming?.isoTime as string) || (afterHead?.isoTime as string);
-      const startFmt = fmtDate(rangeStartIso);
-      const formingFmt = fmtDate(forming?.isoTime);
-      const covRatio = Number(limit) > 0 ? (periodBars / Number(limit)) : 0;
-      const covPctStr = `${(covRatio * 100).toFixed(1)}%`;
-      const scaleOk = p?.scale_validation?.status === 'appropriate';
-      // Labels by pattern type
-      let leftLabel = '左肩';
-      let midLabel = '谷';
-      let rightLabel = '右肩';
-      let thirdLabel: string | null = null;
-      if (p.type === 'double_bottom') {
-        leftLabel = '左谷';
-        midLabel = '山';
-        rightLabel = '右谷';
-        thirdLabel = null;
-      } else if (p.type === 'double_top') {
-        leftLabel = '左肩';
-        midLabel = '谷';
-        rightLabel = '右肩';
-        thirdLabel = null;
-      } else if (p.type === 'head_and_shoulders') {
-        leftLabel = '左肩';
-        midLabel = '頭';
-        rightLabel = '右肩';
-        thirdLabel = '頭後の谷';
-      } else if (p.type === 'inverse_head_and_shoulders') {
-        leftLabel = '左肩';
-        midLabel = '頭';
-        rightLabel = '右肩';
-        thirdLabel = '頭後の山';
-      }
-      const tfLabel = (() => {
-        const map: Record<string, string> = {
-          '1day': '日足',
-          '1week': '週足',
-          '1month': '月足',
-          '1hour': '1時間足',
-          '4hour': '4時間足',
-          '8hour': '8時間足',
-          '12hour': '12時間足',
-          '15min': '15分足',
-          '30min': '30分足',
-          '5min': '5分足',
-          '1min': '1分足',
+          return `【${tag}】${p.type}（完成度${Math.round(p.completion * 100)}%、右肩=${daysSince === 0 ? '今日' : `${daysSince}日前`}）`;
         };
-        return map[type] || type;
-      })();
-      const meta = PATTERN_METADATA[String(p.type)] || null;
-      // ネックライン乖離と状態（未ブレイク/直近ブレイク）を補足
-      let stateLines: string[] = [];
-      try {
-        const curPx = Number(candles[lastIdx]?.close);
-        const nlY = nl ? Number(nl[1]?.y ?? nl[0]?.y) : null;
-        if (Number.isFinite(curPx) && Number.isFinite(nlY)) {
-          const diffPct = ((curPx - (nlY as number)) / Math.max(1e-12, nlY as number)) * 100;
-          const sign = diffPct >= 0 ? '+' : '';
-          const dir = (p.type === 'inverse_head_and_shoulders' || p.type === 'double_bottom' || p.type === 'triple_bottom') ? '上抜け' : '下抜け';
-          const buf = 2.0; // %
-          const crossed = (p.type === 'inverse_head_and_shoulders' || p.type === 'double_bottom' || p.type === 'triple_bottom')
-            ? (diffPct > buf)
-            : (diffPct < -buf);
-          const status = p?.status === 'recent_breakout' ? `直近ブレイク（${dir}）` : (crossed ? `ブレイク済み（${dir}）` : `未ブレイク（乖離 ${sign}${diffPct.toFixed(1)}%）`);
-          stateLines.push(`   - 状態: ${status}`);
-        }
-      } catch { /* noop */ }
-      // 鮮度（右肩からの経過本数）と乖離の補助行
-      let freshnessLine: string | null = null;
-      try {
-        const rs = forming?.idx != null ? Math.max(0, lastIdx - forming.idx) : null;
-        if (rs != null) freshnessLine = `   - 鮮度: 右肩から${rs}本（基準${maxBarsFromLastPivot}本以内で鮮度高）`;
-      } catch { /* ignore */ }
-      const lines = [
-        `${i + 1}. 【${tfLabel}・${periodFmt}】${p.type} (完成度: ${Math.round(p.completion * 100)}%, パターン整合度: ${p.confidence?.toFixed(2) ?? 'n/a'})`,
-        `   - 形成区間（肩→肩）: ${startFmt} 〜 ${fmtDate(rangeEndIso)}`,
-        `   - カバレッジ: ${covPctStr} ${scaleOk ? '✅' : '⚠️'}`,
-        left ? `   - ${leftLabel}: ${Math.round(left.price).toLocaleString()}円（${fmtDate(left.isoTime)}確定）` : null,
-        valleyOrPeak ? `   - ${midLabel}: ${Math.round(valleyOrPeak.price).toLocaleString()}円（${fmtDate(valleyOrPeak.isoTime)}確定）` : null,
-        // 逆三尊: 頭前の山/頭後の山 を明示
-        (p.type === 'inverse_head_and_shoulders' && preHeadPeak) ? `   - 頭前の山: ${Math.round(preHeadPeak.price).toLocaleString()}円（${fmtDate(preHeadPeak.isoTime)}確定）` : null,
-        (p.type === 'inverse_head_and_shoulders' && postHeadPeak) ? `   - 頭後の山: ${Math.round(postHeadPeak.price).toLocaleString()}円（${fmtDate(postHeadPeak.isoTime)}確定）` : null,
-        // 三尊: 頭前/頭後の谷 を明示
-        (p.type === 'head_and_shoulders' && preHeadValley) ? `   - 頭前の谷: ${Math.round(preHeadValley.price).toLocaleString()}円（${fmtDate(preHeadValley.isoTime)}確定）` : null,
-        (p.type === 'head_and_shoulders' && postHeadValley) ? `   - 頭後の谷: ${Math.round(postHeadValley.price).toLocaleString()}円（${fmtDate(postHeadValley.isoTime)}確定）` : null,
-        // 役割ピボットが欠ける場合は従来のthirdLabelで補う
-        (!((p.type === 'inverse_head_and_shoulders' && (preHeadPeak || postHeadPeak)) || (p.type === 'head_and_shoulders' && (preHeadValley || postHeadValley))) && thirdLabel && afterHead)
-          ? `   - ${thirdLabel}: ${Math.round(afterHead.price).toLocaleString()}円（${fmtDate(afterHead.isoTime)}確定）` : null,
-        forming ? (formingRole === 'right_shoulder'
-          ? `   - ${rightLabel}: 確定 ${Math.round(forming.price).toLocaleString()}円（${formingFmt}）`
-          : `   - ${rightLabel}: 形成中 ${Math.round(forming.price).toLocaleString()}円（${formingFmt}）`) : null,
-        `   - 推定ネックライン: ${nlStr}`,
-        ...stateLines,
-        freshnessLine,
-        p?.scale_validation?.warning ? `   【スケール警告】${p.scale_validation.warning}` : null,
-        p?.scale_validation?.recommended_limit ? `   【推奨表示範囲】limit=${p.scale_validation.recommended_limit}` : null,
-        p?.scale_validation?.timeframe_suggestion ? `   【時間軸の提案】${p.scale_validation.timeframe_suggestion}` : null,
-        meta ? `   【パターン情報】典型形成: ${typicalString(meta.typicalDays)} / 信頼性: ${meta.reliability}${meta.note ? ` / メモ: ${meta.note}` : ''}` : null,
-        '',
-        '   【シナリオ】',
-        `   ✓ 完成条件: ${p.scenarios?.completion?.priceRange?.[0]?.toLocaleString?.() || 'n/a'}-${p.scenarios?.completion?.priceRange?.[1]?.toLocaleString?.() || 'n/a'}円で反転${p.type === 'double_top' ? '下落' : '上昇'}`,
-        `   ✓ 完成後の注目: ネックライン${nl ? Math.round(nl[0].y).toLocaleString() : 'n/a'}円のブレイク`,
-        `   ✗ 無効化条件: ${p.scenarios?.invalidation?.priceLevel?.toLocaleString?.() || 'n/a'}円を${p.type === 'double_top' ? '上' : '下'}抜け`,
-        '',
-        '   【次のアクション】',
-        ...(Array.isArray(p.nextSteps) ? p.nextSteps.map((s: string) => `   - ${s}`) : []),
-      ].filter(Boolean);
-      return lines.join('\n');
-    };
-
-    const list = (view === 'full' ? enriched : enriched.slice(0, 5)).map(fmt).join('\n\n');
-    const tail = "\n\n形成中パターンについて:\n  完成度60%以上 = 形成が進んでいる\n  完成度40-60% = 初期段階（不確実）\n  パターン整合度は完成後の予想整合度";
-
-    // Priority-structured content (detailed/full)
-    const lines: string[] = [];
-    lines.push(summary);
-    lines.push('');
-    lines.push('【検出ルール】同一タイプで期間重複50%以上は「直近まで含む＞完成度＞整合度」の優先度で1件のみ表示（重複は整理）');
-    lines.push('【🔴 最重要: 現在進行形】');
-    if (enriched.length) {
-      if (hasDifferentCategories) {
-        lines.push('複数の重要なパターンが検出されています。短期的な動きと中期的な構造の両方を考慮してください。');
-        lines.push('');
-        if (categorized.short_term.length) {
-          lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          lines.push('【短期・鮮度重視】直近数日〜1週間の動き');
-          lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          const items = (view === 'full' ? categorized.short_term : categorized.short_term.slice(0, 2)).map((p: any, i: number) => fmt(p, i));
-          lines.push(items.join('\n\n'));
-          lines.push('');
-        }
-        if (categorized.structural.length) {
-          lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          lines.push('【中期・構造重視】1週間〜1ヶ月の大きな流れ');
-          lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━');
-          const items = (view === 'full' ? categorized.structural : categorized.structural.slice(0, 2)).map((p: any, i: number) => fmt(p, i));
-          lines.push(items.join('\n\n'));
-          lines.push('');
-        }
-        if (categorized.watchlist.length) {
-          lines.push('【要監視】参考情報');
-          const items = (view === 'full' ? categorized.watchlist : categorized.watchlist.slice(0, 1)).map((p: any) => `- ${p.type}（完成度${Math.round(p.completion * 100)}%）`);
-          lines.push(items.join('\n'));
-        }
-        if (categorized.invalid.length) {
-          lines.push('');
-          lines.push('【⚠️ 無効化済み】');
-          const items = categorized.invalid.map((p: any) => {
-            const comp = Math.round(p.completion * 100);
-            const currentPrice = Number.isFinite(p.currentPrice) ? p.currentPrice.toLocaleString() : 'n/a';
-            const invalPrice = Number.isFinite(p.invalidationPrice) ? p.invalidationPrice.toLocaleString() : 'n/a';
-            const reason = p.status === 'invalid' ? '無効化ライン突破' : '無効化寸前';
-            return `- ${p.type}（元の完成度: ${comp}%, ${reason}）\n  現在価格: ¥${currentPrice}、無効化ライン: ¥${invalPrice}`;
-          });
-          lines.push(items.join('\n'));
-        }
-        if (relationships.length) {
-          const rel = relationships[0];
-          lines.push('');
-          lines.push('【パターン間の関係（要点）】');
-          const note = rel?.conflict === 'directional'
-            ? '短期は反発サイン、中期は天井サイン → 調整局面の可能性'
-            : (rel?.overlap ? '期間が重複しており、相互に影響する可能性' : '関係なし');
-          lines.push(`- ${rel.pattern1} × ${rel.pattern2}: ${note}`);
+        linesSum.push(fmtPick(pickShort, '短期'));
+        linesSum.push(fmtPick(pickStruct, '中期'));
+        if ((isBullish(String(pickShort?.type)) && isBearish(String(pickStruct?.type))) ||
+          (isBearish(String(pickShort?.type)) && isBullish(String(pickStruct?.type)))) {
+          linesSum.push('⚠️ 短期と中期で示唆が異なるため、調整局面の可能性');
         }
       } else {
-        const formingBlock = (view === 'full' ? sortedEnriched : sortedEnriched.slice(0, 5)).map((p, i) => fmt(p, i)).join('\n\n');
-        lines.push(formingBlock);
+        const only = pickShort || pickStruct;
+        const tag = pickShort ? '短期' : '中期';
+        const right = only?.formingPivots?.[0];
+        const formingIdx = Number(right?.idx ?? lastIdx);
+        const barsSince = Math.max(0, lastIdx - formingIdx);
+        const daysSince = Math.round(barsSince * (daysPerBar(String(type)) || 1));
+        linesSum.push(`【${tag}】${only.type}（完成度${Math.round(only.completion * 100)}%、右肩=${daysSince === 0 ? '今日' : `${daysSince}日前`}）`);
       }
-      // attach history brief lines
-      const histBrief = sortedEnriched.map((p: any) => {
-        const hc = p?.historicalCases;
-        if (!hc) return null;
-        return `   ↳ 過去${historyDays}日: 件数${hc.count} 成功率${(hc.successRate * 100).toFixed(0)}% 平均変動${hc.avgBreakoutMove >= 0 ? '+' : ''}${hc.avgBreakoutMove}%`;
-      }).filter(Boolean).join('\n');
-      if (histBrief) lines.push(histBrief);
     } else {
-      lines.push('該当なし');
+      // フォールバック（カテゴリ無し）: impact順で上位2件を簡潔に
+      const top2 = sortedEnriched.slice(0, 2).map((p: any) => `- ${p.type}（完成度${Math.round(p.completion * 100)}%）`);
+      linesSum.push(top2.length ? top2.join('\n') : '該当なし');
     }
-    lines.push('');
-    lines.push('【🟡 重要: 長期視点】');
-    const weekLines = ltWeek.items.slice(0, 3).map((p: any) => `- 週足 ${p.type}（ネックライン${p?.neckline?.[1]?.y != null ? Math.round(p.neckline[1].y).toLocaleString() : 'n/a'}円）`).join('\n');
-    const monthLines = ltMonth.items.slice(0, 3).map((p: any) => `- 月足 ${p.type}（ネックライン${p?.neckline?.[1]?.y != null ? Math.round(p.neckline[1].y).toLocaleString() : 'n/a'}円）`).join('\n');
-    lines.push(weekLines || '- 該当なし');
-    lines.push(monthLines || '- 該当なし');
-    lines.push('');
-    lines.push(`【🟢 参考: 最近完成（${Math.round(maxCompletedBars * (daysPerBar(String(type)) || 1))}日以内）】`);
-    {
-      const comp = (grouped as any)?.completedSummary || { active: [], invalidated: [], expired: [] };
-      const fmtArr = (arr: any[], tag: 'active' | 'invalidated' | 'expired') => {
-        if (!arr?.length) return '- 該当なし';
-        return arr.slice(0, 5).map((p: any) => {
-          const date = String(p?.breakoutDate || '').slice(0, 10) || 'n/a';
-          const ret = (typeof p?.returnPct === 'number') ? `${p.returnPct >= 0 ? '+' : ''}${p.returnPct.toFixed(2)}%` : 'n/a';
-          const neck = Number.isFinite(p?.neckline) ? Math.round(Number(p.neckline)).toLocaleString() : 'n/a';
-          const nowPx = Number.isFinite(p?.currentPrice) ? Math.round(Number(p.currentPrice)).toLocaleString() : 'n/a';
-          const base = (tag === 'active')
-            ? `- ${p.pattern}（${date} 完成, ${ret}）`
-            : (tag === 'invalidated'
-              ? `- ${p.pattern}（${date} 完成 → ❌無効化, 理由: ${p?.invalidationReason || 'unknown'} / NL: ${neck}円 / 現在: ${nowPx}円）`
-              : `- ${p.pattern}（${date} 完成 → 期限切れ, ${ret} / NL: ${neck}円）`);
-          // 追加詳細（view=detailed/full のみ）
-          if (view === 'detailed' || view === 'full') {
-            const piv: Array<{ idx: number; price: number }> = Array.isArray(p?.pivots) ? p.pivots : [];
-            const val = (i?: number) => (Number.isFinite(i as any) && piv[i as number]) ? Math.round(Number(piv[i as number].price)).toLocaleString() : 'n/a';
-            if (p?.pattern === 'head_and_shoulders' || p?.pattern === 'inverse_head_and_shoulders') {
-              const ls = val(0), hd = val(2), rs = val(4);
-              return [
-                base,
-                `   ・左肩: ${ls}円`,
-                `   ・頭: ${hd}円`,
-                `   ・右肩: ${rs}円`,
-                `   ・ネックライン: ${neck}円`,
-              ].join('\n');
-            }
-            if (p?.pattern === 'double_top' || p?.pattern === 'double_bottom') {
-              const a = val(0), c = val(2);
-              const label = p?.pattern === 'double_top' ? ['第1天井', '第2天井'] : ['第1底', '第2底'];
-              return [
-                base,
-                `   ・${label[0]}: ${a}円`,
-                `   ・${label[1]}: ${c}円`,
-                `   ・ネックライン: ${neck}円`,
-              ].join('\n');
-            }
-          }
-          return base;
-        });
-      };
-      lines.push('【✅ 有効なブレイク】');
-      {
-        const block = fmtArr(comp.active, 'active');
-        if (Array.isArray(block)) lines.push(...block);
-        else lines.push(block);
-      }
-      lines.push('');
-      lines.push('【❌ 無効化されたパターン】');
-      {
-        const block = fmtArr(comp.invalidated, 'invalidated');
-        if (Array.isArray(block)) lines.push(...block);
-        else lines.push(block);
-      }
-      lines.push('');
-      lines.push('【⚠️ 期限切れ】');
-      {
-        const block = fmtArr(comp.expired, 'expired');
-        if (Array.isArray(block)) lines.push(...block);
-        else lines.push(block);
-      }
-    }
-    if (view === 'full') {
-      // optional archive (older than 7 days) count only
-      try {
-        const out: any = await detectPatterns(pair, type as any, Math.max(limit * 3, 120));
-        const pats: any[] = Array.isArray(out?.data?.patterns) ? out.data.patterns : [];
-        const now = Date.now();
-        const older = pats.filter(p => {
-          const t = Date.parse(p?.range?.end || '');
-          return Number.isFinite(t) && (now - t) > 7 * 86400000;
-        }).length;
-        lines.push('');
-        lines.push('【⚪ アーカイブ】');
-        lines.push(`- 7日超過の完成済みパターン: ${older}件（省略）`);
-      } catch { /* ignore */ }
-    }
-    lines.push(tail);
-    const text = lines.join('\n');
+    linesSum.push('');
+    linesSum.push('【🟡 重要: 長期視点】');
+    linesSum.push(`週足: ${ltWeek.items.length ? ltWeek.items.map((p: any) => `${p.type}（ネックライン${p?.neckline?.[1]?.y != null ? Math.round(p.neckline[1].y).toLocaleString() : 'n/a'}円）`).slice(0, 3).join(' / ') : '該当なし'}`);
+    linesSum.push(`月足: ${ltMonth.items.length ? ltMonth.items.map((p: any) => `${p.type}（ネックライン${p?.neckline?.[1]?.y != null ? Math.round(p.neckline[1].y).toLocaleString() : 'n/a'}円）`).slice(0, 3).join(' / ') : '該当なし'}`);
+    linesSum.push('');
+    const recentDaysSum = Math.round(maxCompletedBars * (daysPerBar(String(type)) || 1));
+    linesSum.push(`【🟢 参考: 最近完成（${recentDaysSum}日以内）】`);
+    // セクション分離（有効 / 無効化 / 期限切れ）
+    const comp = (grouped as any)?.completedSummary || { active: [], invalidated: [], expired: [] };
+    const fmtArr = (arr: any[], tag: 'active' | 'invalidated' | 'expired') => {
+      if (!arr?.length) return '- 該当なし';
+      return arr.slice(0, 3).map((p: any) => {
+        const date = String(p?.breakoutDate || '').slice(0, 10) || 'n/a';
+        const ret = (typeof p?.returnPct === 'number') ? `${p.returnPct >= 0 ? '+' : ''}${p.returnPct.toFixed(2)}%` : 'n/a';
+        const neck = Number.isFinite(p?.neckline) ? Math.round(Number(p.neckline)).toLocaleString() : 'n/a';
+        const nowPx = Number.isFinite(p?.currentPrice) ? Math.round(Number(p.currentPrice)).toLocaleString() : 'n/a';
+        if (tag === 'active') return `- ${p.pattern}（${date} 完成, ${ret}）`;
+        if (tag === 'invalidated') return `- ${p.pattern}（${date} 完成 → ❌無効化, 理由: ${p?.invalidationReason || 'unknown'} / NL: ${neck}円 / 現在: ${nowPx}円）`;
+        return `- ${p.pattern}（${date} 完成 → 期限切れ, ${ret} / NL: ${neck}円）`;
+      }).join('\n');
+    };
+    linesSum.push('【✅ 有効なブレイク】');
+    linesSum.push(fmtArr(comp.active, 'active'));
+    linesSum.push('');
+    linesSum.push('【❌ 無効化されたパターン】');
+    linesSum.push(fmtArr(comp.invalidated, 'invalidated'));
+    const text = linesSum.join('\n');
     const context = {
       hasMultipleTimeframes: hasDifferentCategories,
       categories: {
@@ -3172,6 +2907,377 @@ export default async function detectFormingPatterns(
     return ok(text, { patterns: sortedEnriched, grouped, context, meta: { pair: pairNorm, type, count: enriched.length } }, createMeta(pairNorm, { type })) as any;
   }
 
+  // optional: pattern metadata for reliability/complexity and typical formation window
+  const PATTERN_METADATA: Record<string, { minDays: number; typicalDays: number; maxDays?: number; reliability: 'high' | 'medium' | 'low'; complexity: 'simple' | 'moderate' | 'complex'; note?: string }> = {
+    'double_top': { minDays: 14, typicalDays: 21, maxDays: 60, reliability: 'high', complexity: 'simple', note: 'ネックラインのブレイク＋出来高増が確認条件' },
+    'double_bottom': { minDays: 14, typicalDays: 21, maxDays: 60, reliability: 'high', complexity: 'simple', note: 'ネックライン上抜け時の出来高が重要' },
+    'triple_top': { minDays: 21, typicalDays: 60, maxDays: 180, reliability: 'high', complexity: 'moderate', note: '3点の等高性に注意（±2-3%）' },
+    'triple_bottom': { minDays: 21, typicalDays: 60, maxDays: 180, reliability: 'high', complexity: 'moderate', note: '3点の等安性に注意（±2-3%）' },
+    'head_and_shoulders': { minDays: 21, typicalDays: 60, maxDays: 365, reliability: 'high', complexity: 'moderate', note: 'ネックライン傾き・左右対称性で信頼度変化' },
+    'inverse_head_and_shoulders': { minDays: 21, typicalDays: 60, maxDays: 365, reliability: 'high', complexity: 'moderate', note: '完成後の戻り売りを想定' },
+    'triangle_descending': { minDays: 28, typicalDays: 60, maxDays: 90, reliability: 'high', complexity: 'moderate', note: 'フラットサポートの実体割れ＋出来高で信頼度上昇' },
+    'triangle_ascending': { minDays: 28, typicalDays: 60, maxDays: 90, reliability: 'medium', complexity: 'moderate' },
+    'triangle_symmetrical': { minDays: 21, typicalDays: 60, maxDays: 84, reliability: 'medium', complexity: 'moderate' },
+    'pennant': { minDays: 7, typicalDays: 14, maxDays: 21, reliability: 'medium', complexity: 'moderate' },
+    'flag': { minDays: 14, typicalDays: 21, maxDays: 28, reliability: 'medium', complexity: 'simple' },
+  };
+  const typicalString = (d: number) => {
+    if (d < 7) return `${d}日`;
+    const w = Math.round(d / 7);
+    return `${w}週間`;
+  };
 
+  const fmt = (p: any, i: number) => {
+    const start = p?.range?.start?.slice(0, 10) || 'n/a';
+    // Wedge specific formatting (falling/rising)
+    const tStr = String(p?.type || '');
+    if (tStr === 'falling_wedge' || tStr === 'rising_wedge') {
+      const rangeEndIso = (p?.range?.current as string) || '';
+      const endFmt = fmtDate(rangeEndIso);
+      const up = p?.upperLine || {};
+      const lo = p?.lowerLine || {};
+      const upSlope = (Number.isFinite(Number(up?.slope)) ? Number(up.slope).toFixed(6) : 'n/a');
+      const loSlope = (Number.isFinite(Number(lo?.slope)) ? Number(lo.slope).toFixed(6) : 'n/a');
+      const upR2 = (Number.isFinite(Number(up?.r2)) ? Number(up.r2).toFixed(3) : 'n/a');
+      const loR2 = (Number.isFinite(Number(lo?.r2)) ? Number(lo.r2).toFixed(3) : 'n/a');
+      const upT = Array.isArray(up?.touchPoints) ? up.touchPoints.length : (Number.isFinite(Number(up?.touches)) ? Number(up.touches) : 'n/a');
+      const loT = Array.isArray(lo?.touchPoints) ? lo.touchPoints.length : (Number.isFinite(Number(lo?.touches)) ? Number(lo.touches) : 'n/a');
+      const conv = Number.isFinite(Number(p?.convergenceRatio)) ? Number(p.convergenceRatio).toFixed(3) : 'n/a';
+      const compPct = Number.isFinite(Number(p?.completion)) ? Math.round(Number(p.completion) * 100) : 'n/a';
+      const apexDate = p?.apexDate ? fmtDate(String(p.apexDate)) : 'n/a';
+      const d2a = Number.isFinite(Number(p?.daysToApex)) ? `${p.daysToApex}日` : 'n/a';
+      const target = Number.isFinite(Number(p?.breakoutTarget)) ? Math.round(Number(p.breakoutTarget)).toLocaleString() + '円' : 'n/a';
+      const inval = Number.isFinite(Number(p?.invalidationPrice)) ? Math.round(Number(p.invalidationPrice)).toLocaleString() + '円' : 'n/a';
+      const formation = p?.formationPeriod?.formatted || '';
+      const status = String(p?.status || 'active');
+      const conf = Number.isFinite(Number(p?.confidence)) ? Number(p.confidence).toFixed(2) : 'n/a';
 
+      // 無効化警告の生成
+      const currentPrice = Number.isFinite(Number(p?.currentPrice)) ? Number(p.currentPrice) : null;
+      const invalidationPrice = Number.isFinite(Number(p?.invalidationPrice)) ? Number(p.invalidationPrice) : null;
+      let invalidationWarning: string | null = null;
+
+      if (status === 'invalid' && currentPrice != null && invalidationPrice != null) {
+        const pctBelow = ((currentPrice - invalidationPrice) / invalidationPrice * 100);
+        const direction = p.type === 'falling_wedge' ? '下回' : '上回';
+        invalidationWarning = `   ⚠️ 【無効化済み】現在価格¥${currentPrice.toLocaleString()}が無効化ライン¥${invalidationPrice.toLocaleString()}を${pctBelow.toFixed(1)}%${direction}っており、このパターンは既に無効化されています`;
+      } else if (status === 'near_invalidation' && currentPrice != null && invalidationPrice != null) {
+        const pctToInvalidation = Math.abs((invalidationPrice - currentPrice) / currentPrice * 100);
+        invalidationWarning = `   ⚠️ 【警告】現在価格¥${currentPrice.toLocaleString()}が無効化ライン¥${invalidationPrice.toLocaleString()}まで${pctToInvalidation.toFixed(1)}%圏内です`;
+      }
+
+      const lines = [
+        `${i + 1}. ${tStr} (完成度: ${compPct}%, パターン整合度: ${conf})`,
+        `   - 期間: ${fmtDate(start)} 〜 ${endFmt}${formation ? `（${formation}）` : ''}`,
+        `   - 上側ライン: slope=${upSlope}, r2=${upR2}, touches=${upT}`,
+        `   - 下側ライン: slope=${loSlope}, r2=${loR2}, touches=${loT}`,
+        `   - 収束率: ${conv}（小さいほど収束）`,
+        `   - アペックス: ${apexDate}（残り${d2a}）`,
+        status === 'invalid' || status === 'near_invalidation'
+          ? `   - 現在価格: ¥${currentPrice?.toLocaleString() || 'n/a'}`
+          : null,
+        `   - ブレイク目標: ${target} / 無効化: ${inval}`,
+        `   - 状態: ${status}${status === 'invalid' ? '（無効化済み）' : status === 'near_invalidation' ? '（無効化寸前）' : ''}`,
+        invalidationWarning,
+      ].filter(Boolean);
+      return lines.join('\n');
+    }
+    // confirmed pivots by role（順序に依存しない安全な参照）
+    const cps = Array.isArray(p?.confirmedPivots) ? p.confirmedPivots : [];
+    const byRole = (role: string) => cps.find((cp: any) => String(cp?.role) === role);
+    const left = byRole('left_shoulder') || cps[0];
+    const headPivot = byRole('head') || cps.find((cp: any) => String(cp?.role).includes('head')) || cps[1];
+    const preHeadPeak = byRole('pre_head_peak');
+    const postHeadPeak = byRole('post_head_peak');
+    const preHeadValley = byRole('pre_head_valley');
+    const postHeadValley = byRole('post_head_valley');
+    // legacy fallbacks
+    const valleyOrPeak = headPivot || cps[1];
+    const afterHead = postHeadPeak || postHeadValley || cps[2];
+    const forming = p.formingPivots?.[0];
+    const formingRole = String(forming?.role || '');
+    const nl = Array.isArray(p.neckline) && p.neckline.length === 2 ? p.neckline : null;
+    const nlStr = nl ? (nl[0].y === nl[1].y ? `${Math.round(nl[0].y).toLocaleString()}円（水平）` : `${Math.round(nl[0].y).toLocaleString()}円 → ${Math.round(nl[1].y).toLocaleString()}円`) : 'n/a';
+    // 形成期間は右肩確定時点まで（確定していない場合のみ現在まで）
+    const periodBars = Number.isFinite(p?.formationPeriod?.bars) ? Number(p.formationPeriod.bars) : Math.max(0, (forming?.idx ?? lastIdx) - (left?.idx ?? 0));
+    const periodFmt = formatPeriod(periodBars, type);
+    // 表示上の範囲はネックラインアンカー（range.start ↔ range.current）を優先
+    // まず「肩区間（range）」を優先し、なければフォールバック
+    const rangeStartIso = (p?.range?.start as string) || (p?.rangeAnchors?.startIso as string) || (p?.formationPeriod?.start as string) || (left?.isoTime as string);
+    const rangeEndIso = (p?.range?.current as string) || (p?.rangeAnchors?.endIso as string) || (p?.formationPeriod?.end as string) || (forming?.isoTime as string) || (afterHead?.isoTime as string);
+    const startFmt = fmtDate(rangeStartIso);
+    const formingFmt = fmtDate(forming?.isoTime);
+    const covRatio = Number(limit) > 0 ? (periodBars / Number(limit)) : 0;
+    const covPctStr = `${(covRatio * 100).toFixed(1)}%`;
+    const scaleOk = p?.scale_validation?.status === 'appropriate';
+    // Labels by pattern type
+    let leftLabel = '左肩';
+    let midLabel = '谷';
+    let rightLabel = '右肩';
+    let thirdLabel: string | null = null;
+    if (p.type === 'double_bottom') {
+      leftLabel = '左谷';
+      midLabel = '山';
+      rightLabel = '右谷';
+      thirdLabel = null;
+    } else if (p.type === 'double_top') {
+      leftLabel = '左肩';
+      midLabel = '谷';
+      rightLabel = '右肩';
+      thirdLabel = null;
+    } else if (p.type === 'head_and_shoulders') {
+      leftLabel = '左肩';
+      midLabel = '頭';
+      rightLabel = '右肩';
+      thirdLabel = '頭後の谷';
+    } else if (p.type === 'inverse_head_and_shoulders') {
+      leftLabel = '左肩';
+      midLabel = '頭';
+      rightLabel = '右肩';
+      thirdLabel = '頭後の山';
+    }
+    const tfLabel = (() => {
+      const map: Record<string, string> = {
+        '1day': '日足',
+        '1week': '週足',
+        '1month': '月足',
+        '1hour': '1時間足',
+        '4hour': '4時間足',
+        '8hour': '8時間足',
+        '12hour': '12時間足',
+        '15min': '15分足',
+        '30min': '30分足',
+        '5min': '5分足',
+        '1min': '1分足',
+      };
+      return map[type] || type;
+    })();
+    const meta = PATTERN_METADATA[String(p.type)] || null;
+    // ネックライン乖離と状態（未ブレイク/直近ブレイク）を補足
+    let stateLines: string[] = [];
+    try {
+      const curPx = Number(candles[lastIdx]?.close);
+      const nlY = nl ? Number(nl[1]?.y ?? nl[0]?.y) : null;
+      if (Number.isFinite(curPx) && Number.isFinite(nlY)) {
+        const diffPct = ((curPx - (nlY as number)) / Math.max(1e-12, nlY as number)) * 100;
+        const sign = diffPct >= 0 ? '+' : '';
+        const dir = (p.type === 'inverse_head_and_shoulders' || p.type === 'double_bottom' || p.type === 'triple_bottom') ? '上抜け' : '下抜け';
+        const buf = 2.0; // %
+        const crossed = (p.type === 'inverse_head_and_shoulders' || p.type === 'double_bottom' || p.type === 'triple_bottom')
+          ? (diffPct > buf)
+          : (diffPct < -buf);
+        const status = p?.status === 'recent_breakout' ? `直近ブレイク（${dir}）` : (crossed ? `ブレイク済み（${dir}）` : `未ブレイク（乖離 ${sign}${diffPct.toFixed(1)}%）`);
+        stateLines.push(`   - 状態: ${status}`);
+      }
+    } catch { /* noop */ }
+    // 鮮度（右肩からの経過本数）と乖離の補助行
+    let freshnessLine: string | null = null;
+    try {
+      const rs = forming?.idx != null ? Math.max(0, lastIdx - forming.idx) : null;
+      if (rs != null) freshnessLine = `   - 鮮度: 右肩から${rs}本（基準${maxBarsFromLastPivot}本以内で鮮度高）`;
+    } catch { /* ignore */ }
+    const lines = [
+      `${i + 1}. 【${tfLabel}・${periodFmt}】${p.type} (完成度: ${Math.round(p.completion * 100)}%, パターン整合度: ${p.confidence?.toFixed(2) ?? 'n/a'})`,
+      `   - 形成区間（肩→肩）: ${startFmt} 〜 ${fmtDate(rangeEndIso)}`,
+      `   - カバレッジ: ${covPctStr} ${scaleOk ? '✅' : '⚠️'}`,
+      left ? `   - ${leftLabel}: ${Math.round(left.price).toLocaleString()}円（${fmtDate(left.isoTime)}確定）` : null,
+      valleyOrPeak ? `   - ${midLabel}: ${Math.round(valleyOrPeak.price).toLocaleString()}円（${fmtDate(valleyOrPeak.isoTime)}確定）` : null,
+      // 逆三尊: 頭前の山/頭後の山 を明示
+      (p.type === 'inverse_head_and_shoulders' && preHeadPeak) ? `   - 頭前の山: ${Math.round(preHeadPeak.price).toLocaleString()}円（${fmtDate(preHeadPeak.isoTime)}確定）` : null,
+      (p.type === 'inverse_head_and_shoulders' && postHeadPeak) ? `   - 頭後の山: ${Math.round(postHeadPeak.price).toLocaleString()}円（${fmtDate(postHeadPeak.isoTime)}確定）` : null,
+      // 三尊: 頭前/頭後の谷 を明示
+      (p.type === 'head_and_shoulders' && preHeadValley) ? `   - 頭前の谷: ${Math.round(preHeadValley.price).toLocaleString()}円（${fmtDate(preHeadValley.isoTime)}確定）` : null,
+      (p.type === 'head_and_shoulders' && postHeadValley) ? `   - 頭後の谷: ${Math.round(postHeadValley.price).toLocaleString()}円（${fmtDate(postHeadValley.isoTime)}確定）` : null,
+      // 役割ピボットが欠ける場合は従来のthirdLabelで補う
+      (!((p.type === 'inverse_head_and_shoulders' && (preHeadPeak || postHeadPeak)) || (p.type === 'head_and_shoulders' && (preHeadValley || postHeadValley))) && thirdLabel && afterHead)
+        ? `   - ${thirdLabel}: ${Math.round(afterHead.price).toLocaleString()}円（${fmtDate(afterHead.isoTime)}確定）` : null,
+      forming ? (formingRole === 'right_shoulder'
+        ? `   - ${rightLabel}: 確定 ${Math.round(forming.price).toLocaleString()}円（${formingFmt}）`
+        : `   - ${rightLabel}: 形成中 ${Math.round(forming.price).toLocaleString()}円（${formingFmt}）`) : null,
+      `   - 推定ネックライン: ${nlStr}`,
+      ...stateLines,
+      freshnessLine,
+      p?.scale_validation?.warning ? `   【スケール警告】${p.scale_validation.warning}` : null,
+      p?.scale_validation?.recommended_limit ? `   【推奨表示範囲】limit=${p.scale_validation.recommended_limit}` : null,
+      p?.scale_validation?.timeframe_suggestion ? `   【時間軸の提案】${p.scale_validation.timeframe_suggestion}` : null,
+      meta ? `   【パターン情報】典型形成: ${typicalString(meta.typicalDays)} / 信頼性: ${meta.reliability}${meta.note ? ` / メモ: ${meta.note}` : ''}` : null,
+      '',
+      '   【シナリオ】',
+      `   ✓ 完成条件: ${p.scenarios?.completion?.priceRange?.[0]?.toLocaleString?.() || 'n/a'}-${p.scenarios?.completion?.priceRange?.[1]?.toLocaleString?.() || 'n/a'}円で反転${p.type === 'double_top' ? '下落' : '上昇'}`,
+      `   ✓ 完成後の注目: ネックライン${nl ? Math.round(nl[0].y).toLocaleString() : 'n/a'}円のブレイク`,
+      `   ✗ 無効化条件: ${p.scenarios?.invalidation?.priceLevel?.toLocaleString?.() || 'n/a'}円を${p.type === 'double_top' ? '上' : '下'}抜け`,
+      '',
+      '   【次のアクション】',
+      ...(Array.isArray(p.nextSteps) ? p.nextSteps.map((s: string) => `   - ${s}`) : []),
+    ].filter(Boolean);
+    return lines.join('\n');
+  };
+
+  const list = (view === 'full' ? enriched : enriched.slice(0, 5)).map(fmt).join('\n\n');
+  const tail = "\n\n形成中パターンについて:\n  完成度60%以上 = 形成が進んでいる\n  完成度40-60% = 初期段階（不確実）\n  パターン整合度は完成後の予想整合度";
+
+  // Priority-structured content (detailed/full)
+  const lines: string[] = [];
+  lines.push(summary);
+  lines.push('');
+  lines.push('【検出ルール】同一タイプで期間重複50%以上は「直近まで含む＞完成度＞整合度」の優先度で1件のみ表示（重複は整理）');
+  lines.push('【🔴 最重要: 現在進行形】');
+  if (enriched.length) {
+    if (hasDifferentCategories) {
+      lines.push('複数の重要なパターンが検出されています。短期的な動きと中期的な構造の両方を考慮してください。');
+      lines.push('');
+      if (categorized.short_term.length) {
+        lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        lines.push('【短期・鮮度重視】直近数日〜1週間の動き');
+        lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        const items = (view === 'full' ? categorized.short_term : categorized.short_term.slice(0, 2)).map((p: any, i: number) => fmt(p, i));
+        lines.push(items.join('\n\n'));
+        lines.push('');
+      }
+      if (categorized.structural.length) {
+        lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        lines.push('【中期・構造重視】1週間〜1ヶ月の大きな流れ');
+        lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━');
+        const items = (view === 'full' ? categorized.structural : categorized.structural.slice(0, 2)).map((p: any, i: number) => fmt(p, i));
+        lines.push(items.join('\n\n'));
+        lines.push('');
+      }
+      if (categorized.watchlist.length) {
+        lines.push('【要監視】参考情報');
+        const items = (view === 'full' ? categorized.watchlist : categorized.watchlist.slice(0, 1)).map((p: any) => `- ${p.type}（完成度${Math.round(p.completion * 100)}%）`);
+        lines.push(items.join('\n'));
+      }
+      if (categorized.invalid.length) {
+        lines.push('');
+        lines.push('【⚠️ 無効化済み】');
+        const items = categorized.invalid.map((p: any) => {
+          const comp = Math.round(p.completion * 100);
+          const currentPrice = Number.isFinite(p.currentPrice) ? p.currentPrice.toLocaleString() : 'n/a';
+          const invalPrice = Number.isFinite(p.invalidationPrice) ? p.invalidationPrice.toLocaleString() : 'n/a';
+          const reason = p.status === 'invalid' ? '無効化ライン突破' : '無効化寸前';
+          return `- ${p.type}（元の完成度: ${comp}%, ${reason}）\n  現在価格: ¥${currentPrice}、無効化ライン: ¥${invalPrice}`;
+        });
+        lines.push(items.join('\n'));
+      }
+      if (relationships.length) {
+        const rel = relationships[0];
+        lines.push('');
+        lines.push('【パターン間の関係（要点）】');
+        const note = rel?.conflict === 'directional'
+          ? '短期は反発サイン、中期は天井サイン → 調整局面の可能性'
+          : (rel?.overlap ? '期間が重複しており、相互に影響する可能性' : '関係なし');
+        lines.push(`- ${rel.pattern1} × ${rel.pattern2}: ${note}`);
+      }
+    } else {
+      const formingBlock = (view === 'full' ? sortedEnriched : sortedEnriched.slice(0, 5)).map((p, i) => fmt(p, i)).join('\n\n');
+      lines.push(formingBlock);
+    }
+    // attach history brief lines
+    const histBrief = sortedEnriched.map((p: any) => {
+      const hc = p?.historicalCases;
+      if (!hc) return null;
+      return `   ↳ 過去${historyDays}日: 件数${hc.count} 成功率${(hc.successRate * 100).toFixed(0)}% 平均変動${hc.avgBreakoutMove >= 0 ? '+' : ''}${hc.avgBreakoutMove}%`;
+    }).filter(Boolean).join('\n');
+    if (histBrief) lines.push(histBrief);
+  } else {
+    lines.push('該当なし');
+  }
+  lines.push('');
+  lines.push('【🟡 重要: 長期視点】');
+  const weekLines = ltWeek.items.slice(0, 3).map((p: any) => `- 週足 ${p.type}（ネックライン${p?.neckline?.[1]?.y != null ? Math.round(p.neckline[1].y).toLocaleString() : 'n/a'}円）`).join('\n');
+  const monthLines = ltMonth.items.slice(0, 3).map((p: any) => `- 月足 ${p.type}（ネックライン${p?.neckline?.[1]?.y != null ? Math.round(p.neckline[1].y).toLocaleString() : 'n/a'}円）`).join('\n');
+  lines.push(weekLines || '- 該当なし');
+  lines.push(monthLines || '- 該当なし');
+  lines.push('');
+  lines.push(`【🟢 参考: 最近完成（${Math.round(maxCompletedBars * (daysPerBar(String(type)) || 1))}日以内）】`);
+  {
+    const comp = (grouped as any)?.completedSummary || { active: [], invalidated: [], expired: [] };
+    const fmtArr = (arr: any[], tag: 'active' | 'invalidated' | 'expired') => {
+      if (!arr?.length) return '- 該当なし';
+      return arr.slice(0, 5).map((p: any) => {
+        const date = String(p?.breakoutDate || '').slice(0, 10) || 'n/a';
+        const ret = (typeof p?.returnPct === 'number') ? `${p.returnPct >= 0 ? '+' : ''}${p.returnPct.toFixed(2)}%` : 'n/a';
+        const neck = Number.isFinite(p?.neckline) ? Math.round(Number(p.neckline)).toLocaleString() : 'n/a';
+        const nowPx = Number.isFinite(p?.currentPrice) ? Math.round(Number(p.currentPrice)).toLocaleString() : 'n/a';
+        const base = (tag === 'active')
+          ? `- ${p.pattern}（${date} 完成, ${ret}）`
+          : (tag === 'invalidated'
+            ? `- ${p.pattern}（${date} 完成 → ❌無効化, 理由: ${p?.invalidationReason || 'unknown'} / NL: ${neck}円 / 現在: ${nowPx}円）`
+            : `- ${p.pattern}（${date} 完成 → 期限切れ, ${ret} / NL: ${neck}円）`);
+        // 追加詳細（view=detailed/full のみ）
+        if (view === 'detailed' || view === 'full') {
+          const piv: Array<{ idx: number; price: number }> = Array.isArray(p?.pivots) ? p.pivots : [];
+          const val = (i?: number) => (Number.isFinite(i as any) && piv[i as number]) ? Math.round(Number(piv[i as number].price)).toLocaleString() : 'n/a';
+          if (p?.pattern === 'head_and_shoulders' || p?.pattern === 'inverse_head_and_shoulders') {
+            const ls = val(0), hd = val(2), rs = val(4);
+            return [
+              base,
+              `   ・左肩: ${ls}円`,
+              `   ・頭: ${hd}円`,
+              `   ・右肩: ${rs}円`,
+              `   ・ネックライン: ${neck}円`,
+            ].join('\n');
+          }
+          if (p?.pattern === 'double_top' || p?.pattern === 'double_bottom') {
+            const a = val(0), c = val(2);
+            const label = p?.pattern === 'double_top' ? ['第1天井', '第2天井'] : ['第1底', '第2底'];
+            return [
+              base,
+              `   ・${label[0]}: ${a}円`,
+              `   ・${label[1]}: ${c}円`,
+              `   ・ネックライン: ${neck}円`,
+            ].join('\n');
+          }
+        }
+        return base;
+      });
+    };
+    lines.push('【✅ 有効なブレイク】');
+    {
+      const block = fmtArr(comp.active, 'active');
+      if (Array.isArray(block)) lines.push(...block);
+      else lines.push(block);
+    }
+    lines.push('');
+    lines.push('【❌ 無効化されたパターン】');
+    {
+      const block = fmtArr(comp.invalidated, 'invalidated');
+      if (Array.isArray(block)) lines.push(...block);
+      else lines.push(block);
+    }
+    lines.push('');
+    lines.push('【⚠️ 期限切れ】');
+    {
+      const block = fmtArr(comp.expired, 'expired');
+      if (Array.isArray(block)) lines.push(...block);
+      else lines.push(block);
+    }
+  }
+  if (view === 'full') {
+    // optional archive (older than 7 days) count only
+    try {
+      const out: any = await detectPatterns(pair, type as any, Math.max(limit * 3, 120));
+      const pats: any[] = Array.isArray(out?.data?.patterns) ? out.data.patterns : [];
+      const now = Date.now();
+      const older = pats.filter(p => {
+        const t = Date.parse(p?.range?.end || '');
+        return Number.isFinite(t) && (now - t) > 7 * 86400000;
+      }).length;
+      lines.push('');
+      lines.push('【⚪ アーカイブ】');
+      lines.push(`- 7日超過の完成済みパターン: ${older}件（省略）`);
+    } catch { /* ignore */ }
+  }
+  lines.push(tail);
+  const text = lines.join('\n');
+  const context = {
+    hasMultipleTimeframes: hasDifferentCategories,
+    categories: {
+      short_term: categorized.short_term.map((p: any) => ({ type: p.type, completion: p.completion, context: p.context })),
+      structural: categorized.structural.map((p: any) => ({ type: p.type, completion: p.completion, context: p.context })),
+      watchlist: categorized.watchlist.map((p: any) => ({ type: p.type, completion: p.completion, context: p.context })),
+    },
+    relationships,
+  };
+  return ok(text, { patterns: sortedEnriched, grouped, context, meta: { pair: pairNorm, type, count: enriched.length } }, createMeta(pairNorm, { type })) as any;
 }

@@ -12,6 +12,7 @@ import getCircuitBreakInfo from './get_circuit_break_info.js';
 import getOrderbookPressure from './get_orderbook_pressure.js';
 import getVolatilityMetrics from './get_volatility_metrics.js';
 import detectWhaleEvents from './detect_whale_events.js';
+import analyzeCandlePatterns from './analyze_candle_patterns.js';
 
 export {
   getTicker,
@@ -27,6 +28,7 @@ export {
   getOrderbookPressure,
   getVolatilityMetrics,
   detectWhaleEvents,
+  analyzeCandlePatterns,
 };
 
 

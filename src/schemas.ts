@@ -1172,3 +1172,107 @@ export const AnalyzeSupportResistanceOutputSchema = z.union([
   z.object({ ok: z.literal(true), summary: z.string(), content: z.array(z.object({ type: z.literal('text'), text: z.string() })).optional(), data: AnalyzeSupportResistanceDataSchemaOut, meta: AnalyzeSupportResistanceMetaSchemaOut }),
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);
+
+// === Candle Patterns (2-bar patterns: engulfing, harami, etc.) ===
+
+export const CandlePatternTypeEnum = z.enum([
+  'bullish_engulfing',
+  'bearish_engulfing',
+  'bullish_harami',
+  'bearish_harami',
+  'tweezer_top',
+  'tweezer_bottom',
+  'dark_cloud_cover',
+  'piercing_line',
+]);
+
+export const AnalyzeCandlePatternsInputSchema = z.object({
+  pair: z.literal('btc_jpy').optional().default('btc_jpy'),
+  timeframe: z.literal('1day').optional().default('1day'),
+  window_days: z.number().int().min(3).max(10).optional().default(5),
+  focus_last_n: z.number().int().min(2).max(5).optional().default(3),
+  patterns: z.array(CandlePatternTypeEnum).optional().describe('Patterns to detect. If omitted, all patterns are checked.'),
+  history_lookback_days: z.number().int().min(30).max(365).optional().default(180),
+  history_horizons: z.array(z.number().int().min(1).max(10)).optional().default([1, 3, 5]),
+  allow_partial_patterns: z.boolean().optional().default(true),
+});
+
+const HistoryHorizonStatsSchema = z.object({
+  avg_return: z.number(),
+  win_rate: z.number(),
+  sample: z.number().int(),
+});
+
+const HistoryStatsSchema = z.object({
+  lookback_days: z.number().int(),
+  occurrences: z.number().int(),
+  horizons: z.record(z.string(), HistoryHorizonStatsSchema),
+});
+
+const LocalContextSchema = z.object({
+  trend_before: z.enum(['up', 'down', 'neutral']),
+  volatility_level: z.enum(['low', 'medium', 'high']),
+});
+
+const DetectedCandlePatternSchema = z.object({
+  pattern: CandlePatternTypeEnum,
+  pattern_jp: z.string(),
+  direction: z.enum(['bullish', 'bearish']),
+  strength: z.number().min(0).max(1),
+  candle_range_index: z.tuple([z.number().int(), z.number().int()]),
+  uses_partial_candle: z.boolean(),
+  status: z.enum(['confirmed', 'forming']),
+  local_context: LocalContextSchema,
+  history_stats: HistoryStatsSchema.nullable(),
+});
+
+const WindowCandleSchema = z.object({
+  timestamp: z.string(),
+  open: z.number(),
+  high: z.number(),
+  low: z.number(),
+  close: z.number(),
+  volume: z.number(),
+  is_partial: z.boolean(),
+});
+
+export const AnalyzeCandlePatternsDataSchemaOut = z.object({
+  pair: z.string(),
+  timeframe: z.string(),
+  snapshot_time: z.string(),
+  window: z.object({
+    from: z.string(),
+    to: z.string(),
+    candles: z.array(WindowCandleSchema).describe(
+      'CRITICAL: Array order is [oldest, ..., newest]. index 0 = most distant, index n-1 = latest (possibly partial).'
+    ),
+  }),
+  recent_patterns: z.array(DetectedCandlePatternSchema),
+  summary: z.string(),
+});
+
+export const AnalyzeCandlePatternsMetaSchemaOut = z.object({
+  pair: z.string(),
+  fetchedAt: z.string(),
+  timeframe: z.string(),
+  window_days: z.number().int(),
+  patterns_checked: z.array(CandlePatternTypeEnum),
+  history_lookback_days: z.number().int(),
+  history_horizons: z.array(z.number().int()),
+});
+
+export const AnalyzeCandlePatternsOutputSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    summary: z.string(),
+    content: z.array(z.object({ type: z.literal('text'), text: z.string() })).optional(),
+    data: AnalyzeCandlePatternsDataSchemaOut,
+    meta: AnalyzeCandlePatternsMetaSchemaOut,
+  }),
+  z.object({
+    ok: z.literal(false),
+    summary: z.string(),
+    data: z.object({}).passthrough(),
+    meta: z.object({ errorType: z.string() }).passthrough(),
+  }),
+]);

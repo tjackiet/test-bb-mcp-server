@@ -3,6 +3,22 @@ import { ok, fail } from '../lib/result.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema, PatternTypeEnum } from '../src/schemas.js';
 import { generatePatternDiagram } from '../src/utils/pattern-diagrams.js';
 
+/**
+ * detect_patterns - 過去の統計分析・バックテスト向けパターン検出
+ * 
+ * 設計思想:
+ * - 目的: 完成したパターンを厳密に検出し、統計的に信頼性の高いデータを提供
+ * - 特徴: swingDepth パラメータによる厳密なスイング検出でパターン品質を重視
+ * - ブレイク検出: ATR * 0.5 バッファ、最初の明確なブレイクで終点を確定
+ * - 用途: 「過去の成功率は？」「典型的な期間は？」「aftermath は？」
+ * 
+ * 注意: detect_forming_patterns との違い
+ * - 本ツールはより厳密なスイング検出を使用するため、回帰線の傾きが異なる
+ * - detect_forming_patterns はシンプルなピボット検出（前後1本比較）を使用
+ * - 結果として、ブレイク日が数日ずれる場合があるが、これは設計上の意図的な違い
+ * - patterns: 統計的信頼性に有利 / forming: 早期警告に有利
+ */
+
 type DetectIn = typeof DetectPatternsInputSchema extends { _type: infer T } ? T : any;
 
 export default async function detectPatterns(
@@ -203,6 +219,81 @@ export default async function detectPatterns(
       const r2 = ssTot <= 0 ? 0 : Math.max(0, Math.min(1, 1 - (ssRes / ssTot)));
       const valueAt = (x: number) => slope * x + intercept;
       return { slope, intercept, r2, valueAt };
+    }
+    // ATR計算（ブレイク検出用）
+    function calcATR(from: number, to: number, period: number = 14): number {
+      const start = Math.max(1, from);
+      const end = Math.max(start + 1, to);
+      const tr: number[] = [];
+      for (let i = start; i <= end; i++) {
+        const hi = Number(candles[i]?.high ?? NaN);
+        const lo = Number(candles[i]?.low ?? NaN);
+        const pc = Number(candles[i - 1]?.close ?? NaN);
+        if (!Number.isFinite(hi) || !Number.isFinite(lo) || !Number.isFinite(pc)) continue;
+        const r1 = hi - lo;
+        const r2 = Math.abs(hi - pc);
+        const r3 = Math.abs(lo - pc);
+        tr.push(Math.max(r1, r2, r3));
+      }
+      if (!tr.length) return 0;
+      const n = Math.min(period, tr.length);
+      const slice = tr.slice(-n);
+      return slice.reduce((s, v) => s + v, 0) / slice.length;
+    }
+    // ウェッジのブレイク検出（持続的なブレイクの開始位置を検出）
+    function detectWedgeBreak(
+      wedgeType: 'falling_wedge' | 'rising_wedge',
+      upper: { valueAt: (x: number) => number },
+      lower: { valueAt: (x: number) => number },
+      startIdx: number,
+      endIdx: number,
+      lastIdx: number,
+      atr: number
+    ): { detected: boolean; breakIdx: number; breakIsoTime: string | null; breakPrice: number | null } {
+      // パターン形成がある程度進んでから（最低20本または期間の30%経過後）スキャン開始
+      const patternBars = endIdx - startIdx;
+      const scanStart = startIdx + Math.max(20, Math.floor(patternBars * 0.3));
+      const scanEnd = Math.max(endIdx, lastIdx);
+
+      // 最初にブレイクが発生した位置を記録（一度ブレイクしたらリセットしない）
+      let firstBreakIdx = -1;
+
+      for (let i = scanStart; i <= scanEnd; i++) {
+        const close = Number(candles[i]?.close ?? NaN);
+        if (!Number.isFinite(close)) continue;
+
+        const uLine = upper.valueAt(i);
+        const lLine = lower.valueAt(i);
+        if (!Number.isFinite(uLine) || !Number.isFinite(lLine)) continue;
+
+        if (wedgeType === 'falling_wedge') {
+          // 下側ラインを実体ベースで下抜け（ATR * 0.5 バッファ）
+          if (close < lLine - atr * 0.5) {
+            if (firstBreakIdx === -1) {
+              firstBreakIdx = i;
+              break; // 最初のブレイクを見つけたら終了
+            }
+          }
+        } else {
+          // 上側ラインを実体ベースで上抜け（ATR * 0.5 バッファ）
+          if (close > uLine + atr * 0.5) {
+            if (firstBreakIdx === -1) {
+              firstBreakIdx = i;
+              break; // 最初のブレイクを見つけたら終了
+            }
+          }
+        }
+      }
+
+      if (firstBreakIdx !== -1) {
+        return {
+          detected: true,
+          breakIdx: firstBreakIdx,
+          breakIsoTime: (candles[firstBreakIdx] as any)?.isoTime ?? null,
+          breakPrice: Number(candles[firstBreakIdx]?.close ?? NaN),
+        };
+      }
+      return { detected: false, breakIdx: -1, breakIsoTime: null, breakPrice: null };
     }
     function generateWindows(totalBars: number, minSize: number, maxSize: number, step: number): Array<{ startIdx: number; endIdx: number }> {
       const out: Array<{ startIdx: number; endIdx: number }> = [];
@@ -1333,8 +1424,32 @@ export default async function detectPatterns(
           continue;
         }
         const start = (candles[w.startIdx] as any)?.isoTime;
-        const end = (candles[w.endIdx] as any)?.isoTime;
-        if (!start || !end) continue;
+        const theoreticalEnd = (candles[w.endIdx] as any)?.isoTime;
+        if (!start || !theoreticalEnd) continue;
+
+        // ブレイク検出
+        const lastIdx = candles.length - 1;
+        const atr = calcATR(w.startIdx, w.endIdx, 14);
+        const breakInfo = detectWedgeBreak(wedgeType, upper, lower, w.startIdx, w.endIdx, lastIdx, atr);
+
+
+        // 終点: ブレイクが検出された場合はブレイク日、そうでなければウィンドウ終端
+        const actualEndIdx = breakInfo.detected ? breakInfo.breakIdx : w.endIdx;
+        const end = (candles[actualEndIdx] as any)?.isoTime ?? theoreticalEnd;
+
+        // ブレイク方向の判定
+        let breakoutDirection: 'up' | 'down' | null = null;
+        if (breakInfo.detected && Number.isFinite(breakInfo.breakPrice)) {
+          const breakPrice = breakInfo.breakPrice as number;
+          const lLineAtBreak = lower.valueAt(breakInfo.breakIdx);
+          const uLineAtBreak = upper.valueAt(breakInfo.breakIdx);
+          if (breakPrice < lLineAtBreak - atr * 0.3) {
+            breakoutDirection = 'down';
+          } else if (breakPrice > uLineAtBreak + atr * 0.3) {
+            breakoutDirection = 'up';
+          }
+        }
+
         const confidence = Math.max(0, Math.min(1, Number(score.toFixed(2))));
         // ダイアグラム用にタッチポイントから主要点を間引きして pivots を構成
         const upTouchPts = (touches.upperTouches || []).filter((t: any) => !t.isBreak).map((t: any) => ({ idx: t.index, kind: 'H' as const }));
@@ -1343,9 +1458,9 @@ export default async function detectPatterns(
         const downsample = (pts: Array<{ idx: number; kind: 'H' | 'L' }>, maxPoints = 6) => {
           if (pts.length <= maxPoints) return pts;
           const out: typeof pts = [];
-          const lastIdx = pts.length - 1;
+          const lastIdxPts = pts.length - 1;
           for (let i = 0; i < maxPoints; i++) {
-            const pos = Math.round((i / Math.max(1, maxPoints - 1)) * lastIdx);
+            const pos = Math.round((i / Math.max(1, maxPoints - 1)) * lastIdxPts);
             out.push(pts[pos]);
           }
           // 重複を除去（同じ idx が選ばれた場合）
@@ -1367,20 +1482,41 @@ export default async function detectPatterns(
             { start, end }
           );
         } catch { /* noop */ }
+
+        // aftermath情報（ブレイク後の結果）
+        // falling_wedge: 上方ブレイクが成功、下方ブレイクは失敗
+        // rising_wedge: 下方ブレイクが成功、上方ブレイクは失敗
+        const isSuccessfulBreakout = breakInfo.detected ? (
+          wedgeType === 'falling_wedge'
+            ? breakoutDirection === 'up'
+            : breakoutDirection === 'down'
+        ) : false;
+
+        const aftermath = breakInfo.detected ? {
+          breakoutDate: breakInfo.breakIsoTime,
+          breakoutConfirmed: true,
+          targetReached: false, // TODO: 目標価格到達の判定を追加
+          outcome: isSuccessfulBreakout
+            ? (wedgeType === 'falling_wedge' ? 'bullish_breakout' : 'bearish_breakout')
+            : (wedgeType === 'falling_wedge' ? 'bearish_breakdown' : 'bullish_breakdown'),
+        } : undefined;
+
         push(patterns, {
           type: wedgeType,
           confidence,
           range: { start, end },
+          ...(aftermath ? { aftermath } : {}),
           ...(diagram ? { structureDiagram: diagram } : {})
         });
         debugCandidates.push({
           type: wedgeType,
           accepted: true,
           reason: 'revamped_ok',
-          indices: [w.startIdx, w.endIdx],
+          indices: [w.startIdx, actualEndIdx],
           details: {
             slopeHigh: upper.slope, slopeLow: lower.slope, r2High: upper.r2, r2Low: lower.r2,
-            converge: conv, touches: { up: touches.upperQuality, lo: touches.lowerQuality }, alternation, insideRatio, score
+            converge: conv, touches: { up: touches.upperQuality, lo: touches.lowerQuality }, alternation, insideRatio, score,
+            breakInfo: breakInfo.detected ? { ...breakInfo, direction: breakoutDirection } : null
           }
         });
       }
