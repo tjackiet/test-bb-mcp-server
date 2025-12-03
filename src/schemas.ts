@@ -378,8 +378,8 @@ export const VolumeStatsSchema = z.object({
   judgment: z.string(),
 });
 
-export const GetCandlesDataSchemaOut = z.object({ 
-  raw: z.unknown(), 
+export const GetCandlesDataSchemaOut = z.object({
+  raw: z.unknown(),
   normalized: z.array(CandleSchema),
   keyPoints: KeyPointsSchema.optional(),
   volumeStats: VolumeStatsSchema.nullable().optional(),
@@ -691,6 +691,15 @@ export const DetectedPatternSchema = z.object({
     svg: z.string(),
     artifact: z.object({ identifier: z.string(), title: z.string() }),
   }).optional(),
+  // 統合: パターンのステータス（形成中/完成度近し/完成済み）
+  status: z.enum(['forming', 'near_completion', 'completed']).optional(),
+  // 形成中パターン用フィールド
+  apexDate: z.string().optional(),           // アペックス（頂点）到達予定日
+  daysToApex: z.number().int().optional(),   // アペックスまでの日数
+  completionPct: z.number().int().optional(), // 完成度（%）
+  // 完成済みパターン用フィールド
+  breakoutDate: z.string().optional(),       // ブレイクアウト日
+  daysSinceBreakout: z.number().int().optional(), // ブレイクアウトからの経過日数
   aftermath: z
     .object({
       breakoutDate: z.string().nullable().optional(),
@@ -1189,6 +1198,10 @@ export const CandlePatternTypeEnum = z.enum([
 export const AnalyzeCandlePatternsInputSchema = z.object({
   pair: z.literal('btc_jpy').optional().default('btc_jpy'),
   timeframe: z.literal('1day').optional().default('1day'),
+  // as_of: 主要パラメータ名（ISO形式 "2025-11-05" または YYYYMMDD "20251105" を受け付け）
+  as_of: z.string().optional().describe('Date to analyze (ISO "2025-11-05" or YYYYMMDD "20251105"). If omitted, uses latest data.'),
+  // date: 互換性のため残す（as_of が優先）
+  date: z.string().regex(/^\d{8}$/).optional().describe('DEPRECATED: Use as_of instead. YYYYMMDD format.'),
   window_days: z.number().int().min(3).max(10).optional().default(5),
   focus_last_n: z.number().int().min(2).max(5).optional().default(3),
   patterns: z.array(CandlePatternTypeEnum).optional().describe('Patterns to detect. If omitted, all patterns are checked.'),
@@ -1255,6 +1268,8 @@ export const AnalyzeCandlePatternsMetaSchemaOut = z.object({
   pair: z.string(),
   fetchedAt: z.string(),
   timeframe: z.string(),
+  as_of: z.string().nullable().describe('Original input value (ISO or YYYYMMDD)'),
+  date: z.string().nullable().describe('YYYYMMDD normalized, null for latest'),
   window_days: z.number().int(),
   patterns_checked: z.array(CandlePatternTypeEnum),
   history_lookback_days: z.number().int(),
@@ -1268,6 +1283,61 @@ export const AnalyzeCandlePatternsOutputSchema = z.union([
     content: z.array(z.object({ type: z.literal('text'), text: z.string() })).optional(),
     data: AnalyzeCandlePatternsDataSchemaOut,
     meta: AnalyzeCandlePatternsMetaSchemaOut,
+  }),
+  z.object({
+    ok: z.literal(false),
+    summary: z.string(),
+    data: z.object({}).passthrough(),
+    meta: z.object({ errorType: z.string() }).passthrough(),
+  }),
+]);
+
+// === Candle Pattern Diagram (2-bar pattern visualization) ===
+
+const DiagramCandleSchema = z.object({
+  date: z.string().describe('Display date e.g. "11/6(木)"'),
+  open: z.number(),
+  high: z.number(),
+  low: z.number(),
+  close: z.number(),
+  type: z.enum(['bullish', 'bearish']),
+  isPartial: z.boolean().optional(),
+});
+
+const DiagramPatternSchema = z.object({
+  name: z.string().describe('Pattern name in Japanese e.g. "陽線包み線"'),
+  nameEn: z.string().optional().describe('Pattern name in English e.g. "bullish_engulfing"'),
+  confirmedDate: z.string().describe('Confirmed date e.g. "11/9(日)"'),
+  involvedIndices: z.tuple([z.number().int(), z.number().int()]).describe('[prevIndex, confirmedIndex]'),
+  direction: z.enum(['bullish', 'bearish']).optional(),
+});
+
+export const RenderCandlePatternDiagramInputSchema = z.object({
+  candles: z.array(DiagramCandleSchema).min(2).max(10).describe('Candle data array (oldest first)'),
+  pattern: DiagramPatternSchema.optional().describe('Pattern to highlight'),
+  title: z.string().optional().describe('Chart title (default: pattern name or "ローソク足チャート")'),
+  theme: z.enum(['dark', 'light']).optional().default('dark'),
+});
+
+export const RenderCandlePatternDiagramDataSchemaOut = z.object({
+  svg: z.string().optional(),
+  filePath: z.string().optional(),
+  url: z.string().optional(),
+});
+
+export const RenderCandlePatternDiagramMetaSchemaOut = z.object({
+  width: z.number().int(),
+  height: z.number().int(),
+  candleCount: z.number().int(),
+  patternName: z.string().nullable(),
+});
+
+export const RenderCandlePatternDiagramOutputSchema = z.union([
+  z.object({
+    ok: z.literal(true),
+    summary: z.string(),
+    data: RenderCandlePatternDiagramDataSchemaOut,
+    meta: RenderCandlePatternDiagramMetaSchemaOut,
   }),
   z.object({
     ok: z.literal(false),

@@ -35,6 +35,8 @@ import analyzeIchimokuSnapshot from '../tools/analyze_ichimoku_snapshot.js';
 import analyzeBbSnapshot from '../tools/analyze_bb_snapshot.js';
 import analyzeSmaSnapshot from '../tools/analyze_sma_snapshot.js';
 import analyzeSupportResistance from '../tools/analyze_support_resistance.js';
+import analyzeCandlePatterns from '../tools/analyze_candle_patterns.js';
+import renderCandlePatternDiagram from '../tools/render_candle_pattern_diagram.js';
 import getTickersJpy from '../tools/get_tickers_jpy.js';
 import detectMacdCross from '../tools/detect_macd_cross.js';
 import detectWhaleEvents from '../tools/detect_whale_events.js';
@@ -1754,6 +1756,77 @@ registerToolWithLog(
 	'analyze_support_resistance',
 	{ description: 'サポート・レジスタンスを自動検出。過去のローソク足から反発/反落ポイントを抽出し、接触回数・強度・直近の崩壊実績を分析。LLMのハルシネーションを防ぐため、サーバー側で正確に計算してcontentに結果を出力。', inputSchema: (await import('./schemas.js')).AnalyzeSupportResistanceInputSchema as any },
 	async ({ pair, lookbackDays, topN, tolerance }: any) => analyzeSupportResistance(pair, { lookbackDays, topN, tolerance })
+);
+
+registerToolWithLog(
+	'analyze_candle_patterns',
+	{
+		description: '2本足ローソクパターン検出（包み線・はらみ線・毛抜き・かぶせ線・切り込み線）。BTC/JPY日足の直近5日間から短期反転パターンを検出し、過去180日間の統計（勝率・平均リターン）を付与。初心者向けに自然言語で解説。未確定ローソク対応。\n【視覚化】ユーザーが図での確認を希望した場合、本ツールの結果を render_candle_pattern_diagram に渡してSVG構造図を生成できる。',
+		inputSchema: (await import('./schemas.js')).AnalyzeCandlePatternsInputSchema as any
+	},
+	async (args: any) => analyzeCandlePatterns(args)
+);
+
+registerToolWithLog(
+	'render_candle_pattern_diagram',
+	{
+		description: 'analyze_candle_patternsで検出されたパターンを教育用の構造図として視覚化。\n【重要】ユーザーが明示的に「図で見せて」「視覚的に確認したい」等と要求した場合のみ使用。自発的な呼び出しは避けること。分析結果のテキスト説明で十分な場合は不要。\nローソク足5本を表示し、パターン該当2本をオレンジ枠でハイライト。「前日」「確定日」ラベル（オレンジ）、関係性を示す矢印（淡いブルー）付き。初心者が直感的に理解できる構造図。\n\n【返却形式】\n- data.svg: 完全なSVG文字列\n- meta.patternName: パターン名\n\n【CRITICAL: アーティファクト表示要件】\n- SVGは必ず antArtifact タグで表示',
+		inputSchema: z.object({
+			candles: z.array(z.object({
+				date: z.string().describe('Display date e.g. "11/6(木)"'),
+				open: z.number(),
+				high: z.number(),
+				low: z.number(),
+				close: z.number(),
+				type: z.enum(['bullish', 'bearish']),
+				isPartial: z.boolean().optional(),
+			})).min(2).max(10).describe('Candle data array (oldest first)'),
+			pattern: z.object({
+				name: z.string().describe('Pattern name in Japanese e.g. "陽線包み線"'),
+				nameEn: z.string().optional(),
+				confirmedDate: z.string().describe('Confirmed date e.g. "11/9(日)"'),
+				involvedIndices: z.tuple([z.number().int(), z.number().int()]),
+				direction: z.enum(['bullish', 'bearish']).optional(),
+			}).optional().describe('Pattern to highlight'),
+			title: z.string().optional(),
+			theme: z.enum(['dark', 'light']).optional().default('dark'),
+		}) as any
+	},
+	async (args: any) => {
+		const res: any = await renderCandlePatternDiagram(args);
+		if (!res?.ok) return res;
+		const data: any = res.data || {};
+		const meta: any = res.meta || {};
+		if (data?.svg) {
+			const patternName = meta?.patternName || args?.pattern?.name || 'ローソク足パターン';
+			const identifier = `candle-pattern-${patternName.replace(/[^a-z0-9]+/gi, '-')}-${Date.now()}`;
+			const title = `${patternName}構造図`;
+			const text = [
+				'--- ローソク足パターン構造図 ---',
+				'以下のSVGを antArtifact タグで囲んで必ず視覚的に表示してください:',
+				`identifier: ${identifier}`,
+				`title: ${title}`,
+				'type: image/svg+xml',
+				'',
+				String(data.svg),
+				'',
+				'Chart Info:',
+				`- Pattern: ${patternName}`,
+				`- Size: ${meta?.width || 800}x${meta?.height || 450}px`,
+				`- Candles: ${meta?.candleCount || 5}本`,
+			].join('\n');
+			const enriched = {
+				...res,
+				artifactHint: {
+					renderHint: 'ARTIFACT_REQUIRED',
+					displayType: 'image/svg+xml',
+					source: 'inline_svg',
+				},
+			};
+			return { content: [{ type: 'text', text }], structuredContent: enriched };
+		}
+		return { content: [{ type: 'text', text: res.summary || 'Diagram rendered' }], structuredContent: res };
+	}
 );
 
 registerToolWithLog(

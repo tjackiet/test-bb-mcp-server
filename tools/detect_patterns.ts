@@ -132,7 +132,7 @@ export default async function detectPatterns(
     const res = await getIndicators(pair, type as any, limit);
     if (!res?.ok) return DetectPatternsOutputSchema.parse(fail(res.summary || 'failed', 'internal')) as any;
 
-    const candles = res.data.chart.candles as Array<{ close: number; high: number; low: number; isoTime?: string }>;
+    const candles = res.data.chart.candles as Array<{ open: number; close: number; high: number; low: number; isoTime?: string }>;
     if (!Array.isArray(candles) || candles.length < 20) {
       return DetectPatternsOutputSchema.parse(ok('insufficient data', { patterns: [] }, { pair, type, count: 0 })) as any;
     }
@@ -309,15 +309,32 @@ export default async function detectPatterns(
       const maxSlope = params?.maxSlope ?? Infinity; // do not hard-reject by absolute slope magnitude
       const ratioMinRising = (params?.slopeRatioMinRising ?? 1.20);
       const ratioMinFalling = (params?.slopeRatioMinFalling ?? (params?.slopeRatioMin ?? 1.15));
+      // ★ 追加: 弱い方のラインが強い方の何%以上の傾きを持つべきか
+      // これにより「片方だけ傾いている」パターン（三角形）を除外
+      const minWeakerSlopeRatio = params?.minWeakerSlopeRatio ?? 0.3;
+
+      // Rising Wedge: 両ライン上向き、下側がより急
       if (slopeHigh > minSlope && slopeLow > minSlope) {
+        // ★ 追加: 上側の傾きが下側の30%未満なら除外
+        // → 「上は水平、下だけ上向き」= Ascending Triangle に近い
+        if (slopeHigh < slopeLow * minWeakerSlopeRatio) {
+          return null;
+        }
         if (Math.abs(slopeLow) >= Math.abs(slopeHigh) * ratioMinRising) {
           return 'rising_wedge';
         }
       }
+      // Falling Wedge: 両ライン下向き、収束している（傾き比率は収束で判断）
       if (slopeHigh < -minSlope && slopeLow < -minSlope) {
-        if (Math.abs(slopeHigh) >= Math.abs(slopeLow) * ratioMinFalling) {
-          return 'falling_wedge';
+        // ★ 追加: 弱い方の傾きが強い方の30%未満なら除外（三角形扱い）
+        const absHi = Math.abs(slopeHigh);
+        const absLo = Math.abs(slopeLow);
+        const weakerRatio = Math.min(absHi, absLo) / Math.max(absHi, absLo);
+        if (weakerRatio < minWeakerSlopeRatio) {
+          return null;
         }
+        // 両方下向きで収束していればFalling Wedge（傾き比率条件を緩和）
+        return 'falling_wedge';
       }
       const slopeRatio = Math.abs(slopeLow / (slopeHigh || (slopeLow * 1e-6)));
       if (slopeRatio > 0.9 && slopeRatio < 1.1) return null;
@@ -337,17 +354,20 @@ export default async function detectPatterns(
       return { isConverging: true, gapStart, gapMid, gapEnd, ratio, isAccelerating, score };
     }
     function evaluateTouchesEx(candles: any[], upper: any, lower: any, startIdx: number, endIdx: number) {
-      let hiWin = -Infinity, loWin = Infinity;
-      for (let i = startIdx; i <= endIdx; i++) { hiWin = Math.max(hiWin, Number(candles[i]?.high ?? -Infinity)); loWin = Math.min(loWin, Number(candles[i]?.low ?? Infinity)); }
-      const threshold = (hiWin - loWin) * 0.01; // 1%
+      // 価格比率ベースのタッチ判定（ラインの0.5%以内をタッチと判定）
+      const touchThresholdPct = 0.005; // 0.5%（バランス調整）
       const upperTouches: any[] = [], lowerTouches: any[] = [];
       for (let i = startIdx; i <= endIdx; i++) {
         const c = candles[i]; if (!c) continue;
         const u = upper.valueAt(i), l = lower.valueAt(i);
+        // 上限ライン: ラインの0.5%以内
+        const thrUp = Math.abs(u) * touchThresholdPct;
         const distU = Math.abs(c?.high - u);
+        if (distU < thrUp && c?.high <= u + thrUp) upperTouches.push({ index: i, distance: distU, isBreak: false }); else if (c?.high > u + thrUp) upperTouches.push({ index: i, distance: distU, isBreak: true });
+        // 下限ライン: ラインの0.5%以内
+        const thrLo = Math.abs(l) * touchThresholdPct;
         const distL = Math.abs(c?.low - l);
-        if (distU < threshold && c?.high <= u + threshold) upperTouches.push({ index: i, distance: distU, isBreak: false }); else if (c?.high > u + threshold) upperTouches.push({ index: i, distance: distU, isBreak: true });
-        if (distL < threshold && c?.low >= l - threshold) lowerTouches.push({ index: i, distance: distL, isBreak: false }); else if (c?.low < l - threshold) lowerTouches.push({ index: i, distance: distL, isBreak: true });
+        if (distL < thrLo && c?.low >= l - thrLo) lowerTouches.push({ index: i, distance: distL, isBreak: false }); else if (c?.low < l - thrLo) lowerTouches.push({ index: i, distance: distL, isBreak: true });
       }
       const upQ = upperTouches.filter(t => !t.isBreak).length;
       const loQ = lowerTouches.filter(t => !t.isBreak).length;
@@ -1144,6 +1164,7 @@ export default async function detectPatterns(
         maxSlope: 0.08,
         slopeRatioMin: 1.15,
         slopeRatioMinRising: 1.20,
+        minWeakerSlopeRatio: 0.3, // ★ 追加: 弱い方のラインの最小傾き比率
         minTouchesPerLine: 2,
         minScore: 0.5,
       };
@@ -1157,7 +1178,8 @@ export default async function detectPatterns(
       for (const w of windows) {
         const highsIn = swings.highs.filter(s => s.index >= w.startIdx && s.index <= w.endIdx);
         const lowsIn = swings.lows.filter(s => s.index >= w.startIdx && s.index <= w.endIdx);
-        if (highsIn.length < 3 || lowsIn.length < 3) continue;
+        // ピボット数を4以上に引き上げ（より信頼性の高いトレンドラインのため）
+        if (highsIn.length < 4 || lowsIn.length < 4) continue;
         const upper = lrWithR2(highsIn.map(s => ({ x: s.index, y: s.price })));
         const lower = lrWithR2(lowsIn.map(s => ({ x: s.index, y: s.price })));
         if (upper.r2 < 0.25 || lower.r2 < 0.25) {
@@ -1350,6 +1372,52 @@ export default async function detectPatterns(
           });
           continue;
         }
+        // タッチ間隔チェック（日足で25本以上空いていたら除外）
+        const calcMaxGap = (touchArr: any[]): number => {
+          const validTouches = touchArr.filter((t: any) => !t.isBreak).map((t: any) => t.index).sort((a: number, b: number) => a - b);
+          if (validTouches.length < 2) return Infinity;
+          let maxGap = 0;
+          for (let i = 1; i < validTouches.length; i++) {
+            maxGap = Math.max(maxGap, validTouches[i] - validTouches[i - 1]);
+          }
+          return maxGap;
+        };
+        const maxTouchGap = 25; // 日足で25本（約1ヶ月）
+        const upperMaxGap = calcMaxGap(touches.upperTouches);
+        const lowerMaxGap = calcMaxGap(touches.lowerTouches);
+        const maxGap = Math.max(upperMaxGap, lowerMaxGap);
+        if (maxGap > maxTouchGap) {
+          debugCandidates.push({
+            type: wedgeType as any,
+            accepted: false,
+            reason: 'touch_gap_too_large',
+            indices: [w.startIdx, w.endIdx],
+            details: { upperMaxGap, lowerMaxGap, maxGap, maxAllowed: maxTouchGap }
+          });
+          continue;
+        }
+        // 開始日ギャップチェック（上下ラインのファーストタッチが離れすぎていないか）
+        const maxStartGap = 10; // 日足で10本以内
+        const firstUpperTouch = touches.upperTouches.find((t: any) => !t.isBreak);
+        const firstLowerTouch = touches.lowerTouches.find((t: any) => !t.isBreak);
+        if (firstUpperTouch && firstLowerTouch) {
+          const startGap = Math.abs(firstUpperTouch.index - firstLowerTouch.index);
+          if (startGap > maxStartGap) {
+            debugCandidates.push({
+              type: wedgeType as any,
+              accepted: false,
+              reason: 'start_gap_too_large',
+              indices: [w.startIdx, w.endIdx],
+              details: {
+                firstUpperIdx: firstUpperTouch.index,
+                firstLowerIdx: firstLowerTouch.index,
+                startGap,
+                maxAllowed: maxStartGap
+              }
+            });
+            continue;
+          }
+        }
         const alternation = calcAlternationScoreEx(touches);
         // 上下タッチのバランスチェック（極端な偏りを除外）
         {
@@ -1519,6 +1587,344 @@ export default async function detectPatterns(
             breakInfo: breakInfo.detected ? { ...breakInfo, direction: breakoutDirection } : null
           }
         });
+      }
+    }
+
+    // 4c) ピボットベース・ウェッジ検出（2点接線方式）
+    {
+      const pivotWedgeDebug: any[] = [];
+      const windowSizeMin = 40;
+      const windowSizeMax = 80;
+      const windowStep = 5;
+
+      // wantフィルタ
+      const allowFallingPivot = (want.size === 0) || want.has('falling_wedge' as any);
+      const allowRisingPivot = (want.size === 0) || want.has('rising_wedge' as any);
+
+      // ピボットポイントを取得
+      const swingHighs = pivots.filter(p => p.kind === 'H').map(p => ({ idx: p.idx, price: p.price }));
+      const swingLows = pivots.filter(p => p.kind === 'L').map(p => ({ idx: p.idx, price: p.price }));
+
+      // 2点を結ぶ直線を作成
+      function makeLine(p1: { idx: number; price: number }, p2: { idx: number; price: number }) {
+        const slope = (p2.price - p1.price) / Math.max(1, p2.idx - p1.idx);
+        const intercept = p1.price - slope * p1.idx;
+        return {
+          slope,
+          intercept,
+          valueAt: (idx: number) => slope * idx + intercept,
+          p1,
+          p2
+        };
+      }
+
+      // 上側トレンドライン候補を生成
+      function findUpperTrendline(highs: { idx: number; price: number }[], startIdx: number, endIdx: number, tolerance: number, maxTouchGap = 25) {
+        const inRange = highs.filter(h => h.idx >= startIdx && h.idx <= endIdx);
+        if (inRange.length < 2) return null;
+
+        const firstThird = inRange.filter(h => h.idx < startIdx + (endIdx - startIdx) / 3);
+        const lastThird = inRange.filter(h => h.idx > endIdx - (endIdx - startIdx) / 3);
+
+        if (firstThird.length === 0 || lastThird.length === 0) return null;
+
+        let bestLine: ReturnType<typeof makeLine> | null = null;
+        let bestScore = -Infinity;
+
+        for (const p1 of firstThird) {
+          for (const p2 of lastThird) {
+            if (p1.idx >= p2.idx) continue;
+
+            const line = makeLine(p1, p2);
+
+            let valid = true;
+            let violations = 0;
+            for (const h of inRange) {
+              const lineValue = line.valueAt(h.idx);
+              if (h.price > lineValue + tolerance) {
+                violations++;
+                if (violations > 1) { valid = false; break; }
+              }
+            }
+
+            if (valid) {
+              const touchPoints: number[] = [];
+              for (const h of inRange) {
+                const lineValue = line.valueAt(h.idx);
+                if (Math.abs(h.price - lineValue) <= tolerance) {
+                  touchPoints.push(h.idx);
+                }
+              }
+
+              if (touchPoints.length >= 2) {
+                touchPoints.sort((a, b) => a - b);
+                let maxGap = 0;
+                for (let i = 1; i < touchPoints.length; i++) {
+                  const gap = touchPoints[i] - touchPoints[i - 1];
+                  if (gap > maxGap) maxGap = gap;
+                }
+                if (maxGap > maxTouchGap) {
+                  valid = false;
+                }
+              }
+
+              if (valid && touchPoints.length >= 2) {
+                const score = touchPoints.length + (line.slope < 0 ? 1 : 0);
+                if (score > bestScore) {
+                  bestScore = score;
+                  bestLine = line;
+                }
+              }
+            }
+          }
+        }
+
+        return bestLine;
+      }
+
+      // 下側トレンドライン候補を生成
+      function findLowerTrendline(lows: { idx: number; price: number }[], startIdx: number, endIdx: number, tolerance: number, maxTouchGap = 25) {
+        const inRange = lows.filter(l => l.idx >= startIdx && l.idx <= endIdx);
+        if (inRange.length < 2) return null;
+
+        const firstThird = inRange.filter(l => l.idx < startIdx + (endIdx - startIdx) / 3);
+        const lastThird = inRange.filter(l => l.idx > endIdx - (endIdx - startIdx) / 3);
+
+        if (firstThird.length === 0 || lastThird.length === 0) return null;
+
+        let bestLine: ReturnType<typeof makeLine> | null = null;
+        let bestScore = -Infinity;
+
+        for (const p1 of firstThird) {
+          for (const p2 of lastThird) {
+            if (p1.idx >= p2.idx) continue;
+
+            const line = makeLine(p1, p2);
+
+            let valid = true;
+            let violations = 0;
+            for (const l of inRange) {
+              const lineValue = line.valueAt(l.idx);
+              if (l.price < lineValue - tolerance) {
+                violations++;
+                if (violations > 1) { valid = false; break; }
+              }
+            }
+
+            if (valid) {
+              const touchPoints: number[] = [];
+              for (const l of inRange) {
+                const lineValue = line.valueAt(l.idx);
+                if (Math.abs(l.price - lineValue) <= tolerance) {
+                  touchPoints.push(l.idx);
+                }
+              }
+
+              if (touchPoints.length >= 2) {
+                touchPoints.sort((a, b) => a - b);
+                let maxGap = 0;
+                for (let i = 1; i < touchPoints.length; i++) {
+                  const gap = touchPoints[i] - touchPoints[i - 1];
+                  if (gap > maxGap) maxGap = gap;
+                }
+                if (maxGap > maxTouchGap) {
+                  valid = false;
+                }
+              }
+
+              if (valid && touchPoints.length >= 2) {
+                const score = touchPoints.length + (line.slope < 0 ? 1 : 0);
+                if (score > bestScore) {
+                  bestScore = score;
+                  bestLine = line;
+                }
+              }
+            }
+          }
+        }
+
+        return bestLine;
+      }
+
+      // ウィンドウを生成して検出
+      for (let size = windowSizeMin; size <= windowSizeMax; size += windowStep) {
+        for (let startIdx = 0; startIdx + size <= candles.length; startIdx += windowStep) {
+          const endIdx = startIdx + size;
+
+          const avgPrice = (Number(candles[startIdx]?.close) + Number(candles[endIdx - 1]?.close)) / 2;
+          const tolerance = avgPrice * 0.01;
+
+          const upperLine = findUpperTrendline(swingHighs, startIdx, endIdx, tolerance);
+          const lowerLine = findLowerTrendline(swingLows, startIdx, endIdx, tolerance);
+
+          if (!upperLine || !lowerLine) continue;
+
+          const isUpperDown = upperLine.slope < 0;
+          const isLowerDown = lowerLine.slope < 0;
+          const gapStart = upperLine.valueAt(startIdx) - lowerLine.valueAt(startIdx);
+          const gapEnd = upperLine.valueAt(endIdx) - lowerLine.valueAt(endIdx);
+          const isConverging = gapEnd > 0 && gapEnd < gapStart * 0.8;
+
+          // Falling Wedge: 両ライン下向き + 収束
+          if (allowFallingPivot && isUpperDown && isLowerDown && isConverging) {
+            const start = (candles[startIdx] as any)?.isoTime;
+
+            // ブレイクアウト検出（トレンドラインからの乖離で判定）
+            // Falling Wedge: 下側トレンドラインを下回ったら無効化/終了
+            let breakoutIdx = endIdx - 1;
+            let breakoutDetected = false;
+
+            // ATR計算（バッファ用）
+            let atrSum = 0;
+            const atrPeriod = Math.min(14, endIdx - startIdx);
+            for (let j = endIdx - atrPeriod; j < endIdx; j++) {
+              const h = Number(candles[j]?.high);
+              const l = Number(candles[j]?.low);
+              atrSum += h - l;
+            }
+            const atr = atrSum / atrPeriod;
+            const breakBuffer = atr * 0.5;  // ATR の 50% をバッファとして使用
+
+            for (let i = endIdx; i < candles.length && i < endIdx + 30; i++) {
+              const open = Number(candles[i]?.open);
+              const close = Number(candles[i]?.close);
+              const candleBodyTop = Math.max(open, close);  // ローソク本体の上端
+              const lowerLineValue = lowerLine.valueAt(i);
+              const breakThreshold = lowerLineValue * 0.98;  // トレンドラインの2%下
+
+              // ローソク本体がトレンドラインを1%以上下回ったら明確なブレイク
+              if (candleBodyTop < breakThreshold) {
+                breakoutIdx = i;
+                breakoutDetected = true;
+                break;
+              }
+            }
+
+            if (!breakoutDetected) continue;
+
+            const actualEndIdx = breakoutIdx;
+            const end = (candles[actualEndIdx] as any)?.isoTime;
+
+            if (start && end) {
+              const convergenceScore = 1 - (gapEnd / gapStart);
+              const slopeScore = Math.min(Math.abs(upperLine.slope), Math.abs(lowerLine.slope)) / Math.max(Math.abs(upperLine.slope), Math.abs(lowerLine.slope));
+              const durationDays = endIdx - startIdx;
+              const durationScore = durationDays >= 40 && durationDays <= 60 ? 1.0 : 0.8;
+              const slopeStrength = Math.min(1, (Math.abs(upperLine.slope) + Math.abs(lowerLine.slope)) / 100000);
+              const score = (convergenceScore * 0.4 + slopeScore * 0.3 + durationScore * 0.15 + slopeStrength * 0.15);
+              const confidence = Math.max(0.65, Math.min(0.95, score + 0.3));
+
+              pivotWedgeDebug.push({
+                type: 'falling_wedge',
+                method: 'pivot_based',
+                accepted: true,
+                indices: [startIdx, actualEndIdx],
+                range: { start, end },
+                details: {
+                  upperSlope: upperLine.slope,
+                  lowerSlope: lowerLine.slope,
+                  gapStart,
+                  gapEnd,
+                  convergenceRatio: gapEnd / gapStart,
+                  score,
+                  breakoutDetected,
+                  breakoutIdx
+                }
+              });
+
+              push(patterns, {
+                type: 'falling_wedge' as const,
+                confidence,
+                range: { start, end },
+                _method: 'pivot_based',
+              });
+            }
+          }
+
+          // Rising Wedge
+          const isUpperUp = upperLine.slope > 0;
+          const isLowerUp = lowerLine.slope > 0;
+          const isConvergingUp = gapEnd > 0 && gapEnd < gapStart * 0.8;
+
+          if (allowRisingPivot && isUpperUp && isLowerUp && isConvergingUp) {
+            const start = (candles[startIdx] as any)?.isoTime;
+
+            // ブレイクアウト検出（トレンドラインからの乖離で判定）
+            // Rising Wedge: 下側トレンドラインを下回ったら完成
+            let breakoutIdx = endIdx - 1;
+            let breakoutDetected = false;
+
+            // ATR計算（バッファ用）
+            let atrSumRw = 0;
+            const atrPeriodRw = Math.min(14, endIdx - startIdx);
+            for (let j = endIdx - atrPeriodRw; j < endIdx; j++) {
+              const h = Number(candles[j]?.high);
+              const l = Number(candles[j]?.low);
+              atrSumRw += h - l;
+            }
+            const atrRw = atrSumRw / atrPeriodRw;
+            const breakBufferRw = atrRw * 0.5;  // ATR の 50% をバッファとして使用
+
+            for (let i = endIdx; i < candles.length && i < endIdx + 30; i++) {
+              const open = Number(candles[i]?.open);
+              const close = Number(candles[i]?.close);
+              const candleBodyTop = Math.max(open, close);  // ローソク本体の上端
+              const lowerLineValue = lowerLine.valueAt(i);
+              const breakThresholdRw = lowerLineValue * 0.98;  // トレンドラインの2%下
+
+              // ローソク本体がトレンドラインを1%以上下回ったら明確なブレイク（パターン完成）
+              if (candleBodyTop < breakThresholdRw) {
+                breakoutIdx = i;
+                breakoutDetected = true;
+                break;
+              }
+            }
+
+            if (!breakoutDetected) continue;
+
+            const actualEndIdx = breakoutIdx;
+            const end = (candles[actualEndIdx] as any)?.isoTime;
+
+            if (start && end) {
+              const convergenceScore = 1 - (gapEnd / gapStart);
+              const slopeScore = Math.min(Math.abs(upperLine.slope), Math.abs(lowerLine.slope)) / Math.max(Math.abs(upperLine.slope), Math.abs(lowerLine.slope));
+              const durationDays = endIdx - startIdx;
+              const durationScore = durationDays >= 40 && durationDays <= 60 ? 1.0 : 0.8;
+              const slopeStrength = Math.min(1, (Math.abs(upperLine.slope) + Math.abs(lowerLine.slope)) / 100000);
+              const score = (convergenceScore * 0.4 + slopeScore * 0.3 + durationScore * 0.15 + slopeStrength * 0.15);
+              const confidence = Math.max(0.65, Math.min(0.95, score + 0.3));
+
+              pivotWedgeDebug.push({
+                type: 'rising_wedge',
+                method: 'pivot_based',
+                accepted: true,
+                indices: [startIdx, actualEndIdx],
+                range: { start, end },
+                details: {
+                  upperSlope: upperLine.slope,
+                  lowerSlope: lowerLine.slope,
+                  gapStart,
+                  gapEnd,
+                  convergenceRatio: gapEnd / gapStart,
+                  score,
+                  breakoutDetected,
+                  breakoutIdx
+                }
+              });
+
+              push(patterns, {
+                type: 'rising_wedge' as const,
+                confidence,
+                range: { start, end },
+                _method: 'pivot_based',
+              });
+            }
+          }
+        }
+      }
+
+      for (const d of pivotWedgeDebug) {
+        debugCandidates.unshift(d);
       }
     }
 

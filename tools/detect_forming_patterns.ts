@@ -388,11 +388,11 @@ export default async function detectFormingPatterns(
     }
   }
 
-  // forming wedges: falling_wedge / rising_wedge（進行中の収束チャネル）
+  // forming wedges: falling_wedge / rising_wedge（ピボットベース検出）
   {
     const wantFalling = want.has('falling_wedge');
     const wantRising = want.has('rising_wedge');
-    const wantAnyWedge = wantFalling || wantRising || want.size === 0;
+    const wantAnyWedge = wantFalling || wantRising;
     ; (globalThis as any).__formingWedgeDebugMeta = { scanned: false, windows: 0, want: Array.from(want as any) };
     if (wantAnyWedge) {
       const wedgeDebug: Array<{ accepted: boolean; type: string; reason?: string; indices?: [number, number]; details?: any }> = [];
@@ -573,10 +573,34 @@ export default async function detectFormingPatterns(
         if (!(bothDown || bothUp)) { wedgeDebug.push({ accepted: false, type: 'wedge_window', reason: 'not_same_direction', indices: [startIdx, endIdx] as any, details: { slopeHigh: up.slope, slopeLow: lo.slope } }); continue; }
         const absHi = Math.abs(up.slope), absLo = Math.abs(lo.slope);
         const ratio = (bothDown || bothUp) ? (bothDown ? absHi / Math.max(1e-12, absLo) : absLo / Math.max(1e-12, absHi)) : 0;
+
+        // 傾き比率チェック: 1.1 ~ 3.0 の範囲
         if (!((Math.max(absHi, absLo) > Math.min(absHi, absLo) * 1.1) && (Math.max(absHi, absLo) <= Math.min(absHi, absLo) * 3.0))) {
           wedgeDebug.push({ accepted: false, type: 'wedge_window', reason: 'slope_ratio_out_of_range', indices: [startIdx, endIdx] as any, details: { ratio } });
           continue;
         }
+
+        // minWeakerSlopeRatio チェック: 弱い方のラインが強い方の30%以上の傾きを持つ
+        const minWeakerSlopeRatio = 0.3;
+        const weakerSlope = Math.min(absHi, absLo);
+        const strongerSlope = Math.max(absHi, absLo);
+        const weakerRatio = weakerSlope / Math.max(1e-12, strongerSlope);
+        if (weakerRatio < minWeakerSlopeRatio) {
+          wedgeDebug.push({
+            accepted: false,
+            type: 'wedge_window',
+            reason: 'weaker_slope_too_flat',
+            indices: [startIdx, endIdx] as any,
+            details: {
+              absHi,
+              absLo,
+              weakerRatio: Number(weakerRatio.toFixed(3)),
+              minRequired: minWeakerSlopeRatio
+            }
+          });
+          continue;
+        }
+
         const wedgeType: 'falling_wedge' | 'rising_wedge' | null = bothDown ? 'falling_wedge' : (bothUp ? 'rising_wedge' : null);
         if (!wedgeType) continue;
         // 収束
@@ -600,7 +624,8 @@ export default async function detectFormingPatterns(
           continue;
         }
         const convRatio = gapEnd / Math.max(1e-12, gapStart); // 小さいほど収束
-        if (!(convRatio < 0.80)) {
+        // 収束チェック: 1) 収束度が0.80未満、かつ 2) 実際に収束している（拡大パターンを除外）
+        if (!(convRatio < 0.80 && gapEnd < gapStart)) {
           wedgeDebug.push({
             accepted: false,
             type: wedgeType,
@@ -610,6 +635,7 @@ export default async function detectFormingPatterns(
               convRatio,
               gapStart,
               gapEnd,
+              isExpanding: gapEnd >= gapStart,
               upStart: up.valueAt(startIdx),
               upEnd: up.valueAt(endIdx),
               loStart: lo.valueAt(startIdx),
@@ -619,19 +645,71 @@ export default async function detectFormingPatterns(
           continue;
         }
         const convergeScore = Math.max(0, Math.min(1, 1 - convRatio)); // 0~1
-        // ATRベースのタッチ評価
+        // 価格比率ベースのタッチ評価（ラインの0.5%以内をタッチと判定）
         const atr = calcATR(startIdx, endIdx, 14);
-        const thr = atr * 1.0; // 緩和
+        const touchThresholdPct = 0.005; // 0.5%
         const upTouchesIdx: number[] = [];
         const loTouchesIdx: number[] = [];
         for (let i = startIdx; i <= endIdx; i++) {
           const u = up.valueAt(i), l = lo.valueAt(i);
           const hi = Number(candles[i]?.high ?? NaN);
           const lw = Number(candles[i]?.low ?? NaN);
-          if (Number.isFinite(hi) && Math.abs(hi - u) <= thr && hi <= u + thr) upTouchesIdx.push(i);
-          if (Number.isFinite(lw) && Math.abs(lw - l) <= thr && lw >= l - thr) loTouchesIdx.push(i);
+          // 上限ライン: 高値がラインの0.5%以内
+          const thrUp = Math.abs(u) * touchThresholdPct;
+          if (Number.isFinite(hi) && Math.abs(hi - u) <= thrUp && hi <= u + thrUp) upTouchesIdx.push(i);
+          // 下限ライン: 安値がラインの0.5%以内
+          const thrLo = Math.abs(l) * touchThresholdPct;
+          if (Number.isFinite(lw) && Math.abs(lw - l) <= thrLo && lw >= l - thrLo) loTouchesIdx.push(i);
         }
-        if (upTouchesIdx.length < 2 || loTouchesIdx.length < 2) { wedgeDebug.push({ accepted: false, type: wedgeType, reason: 'insufficient_touches', indices: [startIdx, endIdx] as any, details: { upTouches: upTouchesIdx.length, loTouches: loTouchesIdx.length, thr } }); continue; }
+        if (upTouchesIdx.length < 2 || loTouchesIdx.length < 2) { wedgeDebug.push({ accepted: false, type: wedgeType, reason: 'insufficient_touches', indices: [startIdx, endIdx] as any, details: { upTouches: upTouchesIdx.length, loTouches: loTouchesIdx.length, touchThresholdPct } }); continue; }
+
+        // タッチ間隔チェック（25本以内）
+        const calcMaxGap = (touchIndices: number[]): number => {
+          if (touchIndices.length < 2) return 0;
+          const sorted = [...touchIndices].sort((a, b) => a - b);
+          let maxGap = 0;
+          for (let i = 1; i < sorted.length; i++) {
+            const gap = sorted[i] - sorted[i - 1];
+            if (gap > maxGap) maxGap = gap;
+          }
+          return maxGap;
+        };
+        const maxTouchGap = 25; // 日足で25本（約1ヶ月）
+        const upperMaxGap = calcMaxGap(upTouchesIdx);
+        const lowerMaxGap = calcMaxGap(loTouchesIdx);
+        const maxGap = Math.max(upperMaxGap, lowerMaxGap);
+        if (maxGap > maxTouchGap) {
+          wedgeDebug.push({
+            accepted: false,
+            type: wedgeType,
+            reason: 'touch_gap_too_large',
+            indices: [startIdx, endIdx] as any,
+            details: { upperMaxGap, lowerMaxGap, maxGap, maxAllowed: maxTouchGap }
+          });
+          continue;
+        }
+
+        // 開始日ギャップチェック（10本以内）
+        const maxStartGap = 10;
+        const firstUpperTouch = upTouchesIdx[0];
+        const firstLowerTouch = loTouchesIdx[0];
+        const startGap = Math.abs(firstUpperTouch - firstLowerTouch);
+        if (startGap > maxStartGap) {
+          wedgeDebug.push({
+            accepted: false,
+            type: wedgeType,
+            reason: 'start_gap_too_large',
+            indices: [startIdx, endIdx] as any,
+            details: {
+              firstUpperIdx: firstUpperTouch,
+              firstLowerIdx: firstLowerTouch,
+              startGap,
+              maxAllowed: maxStartGap
+            }
+          });
+          continue;
+        }
+
         const touchesScore = Math.max(0, Math.min(1, (upTouchesIdx.length + loTouchesIdx.length) / 8));
         // R2/fit
         const fitScore = Math.max(0, Math.min(1, (up.r2 + lo.r2) / 2));
@@ -712,23 +790,25 @@ export default async function detectFormingPatterns(
               if (!Number.isFinite(uLine) || !Number.isFinite(lLine)) continue;
 
               if (wedgeType === 'falling_wedge') {
-                // 下側ラインを実体ベースで下抜け（ATR * 0.5 バッファ）
-                if (close < lLine - atr * 0.5) {
+                // 上側ラインを実体ベースで上抜け（ATR * 0.5 バッファ）→ 強気ブレイクアウト
+                // または下側ラインを下抜け → 弱気ブレイクアウト（パターン失敗）
+                if (close > uLine + atr * 0.5 || close < lLine - atr * 0.5) {
                   if (firstBreakOfCurrentSequence === -1) {
                     firstBreakOfCurrentSequence = i; // 新しいブレイクシーケンス開始
                   }
-                } else if (close > lLine + atr * 0.2) {
-                  // ラインを明確に上回った場合のみブレイクシーケンスをリセット
+                } else if (close > lLine + atr * 0.2 && close < uLine - atr * 0.2) {
+                  // ウェッジ内に明確に戻った場合のみブレイクシーケンスをリセット
                   firstBreakOfCurrentSequence = -1;
                 }
               } else {
-                // 上側ラインを実体ベースで上抜け（ATR * 0.5 バッファ）
-                if (close > uLine + atr * 0.5) {
+                // Rising Wedge: 下側ラインを実体ベースで下抜け（ATR * 0.5 バッファ）→ 弱気ブレイクアウト
+                // または上側ラインを上抜け → 強気ブレイクアウト（パターン失敗）
+                if (close < lLine - atr * 0.5 || close > uLine + atr * 0.5) {
                   if (firstBreakOfCurrentSequence === -1) {
                     firstBreakOfCurrentSequence = i; // 新しいブレイクシーケンス開始
                   }
-                } else if (close < uLine - atr * 0.2) {
-                  // ラインを明確に下回った場合のみブレイクシーケンスをリセット
+                } else if (close > lLine + atr * 0.2 && close < uLine - atr * 0.2) {
+                  // ウェッジ内に明確に戻った場合のみブレイクシーケンスをリセット
                   firstBreakOfCurrentSequence = -1;
                 }
               }
@@ -754,6 +834,7 @@ export default async function detectFormingPatterns(
         const currentPrice = Number(candles[lastIdx]?.close ?? NaN);
 
         // ブレイク未検出の場合のみ、追加の無効化判定を実施
+        let invalidationIdx: number | null = null; // 無効化された最初のインデックス
         if (!breakDetection.detected && Number.isFinite(currentPrice)) {
           // ラインを最新（lastIdx）まで延長
           const uAtCurrent = up.valueAt(lastIdx);
@@ -764,22 +845,66 @@ export default async function detectFormingPatterns(
 
             if (wedgeType === 'falling_wedge') {
               // 下降ウェッジ（上昇転換パターン）
-              const invalidLine = lAtCurrent - atrBuffer;
+              // 上方ブレイク（強気転換）または下方ブレイク（パターン失敗）を検出
+              const upperBreakLine = uAtCurrent + atrBuffer;
+              const lowerBreakLine = lAtCurrent - atrBuffer;
 
-              if (currentPrice < invalidLine) {
+              if (currentPrice > upperBreakLine) {
+                // 上方ブレイクアウト → 強気転換（無効化扱い）
                 status = 'invalid';
-              } else if (currentPrice < lAtCurrent) {
-                // 下側ラインを実体で下回っている場合も無効化寸前
+                for (let i = endIdx; i <= lastIdx; i++) {
+                  const px = Number(candles[i]?.close ?? NaN);
+                  const lineAtI = up.valueAt(i) + atr * 0.5;
+                  if (Number.isFinite(px) && Number.isFinite(lineAtI) && px > lineAtI) {
+                    invalidationIdx = i;
+                    break;
+                  }
+                }
+              } else if (currentPrice < lowerBreakLine) {
+                // 下方ブレイクアウト → パターン失敗（無効化）
+                status = 'invalid';
+                for (let i = endIdx; i <= lastIdx; i++) {
+                  const px = Number(candles[i]?.close ?? NaN);
+                  const lineAtI = lo.valueAt(i) - atr * 0.5;
+                  if (Number.isFinite(px) && Number.isFinite(lineAtI) && px < lineAtI) {
+                    invalidationIdx = i;
+                    break;
+                  }
+                }
+              } else if (currentPrice < lAtCurrent || currentPrice > uAtCurrent) {
+                // ウェッジ外に出ている場合は無効化寸前
                 status = 'near_invalidation';
               }
             } else {
               // 上昇ウェッジ（下落転換パターン）
-              const invalidLine = uAtCurrent + atrBuffer;
+              // 下方ブレイク（弱気転換）または上方ブレイク（パターン失敗）を検出
+              const upperBreakLine = uAtCurrent + atrBuffer;
+              const lowerBreakLine = lAtCurrent - atrBuffer;
 
-              if (currentPrice > invalidLine) {
+              if (currentPrice < lowerBreakLine) {
+                // 下方ブレイクアウト → 弱気転換（無効化扱い）
                 status = 'invalid';
-              } else if (currentPrice > uAtCurrent) {
-                // 上側ラインを実体で上回っている場合も無効化寸前
+                for (let i = endIdx; i <= lastIdx; i++) {
+                  const px = Number(candles[i]?.close ?? NaN);
+                  const lineAtI = lo.valueAt(i) - atr * 0.5;
+                  if (Number.isFinite(px) && Number.isFinite(lineAtI) && px < lineAtI) {
+                    invalidationIdx = i;
+                    break;
+                  }
+                }
+              } else if (currentPrice > upperBreakLine) {
+                // 上方ブレイクアウト → パターン失敗（無効化）
+                status = 'invalid';
+                for (let i = endIdx; i <= lastIdx; i++) {
+                  const px = Number(candles[i]?.close ?? NaN);
+                  const lineAtI = up.valueAt(i) + atr * 0.5;
+                  if (Number.isFinite(px) && Number.isFinite(lineAtI) && px > lineAtI) {
+                    invalidationIdx = i;
+                    break;
+                  }
+                }
+              } else if (currentPrice < lAtCurrent || currentPrice > uAtCurrent) {
+                // ウェッジ外に出ている場合は無効化寸前
                 status = 'near_invalidation';
               }
             }
@@ -791,7 +916,23 @@ export default async function detectFormingPatterns(
           if ((daysToApex ?? 999) <= 10) status = 'mature';
           if (nearUpper || nearLower) status = 'breaking';
         }
-        const formation = { bars, formatted: formatPeriod(bars, type), start: startIso, current: endIso };
+
+        // 無効化/ブレイクアウトされた場合は終了日をその日付に設定
+        // 優先順位: 1. breakDetection.breakIsoTime (ブレイクアウト日)
+        //          2. invalidationIdx (価格無効化日)
+        //          3. endIso (デフォルト)
+        const effectiveInvalidationIdx: number | null =
+          (breakDetection.detected && typeof breakDetection.breakIdx === 'number')
+            ? breakDetection.breakIdx
+            : invalidationIdx;
+        const effectiveInvalidationIso: string | null =
+          (breakDetection.detected && typeof breakDetection.breakIsoTime === 'string')
+            ? String(breakDetection.breakIsoTime)
+            : (invalidationIdx !== null ? (isoAt(invalidationIdx) || null) : null);
+        const effectiveEndIso = (status === 'invalid' && effectiveInvalidationIso)
+          ? effectiveInvalidationIso
+          : endIso;
+        const formation = { bars, formatted: formatPeriod(bars, type), start: startIso, current: effectiveEndIso };
         const obj: any = {
           type: wedgeType,
           status,
@@ -804,13 +945,15 @@ export default async function detectFormingPatterns(
           daysToApex,
           breakoutTarget,
           invalidationPrice,
-          range: { start: startIso, current: endIso },
+          range: { start: startIso, current: effectiveEndIso },
           candleType: type,
           formationPeriod: formation,
           confidence: Number(confidence.toFixed(2)),
+          invalidationDate: effectiveInvalidationIso,
           debug: {
             endIdx,
             lastIdx,
+            invalidationIdx: effectiveInvalidationIdx,
             priceAtEnd: Number.isFinite(lastClose) ? Math.round(lastClose) : null,
             priceAtLast: Number.isFinite(currentPrice) ? Math.round(currentPrice) : null,
             lowerLineAtEnd: Number.isFinite(lo.valueAt(endIdx)) ? Math.round(lo.valueAt(endIdx)) : null,

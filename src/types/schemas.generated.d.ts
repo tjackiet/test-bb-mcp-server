@@ -159,6 +159,7 @@ export type GetIndicatorsDataFromSchema = {
         SMA_75?: (number | null) | undefined;
         SMA_200?: (number | null) | undefined;
         RSI_14?: (number | null) | undefined;
+        RSI_14_series?: (number | null)[] | undefined;
         BB_upper?: (number | null) | undefined;
         BB_middle?: (number | null) | undefined;
         BB_lower?: (number | null) | undefined;

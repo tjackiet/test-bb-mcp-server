@@ -290,18 +290,202 @@ function detectBearishHarami(candle1: Candle, candle2: Candle): { detected: bool
   return { detected: true, strength };
 }
 
+// ----- Phase 2 パターン -----
+
+/**
+ * 毛抜き天井 (tweezer_top) の検出
+ * 条件: 2営業日の高値がほぼ同じ（許容誤差 ±0.5%）
+ * 注: 高値圏での出現判定はコンテキスト付きで行う
+ */
+function detectTweezerTop(candle1: Candle, candle2: Candle, context?: PatternContext): { detected: boolean; strength: number } {
+  const avgHigh = (candle1.high + candle2.high) / 2;
+  const tolerance = avgHigh * 0.005; // ±0.5%（緩和: 元は0.2%）
+  const highDiff = Math.abs(candle1.high - candle2.high);
+
+  if (highDiff > tolerance) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 高値圏判定（コンテキストがある場合）
+  if (context) {
+    const { rangeHigh, rangeLow } = context;
+    const range = rangeHigh - rangeLow;
+    const highZoneThreshold = rangeHigh - range * 0.2;
+
+    // どちらかの高値が上位20%にあること
+    if (candle1.high < highZoneThreshold && candle2.high < highZoneThreshold) {
+      return { detected: false, strength: 0 };
+    }
+  }
+
+  // 強度: 高値の一致度（完全一致で1.0）
+  const matchRate = 1 - (highDiff / avgHigh) * 100;
+  const strength = Math.max(0, Math.min(matchRate, 1.0));
+
+  return { detected: true, strength };
+}
+
+/**
+ * 毛抜き底 (tweezer_bottom) の検出
+ * 条件: 2営業日の安値がほぼ同じ（許容誤差 ±0.5%）
+ */
+function detectTweezerBottom(candle1: Candle, candle2: Candle, context?: PatternContext): { detected: boolean; strength: number } {
+  const avgLow = (candle1.low + candle2.low) / 2;
+  const tolerance = avgLow * 0.005; // ±0.5%（緩和: 元は0.2%）
+  const lowDiff = Math.abs(candle1.low - candle2.low);
+
+  if (lowDiff > tolerance) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 安値圏判定（コンテキストがある場合）
+  if (context) {
+    const { rangeHigh, rangeLow } = context;
+    const range = rangeHigh - rangeLow;
+    const lowZoneThreshold = rangeLow + range * 0.2;
+
+    // どちらかの安値が下位20%にあること
+    if (candle1.low > lowZoneThreshold && candle2.low > lowZoneThreshold) {
+      return { detected: false, strength: 0 };
+    }
+  }
+
+  // 強度: 安値の一致度
+  const matchRate = 1 - (lowDiff / avgLow) * 100;
+  const strength = Math.max(0, Math.min(matchRate, 1.0));
+
+  return { detected: true, strength };
+}
+
+/**
+ * かぶせ線 (dark_cloud_cover) の検出
+ * 条件: 
+ *   - 前日: 大陽線（平均実体の1.5倍以上）
+ *   - 当日: 前日終値より高く始まる（ギャップアップ）
+ *   - 当日: 陰線で、前日の中心値より下で引ける
+ *   - ただし、前日の始値は下回らない
+ */
+function detectDarkCloudCover(candle1: Candle, candle2: Candle, context?: PatternContext): { detected: boolean; strength: number } {
+  // 前日は陽線
+  if (!isBullish(candle1)) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 当日は陰線
+  if (!isBearish(candle2)) {
+    return { detected: false, strength: 0 };
+  }
+
+  const body1 = bodySize(candle1);
+  const avgBody = context?.avgBodySize || body1;
+  const minBodySize = avgBody * 1.5;
+
+  // 前日は大陽線
+  if (body1 < minBodySize) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 当日は前日終値より高く始まる（ギャップアップ）
+  // ※ 厳密なギャップでなくても、ほぼ同値から始まる場合も許容
+  const gapTolerance = body1 * 0.1; // 前日実体の10%以内の誤差を許容
+  if (candle2.open < candle1.close - gapTolerance) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 前日の中心値
+  const midPoint = (candle1.open + candle1.close) / 2;
+
+  // 当日終値が中心値より下
+  if (candle2.close >= midPoint) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 当日終値が前日始値より上（完全には下抜けない）
+  if (candle2.close <= candle1.open) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 強度: 中心値からの侵入度
+  const penetration = midPoint - candle2.close;
+  const strength = Math.min(penetration / body1, 1.0);
+
+  return { detected: true, strength };
+}
+
+/**
+ * 切り込み線 (piercing_line) の検出
+ * 条件（かぶせ線の逆）:
+ *   - 前日: 大陰線
+ *   - 当日: 前日終値より安く始まる（ギャップダウン）
+ *   - 当日: 陽線で、前日の中心値を超える
+ *   - ただし、前日の始値は超えない
+ */
+function detectPiercingLine(candle1: Candle, candle2: Candle, context?: PatternContext): { detected: boolean; strength: number } {
+  // 前日は陰線
+  if (!isBearish(candle1)) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 当日は陽線
+  if (!isBullish(candle2)) {
+    return { detected: false, strength: 0 };
+  }
+
+  const body1 = bodySize(candle1);
+  const avgBody = context?.avgBodySize || body1;
+  const minBodySize = avgBody * 1.5;
+
+  // 前日は大陰線
+  if (body1 < minBodySize) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 当日は前日終値より安く始まる（ギャップダウン）
+  // ※ 厳密なギャップでなくても、ほぼ同値から始まる場合も許容
+  const gapTolerance = body1 * 0.1; // 前日実体の10%以内の誤差を許容
+  if (candle2.open > candle1.close + gapTolerance) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 前日の中心値
+  const midPoint = (candle1.open + candle1.close) / 2;
+
+  // 当日終値が中心値より上
+  if (candle2.close <= midPoint) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 当日終値が前日始値より下（完全には上抜けない）
+  if (candle2.close >= candle1.open) {
+    return { detected: false, strength: 0 };
+  }
+
+  // 強度: 中心値からの突破度
+  const penetration = candle2.close - midPoint;
+  const strength = Math.min(penetration / body1, 1.0);
+
+  return { detected: true, strength };
+}
+
+// ----- パターンコンテキスト（Phase 2用） -----
+interface PatternContext {
+  rangeHigh: number;   // 直近の高値
+  rangeLow: number;    // 直近の安値
+  avgBodySize: number; // 平均実体サイズ
+}
+
 // ----- パターン検出のディスパッチャー -----
-type PatternDetector = (c1: Candle, c2: Candle) => { detected: boolean; strength: number };
+type PatternDetector = (c1: Candle, c2: Candle, context?: PatternContext) => { detected: boolean; strength: number };
 
 const PATTERN_DETECTORS: Record<CandlePatternType, PatternDetector> = {
   bullish_engulfing: detectBullishEngulfing,
   bearish_engulfing: detectBearishEngulfing,
   bullish_harami: detectBullishHarami,
   bearish_harami: detectBearishHarami,
-  tweezer_top: () => ({ detected: false, strength: 0 }), // Phase 2
-  tweezer_bottom: () => ({ detected: false, strength: 0 }), // Phase 2
-  dark_cloud_cover: () => ({ detected: false, strength: 0 }), // Phase 2
-  piercing_line: () => ({ detected: false, strength: 0 }), // Phase 2
+  tweezer_top: detectTweezerTop,
+  tweezer_bottom: detectTweezerBottom,
+  dark_cloud_cover: detectDarkCloudCover,
+  piercing_line: detectPiercingLine,
 };
 
 // ----- 過去統計計算 -----
@@ -438,6 +622,27 @@ function generateSummary(
   return parts.join(' ');
 }
 
+// ----- ヘルパー: 金額フォーマット -----
+function formatPrice(price: number): string {
+  return `¥${Math.round(price).toLocaleString('ja-JP')}`;
+}
+
+// ----- ヘルパー: 曜日取得 -----
+function getDayOfWeek(isoDate: string): string {
+  const days = ['日', '月', '火', '水', '木', '金', '土'];
+  const d = new Date(isoDate);
+  return days[d.getUTCDay()];
+}
+
+// ----- ヘルパー: 日付フォーマット (MM/DD(曜)) -----
+function formatDateWithDay(isoDate: string): string {
+  const d = new Date(isoDate);
+  const m = d.getUTCMonth() + 1;
+  const day = d.getUTCDate();
+  const dow = getDayOfWeek(isoDate);
+  return `${m}/${day}(${dow})`;
+}
+
 // ----- コンテント生成（LLM向け詳細テキスト） -----
 function generateContent(
   patterns: DetectedCandlePattern[],
@@ -450,10 +655,29 @@ function generateContent(
   lines.push(`分析期間: ${windowCandles[0]?.timestamp?.split('T')[0] || '?'} 〜 ${windowCandles[windowCandles.length - 1]?.timestamp?.split('T')[0] || '?'}`);
   lines.push('');
 
+  // === 1. 5日間のローソク足データ（最優先） ===
+  lines.push(`=== ${windowCandles.length}日間のローソク足 ===`);
+  for (let i = 0; i < windowCandles.length; i++) {
+    const c = windowCandles[i];
+    const dateStr = formatDateWithDay(c.timestamp);
+    const change = c.close - c.open;
+    const changeSign = change >= 0 ? '+' : '-';
+    const candleType = change >= 0 ? '陽線' : '陰線';
+    const partialMark = c.is_partial ? ' ⚠未確定' : '';
+
+    lines.push(
+      `${dateStr}: 始値${formatPrice(c.open)} 高値${formatPrice(c.high)} 安値${formatPrice(c.low)} 終値${formatPrice(c.close)} [${candleType} ${changeSign}${formatPrice(Math.abs(change)).replace('¥', '')}円]${partialMark}`
+    );
+  }
+  lines.push('');
+
+  // === 2. パターン検出結果 ===
   if (patterns.length === 0) {
-    lines.push('検出されたパターン: なし');
+    lines.push('=== 検出パターン ===');
+    lines.push('なし');
     lines.push('');
     lines.push('直近の値動きには特徴的な2本足パターンは見られませんでした。');
+    lines.push('');
   } else {
     for (const p of patterns) {
       lines.push(`■ ${p.pattern_jp}（${p.pattern}）`);
@@ -461,23 +685,80 @@ function generateContent(
       lines.push(`  状態: ${p.status === 'forming' ? '形成中（終値未確定）' : '確定'}`);
       lines.push(`  強度: ${(p.strength * 100).toFixed(0)}%`);
       lines.push(`  直前トレンド: ${p.local_context.trend_before === 'up' ? '上昇' : p.local_context.trend_before === 'down' ? '下落' : '中立'}`);
+      lines.push('');
 
-      if (p.history_stats) {
-        lines.push('');
-        lines.push(`  【過去${p.history_stats.lookback_days}日間の統計】`);
-        lines.push(`    出現回数: ${p.history_stats.occurrences}回`);
+      // === 3. パターン該当箇所の詳細 ===
+      const [idx1, idx2] = p.candle_range_index;
+      if (idx1 >= 0 && idx2 < windowCandles.length) {
+        const c1 = windowCandles[idx1];
+        const c2 = windowCandles[idx2];
+        const date1 = formatDateWithDay(c1.timestamp);
+        const date2 = formatDateWithDay(c2.timestamp);
+        const body1 = c1.close - c1.open;
+        const body2 = c2.close - c2.open;
+        const type1 = body1 >= 0 ? '陽線' : '陰線';
+        const type2 = body2 >= 0 ? '陽線' : '陰線';
 
-        for (const [horizon, stats] of Object.entries(p.history_stats.horizons)) {
-          lines.push(`    ${horizon}日後: 勝率${(stats.win_rate * 100).toFixed(0)}%, 平均リターン${stats.avg_return > 0 ? '+' : ''}${stats.avg_return.toFixed(2)}% (n=${stats.sample})`);
+        lines.push('  === 検出パターンの詳細 ===');
+        // パターンは2本目の終値で確定するため、確定日（2本目）を強調
+        const statusMark = p.uses_partial_candle ? '（形成中）' : '（確定）';
+        lines.push(`  📍 ${date2} に${p.pattern_jp}を検出${statusMark}（${date1}-${date2}で形成）`);
+        lines.push(`    ${date1}(前日): ${type1} 始値${formatPrice(c1.open)} → 終値${formatPrice(c1.close)} (実体 ${body1 >= 0 ? '+' : '-'}${formatPrice(Math.abs(body1)).replace('¥', '')}円)`);
+        lines.push(`    ${date2}(確定日): ${type2} 始値${formatPrice(c2.open)} → 終値${formatPrice(c2.close)} (実体 ${body2 >= 0 ? '+' : '-'}${formatPrice(Math.abs(body2)).replace('¥', '')}円) ← パターン確定`);
+
+        // パターンの判定理由
+        if (p.pattern === 'bullish_engulfing') {
+          lines.push(`    判定: 当日の陽線が前日の陰線を完全に包む（始値が前日終値以下、終値が前日始値以上）`);
+        } else if (p.pattern === 'bearish_engulfing') {
+          lines.push(`    判定: 当日の陰線が前日の陽線を完全に包む（始値が前日終値以上、終値が前日始値以下）`);
+        } else if (p.pattern === 'bullish_harami') {
+          lines.push(`    判定: 当日のローソク足が前日の大陰線の実体内に収まる`);
+        } else if (p.pattern === 'bearish_harami') {
+          lines.push(`    判定: 当日のローソク足が前日の大陽線の実体内に収まる`);
+        } else if (p.pattern === 'tweezer_top') {
+          const highDiff = Math.abs(c1.high - c2.high);
+          const matchPct = (1 - highDiff / ((c1.high + c2.high) / 2)) * 100;
+          lines.push(`    判定: 2日連続で高値がほぼ同じ（誤差${highDiff.toLocaleString()}円, 一致率${matchPct.toFixed(1)}%）`);
+          lines.push(`    高値: ${formatPrice(c1.high)} → ${formatPrice(c2.high)}`);
+        } else if (p.pattern === 'tweezer_bottom') {
+          const lowDiff = Math.abs(c1.low - c2.low);
+          const matchPct = (1 - lowDiff / ((c1.low + c2.low) / 2)) * 100;
+          lines.push(`    判定: 2日連続で安値がほぼ同じ（誤差${lowDiff.toLocaleString()}円, 一致率${matchPct.toFixed(1)}%）`);
+          lines.push(`    安値: ${formatPrice(c1.low)} → ${formatPrice(c2.low)}`);
+        } else if (p.pattern === 'dark_cloud_cover') {
+          const midPoint = (c1.open + c1.close) / 2;
+          lines.push(`    判定: 高寄り後に陰線で前日陽線の中心値（${formatPrice(midPoint)}）を下回る`);
+          lines.push(`    ギャップ: ${formatPrice(c2.open)} > 前日終値${formatPrice(c1.close)}`);
+        } else if (p.pattern === 'piercing_line') {
+          const midPoint = (c1.open + c1.close) / 2;
+          lines.push(`    判定: 安寄り後に陽線で前日陰線の中心値（${formatPrice(midPoint)}）を上回る`);
+          lines.push(`    ギャップ: ${formatPrice(c2.open)} < 前日終値${formatPrice(c1.close)}`);
         }
+        lines.push('');
+      }
+
+      // === 4. 過去統計データ ===
+      if (p.history_stats) {
+        const hs = p.history_stats;
+        lines.push(`  === 過去の実績（直近${hs.lookback_days}日間） ===`);
+        lines.push(`    ${p.pattern_jp}の出現回数: ${hs.occurrences}回`);
+
+        for (const [horizon, stats] of Object.entries(hs.horizons)) {
+          const wins = Math.round(stats.win_rate * stats.sample);
+          const losses = stats.sample - wins;
+          lines.push(`    ${horizon}日後: 勝率${(stats.win_rate * 100).toFixed(1)}% (${wins}勝${losses}敗), 平均リターン ${stats.avg_return >= 0 ? '+' : ''}${stats.avg_return.toFixed(2)}%`);
+        }
+        lines.push('');
+      } else {
+        lines.push('  === 過去の実績 ===');
+        lines.push('    統計データなし（サンプル数不足または期間外）');
+        lines.push('');
       }
 
       if (p.uses_partial_candle) {
-        lines.push('');
         lines.push('  ⚠️ 注意: 本日の日足は未確定です。終値確定後にパターンが変化・消失する可能性があります。');
+        lines.push('');
       }
-
-      lines.push('');
     }
   }
 
@@ -485,9 +766,38 @@ function generateContent(
   lines.push('【パターンの読み方】');
   lines.push('・陽線包み線: 下落後に出現すると上昇転換のサインとされます');
   lines.push('・陰線包み線: 上昇後に出現すると下落転換のサインとされます');
-  lines.push('・勝率50%超でもリスク管理は必須です。統計は参考値であり、将来を保証するものではありません。');
+  lines.push('・はらみ線: 大きなローソク足の中に小さなローソク足が収まる形で、トレンド転換の予兆とされます');
+  lines.push('・毛抜き天井: 高値圏で2日連続同じ高値→上昇の限界、下落転換のサイン');
+  lines.push('・毛抜き底: 安値圏で2日連続同じ安値→下落の限界、上昇転換のサイン');
+  lines.push('・かぶせ線: 高寄り後に陰線で前日陽線の中心以下→上昇一服、調整のサイン');
+  lines.push('・切り込み線: 安寄り後に陽線で前日陰線の中心超え→下落一服、反発のサイン');
+  lines.push('');
+  lines.push('※勝率50%超でもリスク管理は必須です。統計は参考値であり、将来を保証するものではありません。');
 
   return [{ type: 'text', text: lines.join('\n') }];
+}
+
+// ----- ヘルパー: 日付形式の正規化 -----
+/**
+ * ISO形式 ("2025-11-05") または YYYYMMDD ("20251105") を YYYYMMDD に正規化
+ */
+function normalizeDateToYYYYMMDD(dateStr: string | undefined): string | undefined {
+  if (!dateStr) return undefined;
+
+  // ISO形式 ("2025-11-05" or "2025-11-05T...") の場合
+  if (dateStr.includes('-')) {
+    const match = dateStr.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) {
+      return `${match[1]}${match[2]}${match[3]}`;
+    }
+  }
+
+  // 既にYYYYMMDD形式の場合
+  if (/^\d{8}$/.test(dateStr)) {
+    return dateStr;
+  }
+
+  return undefined;
 }
 
 // ----- メイン関数 -----
@@ -495,6 +805,8 @@ export default async function analyzeCandlePatterns(
   opts: {
     pair?: 'btc_jpy';
     timeframe?: '1day';
+    as_of?: string; // ISO "2025-11-05" or YYYYMMDD "20251105"
+    date?: string;  // DEPRECATED: YYYYMMDD format (for backward compatibility)
     window_days?: number;
     focus_last_n?: number;
     patterns?: CandlePatternType[];
@@ -508,6 +820,11 @@ export default async function analyzeCandlePatterns(
     const input = AnalyzeCandlePatternsInputSchema.parse(opts);
     const pair = input.pair as Pair;
     const timeframe = input.timeframe;
+
+    // as_of を優先、なければ date を使用（互換性のため）
+    // as_of: ISO形式 "2025-11-05" または YYYYMMDD "20251105" を受け付け
+    const rawDate = input.as_of || input.date;
+    const targetDate = normalizeDateToYYYYMMDD(rawDate);
     const windowDays = input.window_days;
     const focusLastN = input.focus_last_n;
     const targetPatterns = input.patterns || (Object.keys(PATTERN_DETECTORS) as CandlePatternType[]);
@@ -515,9 +832,12 @@ export default async function analyzeCandlePatterns(
     const historyHorizons = input.history_horizons;
     const allowPartial = input.allow_partial_patterns;
 
+    // 日付指定があるかどうか
+    const isHistoricalQuery = !!targetDate;
+
     // ローソク足データを取得（統計計算用に多めに取得）
     const requiredCandles = Math.max(windowDays, historyLookbackDays + 10);
-    const candlesResult = await getCandles(pair, '1day', undefined, requiredCandles);
+    const candlesResult = await getCandles(pair, '1day', targetDate, requiredCandles);
 
     if (!candlesResult.ok) {
       return AnalyzeCandlePatternsOutputSchema.parse(
@@ -525,7 +845,25 @@ export default async function analyzeCandlePatterns(
       );
     }
 
-    const allCandles = candlesResult.data.normalized;
+    // 全データを保持（統計計算用）
+    const allCandlesForStats = candlesResult.data.normalized;
+    let allCandles = [...allCandlesForStats];
+
+    // 🚨 CRITICAL: 日付指定時は、その日付以前のデータのみにフィルタリング
+    // get_candles は年単位でデータを取得するため、指定日以降のデータも含まれる
+    if (isHistoricalQuery && targetDate) {
+      // targetDate は YYYYMMDD 形式（例: "20251105"）
+      const year = targetDate.slice(0, 4);
+      const month = targetDate.slice(4, 6);
+      const day = targetDate.slice(6, 8);
+      const targetDateObj = new Date(`${year}-${month}-${day}T23:59:59.999Z`);
+
+      allCandles = allCandles.filter((c) => {
+        if (!c.isoTime) return false;
+        const candleDate = new Date(c.isoTime);
+        return candleDate <= targetDateObj;
+      });
+    }
 
     if (allCandles.length < windowDays) {
       return AnalyzeCandlePatternsOutputSchema.parse(
@@ -538,11 +876,13 @@ export default async function analyzeCandlePatterns(
     const windowStart = allCandles.length - windowDays;
     const windowCandles = allCandles.slice(windowStart);
 
-    // 日足確定判定: 最新の日足が今日のデータかどうか
+    // 日足確定判定:
+    // - 過去日付指定時: すべて確定済み（is_partial = false）
+    // - 最新データ時: 最新の日足が今日のデータなら未確定
     const now = new Date();
     const todayStr = now.toISOString().split('T')[0];
     const lastCandleTime = windowCandles[windowCandles.length - 1]?.isoTime?.split('T')[0];
-    const isLastPartial = lastCandleTime === todayStr;
+    const isLastPartial = !isHistoricalQuery && lastCandleTime === todayStr;
 
     // WindowCandle形式に変換
     const formattedWindowCandles: WindowCandle[] = windowCandles.map((c, idx) => ({
@@ -563,6 +903,16 @@ export default async function analyzeCandlePatterns(
     const detectedPatterns: DetectedCandlePattern[] = [];
     const startCheckIndex = Math.max(1, windowCandles.length - focusLastN);
 
+    // Phase 2パターン用のコンテキストを計算
+    const highs = windowCandles.map(c => c.high);
+    const lows = windowCandles.map(c => c.low);
+    const bodies = windowCandles.map(c => Math.abs(c.close - c.open));
+    const patternContext: PatternContext = {
+      rangeHigh: Math.max(...highs),
+      rangeLow: Math.min(...lows),
+      avgBodySize: bodies.reduce((sum, b) => sum + b, 0) / bodies.length,
+    };
+
     for (let i = startCheckIndex; i < windowCandles.length; i++) {
       const candle1 = windowCandles[i - 1];
       const candle2 = windowCandles[i];
@@ -575,7 +925,7 @@ export default async function analyzeCandlePatterns(
 
       for (const patternType of targetPatterns) {
         const detector = PATTERN_DETECTORS[patternType];
-        const result = detector(candle1, candle2);
+        const result = detector(candle1, candle2, patternContext);
 
         if (result.detected) {
           // ローカルコンテキストの計算
@@ -583,9 +933,9 @@ export default async function analyzeCandlePatterns(
           const trendBefore = detectTrendBefore(windowCandles, i - 1, 3);
           const volatilityLevel = detectVolatilityLevel(windowCandles, i, 5);
 
-          // 過去統計の計算
+          // 過去統計の計算（フィルタリング前の全データを使用）
           const historyStats = calculateHistoryStats(
-            allCandles,
+            allCandlesForStats,
             patternType,
             historyHorizons,
             historyLookbackDays
@@ -609,9 +959,15 @@ export default async function analyzeCandlePatterns(
       }
     }
 
-    // サマリーとコンテント生成
-    const summary = generateSummary(detectedPatterns, formattedWindowCandles);
-    const content = generateContent(detectedPatterns, formattedWindowCandles);
+    // 強度フィルタ: 50%未満のパターンを除外（初心者向けにノイズを減らす）
+    const MIN_STRENGTH_THRESHOLD = 0.50; // 50%
+    const filteredPatterns = detectedPatterns.filter(
+      (p) => p.strength >= MIN_STRENGTH_THRESHOLD
+    );
+
+    // サマリーとコンテント生成（フィルタ後のパターンを使用）
+    const summary = generateSummary(filteredPatterns, formattedWindowCandles);
+    const content = generateContent(filteredPatterns, formattedWindowCandles);
 
     const data = {
       pair,
@@ -622,13 +978,15 @@ export default async function analyzeCandlePatterns(
         to: formattedWindowCandles[formattedWindowCandles.length - 1]?.timestamp?.split('T')[0] || '',
         candles: formattedWindowCandles,
       },
-      recent_patterns: detectedPatterns,
+      recent_patterns: filteredPatterns, // 強度50%以上のパターンのみ
       summary,
     };
 
     const meta = {
       ...createMeta(pair, {}),
       timeframe,
+      as_of: rawDate || null, // original input value
+      date: targetDate || null, // YYYYMMDD normalized or null (latest)
       window_days: windowDays,
       patterns_checked: targetPatterns,
       history_lookback_days: historyLookbackDays,
