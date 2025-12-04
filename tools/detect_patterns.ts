@@ -1770,32 +1770,33 @@ export default async function detectPatterns(
             const start = (candles[startIdx] as any)?.isoTime;
 
             // ブレイクアウト検出（トレンドラインからの乖離で判定）
-            // Falling Wedge: 下側トレンドラインを下回ったら無効化/終了
+            // Falling Wedge: 上方ブレイク=success（強気転換）、下方ブレイク=failure（弱気継続）
             let breakoutIdx = endIdx - 1;
             let breakoutDetected = false;
-
-            // ATR計算（バッファ用）
-            let atrSum = 0;
-            const atrPeriod = Math.min(14, endIdx - startIdx);
-            for (let j = endIdx - atrPeriod; j < endIdx; j++) {
-              const h = Number(candles[j]?.high);
-              const l = Number(candles[j]?.low);
-              atrSum += h - l;
-            }
-            const atr = atrSum / atrPeriod;
-            const breakBuffer = atr * 0.5;  // ATR の 50% をバッファとして使用
+            let breakoutDirection: 'up' | 'down' | null = null;
 
             for (let i = endIdx; i < candles.length && i < endIdx + 30; i++) {
               const open = Number(candles[i]?.open);
               const close = Number(candles[i]?.close);
               const candleBodyTop = Math.max(open, close);  // ローソク本体の上端
+              const candleBodyBottom = Math.min(open, close);  // ローソク本体の下端
+              const upperLineValue = upperLine.valueAt(i);
               const lowerLineValue = lowerLine.valueAt(i);
-              const breakThreshold = lowerLineValue * 0.98;  // トレンドラインの2%下
+              const upperBreakThreshold = upperLineValue * 1.02;  // 上側トレンドラインの2%上
+              const lowerBreakThreshold = lowerLineValue * 0.98;  // 下側トレンドラインの2%下
 
-              // ローソク本体がトレンドラインを1%以上下回ったら明確なブレイク
-              if (candleBodyTop < breakThreshold) {
+              // 上方ブレイク: ローソク本体の下端が上側トレンドラインを2%以上上回る
+              if (candleBodyBottom > upperBreakThreshold) {
                 breakoutIdx = i;
                 breakoutDetected = true;
+                breakoutDirection = 'up';
+                break;
+              }
+              // 下方ブレイク: ローソク本体の上端が下側トレンドラインを2%以上下回る
+              if (candleBodyTop < lowerBreakThreshold) {
+                breakoutIdx = i;
+                breakoutDetected = true;
+                breakoutDirection = 'down';
                 break;
               }
             }
@@ -1832,11 +1833,16 @@ export default async function detectPatterns(
                 }
               });
 
+              // Falling Wedge: 上方ブレイク=success、下方ブレイク=failure
+              const outcome = breakoutDirection === 'up' ? 'success' : 'failure';
+
               push(patterns, {
                 type: 'falling_wedge' as const,
                 confidence,
                 range: { start, end },
                 _method: 'pivot_based',
+                breakoutDirection: breakoutDirection,
+                outcome: outcome,
               });
             }
           }
@@ -1850,32 +1856,33 @@ export default async function detectPatterns(
             const start = (candles[startIdx] as any)?.isoTime;
 
             // ブレイクアウト検出（トレンドラインからの乖離で判定）
-            // Rising Wedge: 下側トレンドラインを下回ったら完成
+            // Rising Wedge: 下方ブレイク=success（弱気転換）、上方ブレイク=failure（強気継続）
             let breakoutIdx = endIdx - 1;
             let breakoutDetected = false;
-
-            // ATR計算（バッファ用）
-            let atrSumRw = 0;
-            const atrPeriodRw = Math.min(14, endIdx - startIdx);
-            for (let j = endIdx - atrPeriodRw; j < endIdx; j++) {
-              const h = Number(candles[j]?.high);
-              const l = Number(candles[j]?.low);
-              atrSumRw += h - l;
-            }
-            const atrRw = atrSumRw / atrPeriodRw;
-            const breakBufferRw = atrRw * 0.5;  // ATR の 50% をバッファとして使用
+            let breakoutDirectionRw: 'up' | 'down' | null = null;
 
             for (let i = endIdx; i < candles.length && i < endIdx + 30; i++) {
               const open = Number(candles[i]?.open);
               const close = Number(candles[i]?.close);
               const candleBodyTop = Math.max(open, close);  // ローソク本体の上端
+              const candleBodyBottom = Math.min(open, close);  // ローソク本体の下端
+              const upperLineValue = upperLine.valueAt(i);
               const lowerLineValue = lowerLine.valueAt(i);
-              const breakThresholdRw = lowerLineValue * 0.98;  // トレンドラインの2%下
+              const upperBreakThresholdRw = upperLineValue * 1.02;  // 上側トレンドラインの2%上
+              const lowerBreakThresholdRw = lowerLineValue * 0.98;  // 下側トレンドラインの2%下
 
-              // ローソク本体がトレンドラインを1%以上下回ったら明確なブレイク（パターン完成）
-              if (candleBodyTop < breakThresholdRw) {
+              // 下方ブレイク: ローソク本体の上端が下側トレンドラインを2%以上下回る
+              if (candleBodyTop < lowerBreakThresholdRw) {
                 breakoutIdx = i;
                 breakoutDetected = true;
+                breakoutDirectionRw = 'down';
+                break;
+              }
+              // 上方ブレイク: ローソク本体の下端が上側トレンドラインを2%以上上回る
+              if (candleBodyBottom > upperBreakThresholdRw) {
+                breakoutIdx = i;
+                breakoutDetected = true;
+                breakoutDirectionRw = 'up';
                 break;
               }
             }
@@ -1912,11 +1919,16 @@ export default async function detectPatterns(
                 }
               });
 
+              // Rising Wedge: 下方ブレイク=success、上方ブレイク=failure
+              const outcomeRw = breakoutDirectionRw === 'down' ? 'success' : 'failure';
+
               push(patterns, {
                 type: 'rising_wedge' as const,
                 confidence,
                 range: { start, end },
                 _method: 'pivot_based',
+                breakoutDirection: breakoutDirectionRw,
+                outcome: outcomeRw,
               });
             }
           }
@@ -2470,8 +2482,38 @@ export default async function detectPatterns(
       swings: swingsTrimmed,
       candidates: candidatesTrimmed,
     };
+
+    // summary 生成: LLM が content から読み取れるように詳細を含める
+    const patternSummaries = patterns.map((p: any, idx: number) => {
+      const startDate = p.range?.start?.substring(0, 10) || '?';
+      const endDate = p.range?.end?.substring(0, 10) || '?';
+      let detail = `${idx + 1}. ${p.type} (パターン整合度: ${p.confidence})\n   - 期間: ${startDate} ~ ${endDate}`;
+
+      // ウェッジパターンの場合、ブレイク情報を追加
+      if ((p.type === 'falling_wedge' || p.type === 'rising_wedge') && p.breakoutDirection && p.outcome) {
+        const directionJa = p.breakoutDirection === 'up' ? '上方' : '下方';
+        const outcomeJa = p.outcome === 'success' ? '成功' : '失敗';
+        const expectedDir = p.type === 'falling_wedge' ? '上方' : '下方';
+        const meaning = p.type === 'falling_wedge'
+          ? (p.outcome === 'success' ? '強気転換' : '弱気継続')
+          : (p.outcome === 'success' ? '弱気転換' : '強気継続');
+
+        detail += `\n   - ブレイク方向: ${directionJa}ブレイク（本来は${expectedDir}ブレイクが期待されるパターン）`;
+        detail += `\n   - パターン結果: ${outcomeJa}（${meaning}）`;
+      }
+
+      // ネックラインがある場合
+      if (p.neckline && Array.isArray(p.neckline) && p.neckline.length >= 2) {
+        detail += `\n   - ネックライン: ${Math.round(p.neckline[0]?.y || 0).toLocaleString()}円 → ${Math.round(p.neckline[1]?.y || 0).toLocaleString()}円`;
+      }
+
+      return detail;
+    }).join('\n\n');
+
+    const summaryText = `${pair.toUpperCase()} [${type}] ${limit}本から${patterns.length}件を検出（${patterns.map((p: any) => p.type).join('×1、')}×1）\n\n【検出パターン（全件）】\n${patternSummaries || 'なし'}\n\nチャート連携: structuredContent.data.overlays を render_chart_svg.overlays に渡すと注釈/範囲を描画できます。\n\nパターン整合度について（形状一致度・対称性・期間から算出）:\n  0.8以上 = 理想的な形状（教科書的パターン）\n  0.7-0.8 = 標準的な形状（他指標と併用推奨）\n  0.6-0.7 = やや不明瞭（慎重に判断）\n  0.6未満 = 形状不十分`;
+
     const out = ok(
-      'patterns detected',
+      summaryText,
       { patterns, overlays: { ranges }, warnings, statistics },
       {
         pair,

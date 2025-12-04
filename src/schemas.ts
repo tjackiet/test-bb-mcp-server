@@ -700,6 +700,9 @@ export const DetectedPatternSchema = z.object({
   // 完成済みパターン用フィールド
   breakoutDate: z.string().optional(),       // ブレイクアウト日
   daysSinceBreakout: z.number().int().optional(), // ブレイクアウトからの経過日数
+  // ウェッジパターン用: ブレイク方向と結果
+  breakoutDirection: z.enum(['up', 'down']).optional(),  // ブレイク方向
+  outcome: z.enum(['success', 'failure']).optional(),    // パターン結果（期待通り=success, 逆方向=failure）
   aftermath: z
     .object({
       breakoutDate: z.string().nullable().optional(),

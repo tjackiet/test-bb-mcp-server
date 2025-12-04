@@ -1497,6 +1497,19 @@ registerToolWithLog(
 					breakoutLine = `   - ブレイク: ${bdate} (${bprice}円)`;
 				}
 			} catch { /* ignore */ }
+			// ウェッジパターンのブレイク方向と結果（LLM が正しく解釈できるように）
+			let wedgeOutcomeLine: string | null = null;
+			try {
+				if ((p?.type === 'falling_wedge' || p?.type === 'rising_wedge') && p?.breakoutDirection && p?.outcome) {
+					const directionJa = p.breakoutDirection === 'up' ? '上方' : '下方';
+					const outcomeJa = p.outcome === 'success' ? '成功' : '失敗';
+					const expectedDir = p.type === 'falling_wedge' ? '上方' : '下方';
+					const meaning = p.type === 'falling_wedge'
+						? (p.outcome === 'success' ? '強気転換' : '弱気継続')
+						: (p.outcome === 'success' ? '弱気転換' : '強気継続');
+					wedgeOutcomeLine = `   - ブレイク方向: ${directionJa}ブレイク（本来は${expectedDir}ブレイクが期待されるパターン）\n   - パターン結果: ${outcomeJa}（${meaning}）`;
+				}
+			} catch { /* ignore */ }
 			// structure diagram SVG (inline for LLM visibility)
 			let diagramBlock: string | null = null;
 			try {
@@ -1523,6 +1536,7 @@ registerToolWithLog(
 				...(pivotLines.length ? pivotLines : []),
 				neckline ? `   - ネックライン: ${neckline}` : null,
 				breakoutLine,
+				wedgeOutcomeLine,
 				diagramBlock,
 			].filter(Boolean);
 			return lines.join('\n');
