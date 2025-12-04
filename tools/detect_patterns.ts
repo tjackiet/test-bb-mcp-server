@@ -2530,4 +2530,3 @@ export default async function detectPatterns(
   }
 }
 
-
