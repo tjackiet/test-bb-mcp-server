@@ -33,6 +33,11 @@ export default async function detectPatterns(
     patterns: Array<typeof PatternTypeEnum._type>;
     requireCurrentInPattern: boolean;
     currentRelevanceDays: number;
+    // 統合オプション
+    includeForming: boolean;
+    includeCompleted: boolean;
+    includeInvalid: boolean;
+    view: 'summary' | 'detailed' | 'full' | 'debug';
   }> = {}
 ) {
   try {
@@ -90,6 +95,10 @@ export default async function detectPatterns(
       ? ((opts.minBarsBetweenSwings as number) === SCHEMA_DEFAULTS.minBarsBetweenSwings ? auto.minBarsBetweenSwings : (opts.minBarsBetweenSwings as number))
       : auto.minBarsBetweenSwings;
     const strictPivots = (opts as any)?.strictPivots !== false; // 既定: 厳格
+    // 統合オプション
+    const includeForming = opts.includeForming ?? false;
+    const includeCompleted = opts.includeCompleted ?? true;
+    const includeInvalid = opts.includeInvalid ?? false;
     const convergenceFactorForTf = (tf: string): number => {
       const t = String(tf);
       if (t === '1hour' || t === '4hour' || t === '15min' || t === '30min') return 0.6;
@@ -778,6 +787,136 @@ export default async function detectPatterns(
       patterns = deduplicatePatterns(patterns);
     }
 
+    // 2b) 形成中ダブルトップ/ボトム（統合: detect_forming_patterns のロジックを追加）
+    if (includeForming && (want.size === 0 || want.has('double_top') || want.has('double_bottom'))) {
+      const lastIdx = candles.length - 1;
+      const currentPrice = Number(candles[lastIdx]?.close ?? NaN);
+      const isoAt = (i: number) => (candles[i] as any)?.isoTime || '';
+      const maxFormingDays = 90; // 形成中パターンは3ヶ月以内に制限
+      const daysPerBar = type === '1day' ? 1 : type === '1week' ? 7 : 1;
+
+      // 形成中 double_top: 確定ピーク1つ + 確定谷 + 現在価格がピーク付近まで上昇中
+      if ((want.size === 0 || want.has('double_top')) && allPeaks.length >= 1 && allValleys.length >= 1) {
+        // 最後の確定ピークと、その後の確定谷を探す
+        const lastConfirmedPeak = [...allPeaks].reverse().find(p => p.idx < lastIdx - 2);
+        const valleyAfterPeak = lastConfirmedPeak ? allValleys.find(v => v.idx > lastConfirmedPeak.idx && v.idx < lastIdx - 1) : null;
+
+        if (lastConfirmedPeak && valleyAfterPeak && valleyAfterPeak.idx > lastConfirmedPeak.idx) {
+          const leftPeak = lastConfirmedPeak;
+          const valley = valleyAfterPeak;
+
+          // 現在価格が左ピーク付近（±許容範囲内）まで上昇している
+          const leftPct = currentPrice / Math.max(1, leftPeak.price);
+          const rightPeakTolerancePct = 0.05; // 5%許容
+
+          if (leftPct >= (1 - rightPeakTolerancePct) && leftPct <= (1 + rightPeakTolerancePct) && currentPrice > valley.price) {
+            // 進捗率: 谷から左ピークレベルへの回復度
+            const ratio = (currentPrice - valley.price) / Math.max(1e-12, leftPeak.price - valley.price);
+            const progress = Math.max(0, Math.min(1, ratio));
+            const completion = Math.min(1, 0.66 + progress * 0.34);
+
+            const minCompletion = 0.4;
+            if (completion >= minCompletion) {
+              const formationBars = Math.max(0, lastIdx - leftPeak.idx);
+              const patternDays = Math.round(formationBars * (type === '1day' ? 1 : type === '1week' ? 7 : 1));
+              const minPatternDays = 14;
+
+              if (patternDays >= minPatternDays && patternDays <= maxFormingDays) {
+                const neckline = [{ x: leftPeak.idx, y: valley.price }, { x: lastIdx, y: valley.price }];
+                const confBase = Math.min(1, Math.max(0, (1 - Math.abs(leftPct - 1)) * 0.6 + progress * 0.4));
+                const confidence = Math.round(confBase * 100) / 100;
+                const start = isoAt(leftPeak.idx);
+                const end = isoAt(lastIdx);
+
+                push(patterns, {
+                  type: 'double_top',
+                  confidence,
+                  range: { start, end },
+                  status: 'forming',
+                  pivots: [
+                    { idx: leftPeak.idx, price: leftPeak.price, kind: 'H' as const },
+                    { idx: valley.idx, price: valley.price, kind: 'L' as const },
+                  ],
+                  neckline,
+                  completionPct: Math.round(completion * 100),
+                  _method: 'forming_double_top',
+                });
+              }
+            }
+          }
+        }
+      }
+
+      // 形成中 double_bottom: 確定谷2つ + 現在価格がネックライン付近まで上昇中
+      if ((want.size === 0 || want.has('double_bottom')) && allValleys.length >= 2) {
+        const confirmedValleys = allValleys.filter(v => v.idx < lastIdx - 2);
+
+        if (confirmedValleys.length >= 2) {
+          // 右側の谷を優先（より新しいペアを探索）
+          for (let j = confirmedValleys.length - 1; j >= 1; j--) {
+            const rightValley = confirmedValleys[j];
+            const leftValley = confirmedValleys[j - 1];
+            if (rightValley.idx - leftValley.idx < 5) continue; // 谷の間隔が短すぎる
+
+            // 2つの谷の間に存在する戻り高値（ネックライン候補）を抽出
+            const peaksBetween = allPeaks.filter(p => p.idx > leftValley.idx && p.idx < rightValley.idx);
+            if (!peaksBetween.length) continue;
+            const midPeak = peaksBetween.reduce((best, p) => (p.price > best.price ? p : best), peaksBetween[0]);
+
+            // 谷の深さチェック
+            const leftDepth = (midPeak.price - leftValley.price) / Math.max(1e-12, midPeak.price);
+            const rightDepth = (midPeak.price - rightValley.price) / Math.max(1e-12, midPeak.price);
+            const minValleyDepthPct = 0.03;
+            if (!(leftDepth >= minValleyDepthPct && rightDepth >= minValleyDepthPct)) continue;
+
+            // 谷の等高チェック
+            const valleyDiff = Math.abs(leftValley.price - rightValley.price) / Math.max(1, Math.max(leftValley.price, rightValley.price));
+            if (valleyDiff > tolerancePct * 1.5) continue;
+
+            // 無効化: 現在値が右谷を大きく割り込んでいないこと
+            const rightValleyInvalidBelowPct = 0.02;
+            if (currentPrice < rightValley.price * (1 - rightValleyInvalidBelowPct)) continue;
+
+            // 完成度: 右谷からネックラインへ向けた戻り具合
+            const upRatio = (currentPrice - rightValley.price) / Math.max(1e-12, midPeak.price - rightValley.price);
+            const progress = Math.max(0, Math.min(1, upRatio));
+            const completion = Math.min(1, 0.66 + 0.34 * progress);
+
+            const minCompletion = 0.4;
+            if (completion < minCompletion) continue;
+
+            const formationBars = Math.max(0, lastIdx - leftValley.idx);
+            const patternDays = Math.round(formationBars * daysPerBar);
+            const minPatternDays = 14;
+            if (patternDays < minPatternDays || patternDays > maxFormingDays) continue;
+
+            const neckline = [{ x: midPeak.idx, y: midPeak.price }, { x: lastIdx, y: midPeak.price }];
+            const confidence = Number((Math.min(1, 0.5 + 0.5 * progress)).toFixed(2));
+            const start = isoAt(leftValley.idx);
+            const end = isoAt(lastIdx);
+
+            push(patterns, {
+              type: 'double_bottom',
+              confidence,
+              range: { start, end },
+              status: 'forming',
+              pivots: [
+                { idx: leftValley.idx, price: leftValley.price, kind: 'L' as const },
+                { idx: midPeak.idx, price: midPeak.price, kind: 'H' as const },
+                { idx: rightValley.idx, price: rightValley.price, kind: 'L' as const },
+              ],
+              neckline,
+              completionPct: Math.round(completion * 100),
+              _method: 'forming_double_bottom',
+            });
+
+            // 最新の妥当な1件で十分
+            break;
+          }
+        }
+      }
+    }
+
     // 3) Inverse H&S (L-H-L-H-L with head lower than both shoulders)
     let foundInverseHS = false;
     if (want.size === 0 || want.has('inverse_head_and_shoulders')) {
@@ -1020,6 +1159,198 @@ export default async function detectPatterns(
         }
       }
     }
+
+    // 3c) 形成中 Head & Shoulders（統合: detect_forming_patterns のロジックを追加）
+    if (includeForming && (want.size === 0 || want.has('head_and_shoulders'))) {
+      const lastIdx = candles.length - 1;
+      const currentPrice = Number(candles[lastIdx]?.close ?? NaN);
+      const isoAt = (i: number) => (candles[i] as any)?.isoTime || '';
+      const rightPeakTolerancePct = 0.08; // 右肩の許容範囲
+      const maxFormingDaysHS = 90; // 形成中パターンは3ヶ月以内に制限
+      const daysPerBarHS = type === '1day' ? 1 : type === '1week' ? 7 : 1;
+
+      // 確定ピークの中から頭（最高値）を特定
+      const confirmedPeaks = allPeaks.filter(p => p.idx < lastIdx - 2);
+      if (confirmedPeaks.length >= 2) {
+        const head = confirmedPeaks.reduce((best, p) => (p.price > best.price ? p : best), confirmedPeaks[0]);
+
+        // 左肩: 頭より左のピークで、頭より低い
+        const leftCandidates = confirmedPeaks.filter(p =>
+          p.idx < head.idx &&
+          head.price > p.price * 1.03 // 頭が左肩より3%以上高い
+        );
+
+        if (leftCandidates.length >= 1) {
+          const left = leftCandidates[leftCandidates.length - 1]; // 頭に最も近い左肩
+
+          // 頭後の谷を探す
+          const postHeadValley = allValleys.find(v => v.idx > head.idx && v.idx < lastIdx - 1);
+
+          if (postHeadValley) {
+            // 右肩候補: 頭後の谷以降の価格上昇で、左肩近傍まで到達
+            // 確定ピークがあればそれを使用、なければ現在価格を暫定右肩とする
+            const rightPeakCandidates = allPeaks.filter(p =>
+              p.idx > postHeadValley.idx &&
+              p.price < head.price &&
+              Math.abs(p.price - left.price) / Math.max(1, left.price) <= rightPeakTolerancePct
+            );
+
+            let rightShoulder: { idx: number; price: number } | null = rightPeakCandidates.length ? rightPeakCandidates[rightPeakCandidates.length - 1] : null;
+            let isProvisional = false;
+
+            // 確定右肩がない場合、現在価格が左肩近傍なら暫定右肩
+            if (!rightShoulder) {
+              const nearLeft = Math.abs(currentPrice - left.price) / Math.max(1, left.price) <= rightPeakTolerancePct;
+              if (nearLeft && currentPrice < head.price && currentPrice > postHeadValley.price) {
+                rightShoulder = { idx: lastIdx, price: currentPrice };
+                isProvisional = true;
+              }
+            }
+
+            if (rightShoulder) {
+              // 完成度計算
+              const closeness = 1 - Math.abs(rightShoulder.price - left.price) / Math.max(1e-12, left.price * rightPeakTolerancePct);
+              const progress = Math.max(0, Math.min(1, closeness));
+              const completion = Math.min(1, (0.75 + 0.25 * progress) * (isProvisional ? 0.9 : 1.0));
+
+              const minCompletion = 0.4;
+              if (completion >= minCompletion) {
+                const formationBars = Math.max(0, rightShoulder.idx - left.idx);
+                const patternDays = Math.round(formationBars * daysPerBarHS);
+                const minPatternDays = 21;
+
+                if (patternDays >= minPatternDays && patternDays <= maxFormingDaysHS) {
+                  // ネックライン: 頭前の谷と頭後の谷を結ぶ（頭前の谷がない場合は水平）
+                  const preHeadValleys = allValleys.filter(v => v.idx > left.idx && v.idx < head.idx);
+                  const preHeadValley = preHeadValleys.length ? preHeadValleys.reduce((best, v) => (v.price < best.price ? v : best), preHeadValleys[0]) : null;
+
+                  const neckline = preHeadValley
+                    ? [{ x: preHeadValley.idx, y: preHeadValley.price }, { x: postHeadValley.idx, y: postHeadValley.price }]
+                    : [{ x: left.idx, y: postHeadValley.price }, { x: postHeadValley.idx, y: postHeadValley.price }];
+
+                  const confBase = Math.min(1, Math.max(0, 0.6 * closeness + 0.4 * progress));
+                  const confidence = Math.round(confBase * (isProvisional ? 0.9 : 1.0) * 100) / 100;
+                  const start = isoAt(left.idx);
+                  const end = isoAt(rightShoulder.idx);
+
+                  push(patterns, {
+                    type: 'head_and_shoulders',
+                    confidence,
+                    range: { start, end },
+                    status: 'forming',
+                    pivots: [
+                      { idx: left.idx, price: left.price, kind: 'H' as const },
+                      { idx: head.idx, price: head.price, kind: 'H' as const },
+                      { idx: postHeadValley.idx, price: postHeadValley.price, kind: 'L' as const },
+                      { idx: rightShoulder.idx, price: rightShoulder.price, kind: 'H' as const },
+                    ],
+                    neckline,
+                    completionPct: Math.round(completion * 100),
+                    _method: isProvisional ? 'forming_hs_provisional' : 'forming_hs',
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // 3d) 形成中 Inverse Head & Shoulders（統合: detect_forming_patterns のロジックを追加）
+    if (includeForming && (want.size === 0 || want.has('inverse_head_and_shoulders'))) {
+      const lastIdx = candles.length - 1;
+      const currentPrice = Number(candles[lastIdx]?.close ?? NaN);
+      const isoAt = (i: number) => (candles[i] as any)?.isoTime || '';
+      const rightValleyTolerancePct = 0.08; // 右肩の許容範囲
+      const maxFormingDaysIHS = 90; // 形成中パターンは3ヶ月以内に制限
+      const daysPerBarIHS = type === '1day' ? 1 : type === '1week' ? 7 : 1;
+
+      // 確定谷の中から頭（最安値）を特定
+      const confirmedValleys = allValleys.filter(v => v.idx < lastIdx - 2);
+      if (confirmedValleys.length >= 2) {
+        const head = confirmedValleys.reduce((best, v) => (v.price < best.price ? v : best), confirmedValleys[0]);
+
+        // 左肩: 頭より左の谷で、頭より高い
+        const leftCandidates = confirmedValleys.filter(v =>
+          v.idx < head.idx &&
+          head.price < v.price * 0.97 // 頭が左肩より3%以上低い
+        );
+
+        if (leftCandidates.length >= 1) {
+          const left = leftCandidates[leftCandidates.length - 1]; // 頭に最も近い左肩
+
+          // 頭後のピークを探す
+          const postHeadPeak = allPeaks.find(p => p.idx > head.idx && p.idx < lastIdx - 1);
+
+          if (postHeadPeak) {
+            // 右肩候補: 頭後のピーク以降の価格下落で、左肩近傍まで到達
+            const rightValleyCandidates = allValleys.filter(v =>
+              v.idx > postHeadPeak.idx &&
+              v.price > head.price &&
+              Math.abs(v.price - left.price) / Math.max(1, left.price) <= rightValleyTolerancePct
+            );
+
+            let rightShoulder: { idx: number; price: number } | null = rightValleyCandidates.length ? rightValleyCandidates[rightValleyCandidates.length - 1] : null;
+            let isProvisional = false;
+
+            // 確定右肩がない場合、現在価格が左肩近傍なら暫定右肩
+            if (!rightShoulder) {
+              const nearLeft = Math.abs(currentPrice - left.price) / Math.max(1, left.price) <= rightValleyTolerancePct;
+              if (nearLeft && currentPrice > head.price && currentPrice < postHeadPeak.price) {
+                rightShoulder = { idx: lastIdx, price: currentPrice };
+                isProvisional = true;
+              }
+            }
+
+            if (rightShoulder) {
+              // 完成度計算
+              const closeness = 1 - Math.abs(rightShoulder.price - left.price) / Math.max(1e-12, left.price * rightValleyTolerancePct);
+              const progress = Math.max(0, Math.min(1, closeness));
+              const completion = Math.min(1, (0.75 + 0.25 * progress) * (isProvisional ? 0.9 : 1.0));
+
+              const minCompletion = 0.4;
+              if (completion >= minCompletion) {
+                const formationBars = Math.max(0, rightShoulder.idx - left.idx);
+                const patternDays = Math.round(formationBars * daysPerBarIHS);
+                const minPatternDays = 21;
+
+                if (patternDays >= minPatternDays && patternDays <= maxFormingDaysIHS) {
+                  // ネックライン: 頭前のピークと頭後のピークを結ぶ
+                  const preHeadPeaks = allPeaks.filter(p => p.idx > left.idx && p.idx < head.idx);
+                  const preHeadPeak = preHeadPeaks.length ? preHeadPeaks.reduce((best, p) => (p.price > best.price ? p : best), preHeadPeaks[0]) : null;
+
+                  const neckline = preHeadPeak
+                    ? [{ x: preHeadPeak.idx, y: preHeadPeak.price }, { x: postHeadPeak.idx, y: postHeadPeak.price }]
+                    : [{ x: left.idx, y: postHeadPeak.price }, { x: postHeadPeak.idx, y: postHeadPeak.price }];
+
+                  const confBase = Math.min(1, Math.max(0, 0.6 * closeness + 0.4 * progress));
+                  const confidence = Math.round(confBase * (isProvisional ? 0.9 : 1.0) * 100) / 100;
+                  const start = isoAt(left.idx);
+                  const end = isoAt(rightShoulder.idx);
+
+                  push(patterns, {
+                    type: 'inverse_head_and_shoulders',
+                    confidence,
+                    range: { start, end },
+                    status: 'forming',
+                    pivots: [
+                      { idx: left.idx, price: left.price, kind: 'L' as const },
+                      { idx: head.idx, price: head.price, kind: 'L' as const },
+                      { idx: postHeadPeak.idx, price: postHeadPeak.price, kind: 'H' as const },
+                      { idx: rightShoulder.idx, price: rightShoulder.price, kind: 'L' as const },
+                    ],
+                    neckline,
+                    completionPct: Math.round(completion * 100),
+                    _method: isProvisional ? 'forming_ihs_provisional' : 'forming_ihs',
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
     // 4) Triangles (ascending/descending/symmetrical)
     {
       const wantTriangle =
@@ -1148,6 +1479,102 @@ export default async function detectPatterns(
           }
         }
         // for-loop end
+      }
+    }
+
+    // 4a) 形成中三角形（統合: 収束中のトレンドラインでブレイク前）
+    if (includeForming && (want.size === 0 || want.has('triangle') || want.has('triangle_ascending') || want.has('triangle_descending') || want.has('triangle_symmetrical'))) {
+      const lastIdx = candles.length - 1;
+      const isoAt = (i: number) => (candles[i] as any)?.isoTime || '';
+      const maxFormingDays = 90;
+      const daysPerBar = type === '1day' ? 1 : type === '1week' ? 7 : 1;
+
+      const highs = pivots.filter(p => p.kind === 'H');
+      const lows = pivots.filter(p => p.kind === 'L');
+
+      // 直近のピボットを使用してトレンドラインを構築
+      if (highs.length >= 2 && lows.length >= 2) {
+        // 直近の高値・安値を取得
+        const recentHighs = highs.filter(h => h.idx < lastIdx - 1).slice(-4);
+        const recentLows = lows.filter(l => l.idx < lastIdx - 1).slice(-4);
+
+        if (recentHighs.length >= 2 && recentLows.length >= 2) {
+          const firstH = recentHighs[0], lastH = recentHighs[recentHighs.length - 1];
+          const firstL = recentLows[0], lastL = recentLows[recentLows.length - 1];
+
+          const startIdx = Math.min(firstH.idx, firstL.idx);
+          const endIdx = Math.max(lastH.idx, lastL.idx);
+
+          // 期間チェック
+          const formationBars = Math.max(0, lastIdx - startIdx);
+          const patternDays = Math.round(formationBars * daysPerBar);
+          const minPatternDays = 14;
+          if (patternDays >= minPatternDays && patternDays <= maxFormingDays) {
+            // トレンドライン計算
+            const hiLine = linearRegression(recentHighs.map(p => ({ idx: p.idx, price: p.price })));
+            const loLine = linearRegression(recentLows.map(p => ({ idx: p.idx, price: p.price })));
+
+            // 収束チェック
+            const spreadStart = firstH.price - firstL.price;
+            const spreadEnd = lastH.price - lastL.price;
+            const converging = spreadEnd < spreadStart * 0.9;
+
+            // アペックス計算
+            const slopeDiff = hiLine.slope - loLine.slope;
+            let apexIdx = -1;
+            let daysToApex = -1;
+            if (Math.abs(slopeDiff) > 1e-12) {
+              apexIdx = Math.round((loLine.intercept - hiLine.intercept) / slopeDiff);
+              daysToApex = Math.max(0, Math.round((apexIdx - lastIdx) * daysPerBar));
+            }
+
+            if (converging && hiLine.slope * loLine.slope <= 0) { // 反対方向の傾き
+              const barsSpan = Math.max(1, endIdx - startIdx);
+              const avgH = recentHighs.reduce((s, p) => s + p.price, 0) / recentHighs.length;
+              const avgL = recentLows.reduce((s, p) => s + p.price, 0) / recentLows.length;
+              const hiSlopeRel = hiLine.slope * barsSpan / Math.max(1e-12, avgH);
+              const loSlopeRel = loLine.slope * barsSpan / Math.max(1e-12, avgL);
+
+              let triangleType: 'triangle_ascending' | 'triangle_descending' | 'triangle_symmetrical' | null = null;
+
+              // Ascending: 高値フラット、安値上昇
+              if (Math.abs(hiSlopeRel) < 0.02 && loSlopeRel > 0.01) {
+                triangleType = 'triangle_ascending';
+              }
+              // Descending: 安値フラット、高値下落
+              else if (Math.abs(loSlopeRel) < 0.02 && hiSlopeRel < -0.01) {
+                triangleType = 'triangle_descending';
+              }
+              // Symmetrical: 高値下落、安値上昇
+              else if (hiSlopeRel < -0.005 && loSlopeRel > 0.005) {
+                triangleType = 'triangle_symmetrical';
+              }
+
+              if (triangleType && (want.size === 0 || want.has('triangle') || want.has(triangleType))) {
+                // 完成度（アペックスまでの距離に基づく）
+                const completionPct = daysToApex >= 0
+                  ? Math.min(100, Math.round((1 - daysToApex / Math.max(1, patternDays)) * 100))
+                  : 80;
+                const completion = completionPct / 100;
+                const confidence = Math.round(Math.min(0.9, 0.6 + (converging ? 0.2 : 0) + (daysToApex <= 14 ? 0.1 : 0)) * 100) / 100;
+
+                if (completion >= 0.4) {
+                  push(patterns, {
+                    type: triangleType,
+                    confidence,
+                    range: { start: isoAt(startIdx), end: isoAt(lastIdx) },
+                    status: daysToApex <= 7 ? 'near_completion' : 'forming',
+                    pivots: [...recentHighs, ...recentLows].sort((a, b) => a.idx - b.idx).map(p => ({ idx: p.idx, price: p.price, kind: p.kind })),
+                    completionPct,
+                    apexDate: apexIdx > 0 ? isoAt(Math.min(apexIdx, lastIdx + 30)) : undefined,
+                    daysToApex: daysToApex >= 0 ? daysToApex : undefined,
+                    _method: 'forming_triangle',
+                  });
+                }
+              }
+            }
+          }
+        }
       }
     }
 
@@ -1782,8 +2209,8 @@ export default async function detectPatterns(
               const candleBodyBottom = Math.min(open, close);  // ローソク本体の下端
               const upperLineValue = upperLine.valueAt(i);
               const lowerLineValue = lowerLine.valueAt(i);
-              const upperBreakThreshold = upperLineValue * 1.02;  // 上側トレンドラインの2%上
-              const lowerBreakThreshold = lowerLineValue * 0.98;  // 下側トレンドラインの2%下
+              const upperBreakThreshold = upperLineValue * 1.015;  // 上側トレンドラインの1.5%上
+              const lowerBreakThreshold = lowerLineValue * 0.985;  // 下側トレンドラインの1.5%下
 
               // 上方ブレイク: ローソク本体の下端が上側トレンドラインを2%以上上回る
               if (candleBodyBottom > upperBreakThreshold) {
@@ -1868,8 +2295,8 @@ export default async function detectPatterns(
               const candleBodyBottom = Math.min(open, close);  // ローソク本体の下端
               const upperLineValue = upperLine.valueAt(i);
               const lowerLineValue = lowerLine.valueAt(i);
-              const upperBreakThresholdRw = upperLineValue * 1.02;  // 上側トレンドラインの2%上
-              const lowerBreakThresholdRw = lowerLineValue * 0.98;  // 下側トレンドラインの2%下
+              const upperBreakThresholdRw = upperLineValue * 1.015;  // 上側トレンドラインの1.5%上
+              const lowerBreakThresholdRw = lowerLineValue * 0.985;  // 下側トレンドラインの1.5%下
 
               // 下方ブレイク: ローソク本体の上端が下側トレンドラインを2%以上下回る
               if (candleBodyTop < lowerBreakThresholdRw) {
@@ -1942,6 +2369,238 @@ export default async function detectPatterns(
 
     // 最終整合性フィルタは撤回（ウェッジの定義は収束・傾き関係で十分とする）
 
+    // 4d) 形成中ウェッジ検出（統合: detect_forming_patterns のロジックを追加）
+    // 既存の 4c は完成済み向け（厳格）、4d は形成中向け（緩い）
+    {
+      const formingWedgeDebug: any[] = [];
+      const fWindowSizeMin = 20;  // 短いウィンドウも許容
+      const fWindowSizeMax = 120;
+      const fWindowStep = 5;
+
+      const fAllowFalling = (want.size === 0) || want.has('falling_wedge' as any);
+      const fAllowRising = (want.size === 0) || want.has('rising_wedge' as any);
+
+      // 緩いピボット検出（swingDepth=1）
+      const relaxedPeaks: Array<{ idx: number; price: number }> = [];
+      const relaxedValleys: Array<{ idx: number; price: number }> = [];
+      for (let idx = 1; idx < candles.length - 1; idx++) {
+        const c = candles[idx];
+        const isPeak = c.high > candles[idx - 1].high && c.high > candles[idx + 1].high;
+        const isValley = c.low < candles[idx - 1].low && c.low < candles[idx + 1].low;
+        if (isPeak) relaxedPeaks.push({ idx, price: c.close });
+        if (isValley) relaxedValleys.push({ idx, price: c.close });
+      }
+
+      // 2点直線作成（4c と同じ）
+      function makeLineF(p1: { idx: number; price: number }, p2: { idx: number; price: number }) {
+        const slope = (p2.price - p1.price) / Math.max(1, p2.idx - p1.idx);
+        const intercept = p1.price - slope * p1.idx;
+        return { slope, intercept, valueAt: (idx: number) => slope * idx + intercept, p1, p2 };
+      }
+
+      // 上側トレンドライン（1/2分割、緩い条件）
+      function findUpperTrendlineF(highs: { idx: number; price: number }[], startIdx: number, endIdx: number, tolerance: number) {
+        const inRange = highs.filter(h => h.idx >= startIdx && h.idx <= endIdx);
+        if (inRange.length < 2) return null;
+
+        const midPoint = startIdx + (endIdx - startIdx) / 2;
+        const firstHalf = inRange.filter(h => h.idx < midPoint);
+        const secondHalf = inRange.filter(h => h.idx >= midPoint);
+        const cand1 = firstHalf.length > 0 ? firstHalf : inRange.slice(0, Math.ceil(inRange.length / 2));
+        const cand2 = secondHalf.length > 0 ? secondHalf : inRange.slice(Math.floor(inRange.length / 2));
+        if (cand1.length === 0 || cand2.length === 0) return null;
+
+        let bestLine: ReturnType<typeof makeLineF> | null = null;
+        let bestScore = -Infinity;
+
+        for (const p1 of cand1) {
+          for (const p2 of cand2) {
+            if (p1.idx >= p2.idx) continue;
+            const line = makeLineF(p1, p2);
+            let valid = true;
+            for (const h of inRange) {
+              if (h.price > line.valueAt(h.idx) + tolerance) { valid = false; break; }
+            }
+            if (valid) {
+              const touches = inRange.filter(h => Math.abs(h.price - line.valueAt(h.idx)) <= tolerance).length;
+              const score = touches + (line.slope < 0 ? 1 : 0);
+              if (score > bestScore) { bestScore = score; bestLine = line; }
+            }
+          }
+        }
+        return bestLine;
+      }
+
+      // 下側トレンドライン（1/2分割、緩い条件）
+      function findLowerTrendlineF(lows: { idx: number; price: number }[], startIdx: number, endIdx: number, tolerance: number) {
+        const inRange = lows.filter(l => l.idx >= startIdx && l.idx <= endIdx);
+        if (inRange.length < 2) return null;
+
+        const midPoint = startIdx + (endIdx - startIdx) / 2;
+        const firstHalf = inRange.filter(l => l.idx < midPoint);
+        const secondHalf = inRange.filter(l => l.idx >= midPoint);
+        const cand1 = firstHalf.length > 0 ? firstHalf : inRange.slice(0, Math.ceil(inRange.length / 2));
+        const cand2 = secondHalf.length > 0 ? secondHalf : inRange.slice(Math.floor(inRange.length / 2));
+        if (cand1.length === 0 || cand2.length === 0) return null;
+
+        let bestLine: ReturnType<typeof makeLineF> | null = null;
+        let bestScore = -Infinity;
+
+        for (const p1 of cand1) {
+          for (const p2 of cand2) {
+            if (p1.idx >= p2.idx) continue;
+            const line = makeLineF(p1, p2);
+            let valid = true;
+            for (const l of inRange) {
+              if (l.price < line.valueAt(l.idx) - tolerance) { valid = false; break; }
+            }
+            if (valid) {
+              const touches = inRange.filter(l => Math.abs(l.price - line.valueAt(l.idx)) <= tolerance).length;
+              const score = touches + (line.slope < 0 ? 1 : 0);
+              if (score > bestScore) { bestScore = score; bestLine = line; }
+            }
+          }
+        }
+        return bestLine;
+      }
+
+      // ウィンドウスキャン
+      const fWindows: Array<{ startIdx: number; endIdx: number }> = [];
+      for (let size = fWindowSizeMin; size <= fWindowSizeMax; size += fWindowStep) {
+        for (let startIdx = 0; startIdx + size < candles.length; startIdx += fWindowStep) {
+          fWindows.push({ startIdx, endIdx: startIdx + size });
+        }
+      }
+      // 最新に揃えた特別ウィンドウ
+      const lastIdx = candles.length - 1;
+      for (let size = fWindowSizeMin; size <= fWindowSizeMax; size += fWindowStep) {
+        const s = Math.max(0, lastIdx - size);
+        fWindows.push({ startIdx: s, endIdx: lastIdx });
+      }
+
+      for (const w of fWindows) {
+        const { startIdx, endIdx } = w;
+        const avgPrice = (Number(candles[startIdx]?.close) + Number(candles[endIdx]?.close)) / 2;
+        const tolerance = avgPrice * 0.01;
+
+        const highsForWindow = relaxedPeaks.filter(p => p.idx >= startIdx && p.idx <= endIdx).map(p => ({ idx: p.idx, price: Number(candles[p.idx]?.high) }));
+        const lowsForWindow = relaxedValleys.filter(p => p.idx >= startIdx && p.idx <= endIdx).map(p => ({ idx: p.idx, price: Number(candles[p.idx]?.low) }));
+
+        if (highsForWindow.length < 2 || lowsForWindow.length < 2) continue;
+
+        const upperLine = findUpperTrendlineF(highsForWindow, startIdx, endIdx, tolerance);
+        const lowerLine = findLowerTrendlineF(lowsForWindow, startIdx, endIdx, tolerance);
+        if (!upperLine || !lowerLine) continue;
+
+        // 両方下向き = Falling Wedge、両方上向き = Rising Wedge
+        const bothDown = upperLine.slope < 0 && lowerLine.slope < 0;
+        const bothUp = upperLine.slope > 0 && lowerLine.slope > 0;
+        if (!bothDown && !bothUp) continue;
+
+        // minWeakerSlopeRatio チェック
+        const absU = Math.abs(upperLine.slope), absL = Math.abs(lowerLine.slope);
+        const weakerRatio = Math.min(absU, absL) / Math.max(absU, absL);
+        if (weakerRatio < 0.3) continue;
+
+        const wedgeType: 'falling_wedge' | 'rising_wedge' = bothDown ? 'falling_wedge' : 'rising_wedge';
+        if ((wedgeType === 'falling_wedge' && !fAllowFalling) || (wedgeType === 'rising_wedge' && !fAllowRising)) continue;
+
+        // 収束チェック
+        const gapStart = upperLine.valueAt(startIdx) - lowerLine.valueAt(startIdx);
+        const gapEnd = upperLine.valueAt(endIdx) - lowerLine.valueAt(endIdx);
+        if (gapStart <= 0 || gapEnd <= 0 || gapEnd >= gapStart) continue;
+        const convRatio = gapEnd / gapStart;
+        if (convRatio >= 0.80) continue;
+
+        // ブレイク検出（終値ベース、トレンドライン乖離1.5%）
+        let breakoutIdx = -1;
+        let breakoutDirection: 'up' | 'down' | null = null;
+        for (let i = startIdx + Math.max(15, Math.floor((endIdx - startIdx) * 0.3)); i <= lastIdx; i++) {
+          const close = Number(candles[i]?.close);
+          const uVal = upperLine.valueAt(i);
+          const lVal = lowerLine.valueAt(i);
+
+          // 終値ベースでブレイク判定（視覚的にわかりやすい）
+          if (close > uVal * 1.015) {
+            breakoutIdx = i; breakoutDirection = 'up'; break;
+          }
+          if (close < lVal * 0.985) {
+            breakoutIdx = i; breakoutDirection = 'down'; break;
+          }
+        }
+
+        // ブレイクがない場合は形成中
+        const isForming = breakoutIdx === -1;
+        const actualEndIdx = isForming ? endIdx : breakoutIdx;
+        const start = (candles[startIdx] as any)?.isoTime;
+        const end = (candles[actualEndIdx] as any)?.isoTime;
+        if (!start || !end) continue;
+
+        // 重複チェック: 既に同じパターンが検出されていないか
+        const alreadyExists = patterns.some((p: any) => {
+          if (p.type !== wedgeType) return false;
+          const pStart = Date.parse(p.range?.start || '');
+          const pEnd = Date.parse(p.range?.end || '');
+          const thisStart = Date.parse(start);
+          const thisEnd = Date.parse(end);
+          if (!Number.isFinite(pStart) || !Number.isFinite(thisStart)) return false;
+          // 開始日が5日以内、終了日が5日以内なら重複
+          return Math.abs(pStart - thisStart) < 5 * 86400000 && Math.abs(pEnd - thisEnd) < 5 * 86400000;
+        });
+        if (alreadyExists) continue;
+
+        // スコア計算
+        const convergenceScore = 1 - convRatio;
+        const slopeScore = Math.min(absU, absL) / Math.max(absU, absL);
+        const durationDays = actualEndIdx - startIdx;
+        const durationScore = durationDays >= 20 && durationDays <= 60 ? 1.0 : 0.8;
+        const score = (convergenceScore * 0.4 + slopeScore * 0.3 + durationScore * 0.3);
+        const confidence = Math.max(0.65, Math.min(0.95, score + 0.3));
+
+        // ステータス判定
+        let status: 'forming' | 'near_completion' | 'completed' | 'invalid' = 'forming';
+        let outcome: 'success' | 'failure' | undefined;
+
+        if (breakoutDirection) {
+          if (wedgeType === 'falling_wedge') {
+            status = breakoutDirection === 'up' ? 'completed' : 'invalid';
+            outcome = breakoutDirection === 'up' ? 'success' : 'failure';
+          } else {
+            status = breakoutDirection === 'down' ? 'completed' : 'invalid';
+            outcome = breakoutDirection === 'down' ? 'success' : 'failure';
+          }
+        } else {
+          // アペックス計算
+          const denom = upperLine.slope - lowerLine.slope;
+          if (Math.abs(denom) > 1e-12) {
+            const apexIdx = Math.round((lowerLine.intercept - upperLine.intercept) / denom);
+            const daysToApex = Math.max(0, apexIdx - lastIdx);
+            if (daysToApex <= 10) status = 'near_completion';
+          }
+        }
+
+        // ブレイク日の取得
+        const breakoutDate = breakoutIdx !== -1 ? (candles[breakoutIdx] as any)?.isoTime : undefined;
+
+        push(patterns, {
+          type: wedgeType,
+          confidence,
+          range: { start, end },
+          status,
+          breakoutDirection,
+          outcome,
+          breakoutDate,
+          _method: 'forming_relaxed',
+        });
+
+        formingWedgeDebug.push({ type: wedgeType, accepted: true, indices: [startIdx, actualEndIdx], status, breakoutDirection });
+      }
+
+      for (const d of formingWedgeDebug) {
+        debugCandidates.unshift(d);
+      }
+    }
+
     // 5) Pennant & Flag (continuation after pole)
     {
       const wantPennant = want.size === 0 || want.has('pennant');
@@ -2010,6 +2669,97 @@ export default async function detectPatterns(
               push(patterns, { type: 'flag', confidence, range: { start, end } });
             }
           }
+        }
+      }
+    }
+
+    // 5a) 形成中ペナント/フラッグ（統合: 旗竿後の保ち合い形成中）
+    if (includeForming && (want.size === 0 || want.has('pennant') || want.has('flag'))) {
+      const lastIdx = candles.length - 1;
+      const isoAt = (i: number) => (candles[i] as any)?.isoTime || '';
+      const maxFormingDays = 30; // ペナント/フラッグは短期パターン
+      const daysPerBar = type === '1day' ? 1 : type === '1week' ? 7 : 1;
+
+      const closes = candles.map(c => c.close);
+      const highsArr = candles.map(c => c.high);
+      const lowsArr = candles.map(c => c.low);
+
+      // 旗竿検出（直近20本）
+      const poleWindow = Math.min(20, candles.length);
+      const poleStart = Math.max(0, lastIdx - poleWindow);
+
+      // 各ウィンドウで旗竿を探す
+      for (let poleLen = 5; poleLen <= Math.min(12, poleWindow); poleLen++) {
+        const poleEndIdx = lastIdx - Math.floor(poleLen * 0.3); // 旗竿の終点
+        if (poleEndIdx < poleLen) continue;
+
+        const poleStartIdx = poleEndIdx - poleLen;
+        const poleChange = (closes[poleEndIdx] - closes[poleStartIdx]) / Math.max(1e-12, closes[poleStartIdx]);
+        const minPoleChange = type === '1day' ? 0.06 : 0.04; // 6%/4%
+
+        const poleUp = poleChange >= minPoleChange;
+        const poleDown = poleChange <= -minPoleChange;
+
+        if (!poleUp && !poleDown) continue;
+
+        // 保ち合い部分（旗竿後）
+        const consolidationStart = poleEndIdx + 1;
+        if (consolidationStart >= lastIdx - 2) continue;
+
+        const consHighs = highsArr.slice(consolidationStart, lastIdx + 1);
+        const consLows = lowsArr.slice(consolidationStart, lastIdx + 1);
+        if (consHighs.length < 3) continue;
+
+        const firstH = consHighs[0], lastH = consHighs[consHighs.length - 1];
+        const firstL = consLows[0], lastL = consLows[consLows.length - 1];
+        const spreadStart = firstH - firstL;
+        const spreadEnd = lastH - lastL;
+
+        // 期間チェック
+        const formationBars = Math.max(0, lastIdx - poleStartIdx);
+        const patternDays = Math.round(formationBars * daysPerBar);
+        if (patternDays > maxFormingDays) continue;
+
+        const dH = (lastH - firstH) / Math.max(1e-12, firstH);
+        const dL = (lastL - firstL) / Math.max(1e-12, firstL);
+
+        // ペナント: 収束（高値下落＆安値上昇）
+        const isPennant = spreadEnd < spreadStart * 0.85 && dH < 0 && dL > 0;
+
+        // フラッグ: 並行で旗竿と逆方向
+        const isFlag = Math.abs(spreadEnd - spreadStart) / Math.max(1e-12, spreadStart) < 0.15 &&
+          ((poleUp && dH < 0 && dL < 0) || (poleDown && dH > 0 && dL > 0));
+
+        if ((want.size === 0 || want.has('pennant')) && isPennant) {
+          const qPole = Math.min(1, Math.abs(poleChange) / (minPoleChange * 2));
+          const qConv = Math.min(1, (spreadStart - spreadEnd) / Math.max(1e-12, spreadStart * 0.5));
+          const confidence = Math.round((0.5 + qPole * 0.25 + qConv * 0.25) * 100) / 100;
+
+          push(patterns, {
+            type: 'pennant',
+            confidence,
+            range: { start: isoAt(poleStartIdx), end: isoAt(lastIdx) },
+            status: 'forming',
+            completionPct: Math.round((1 - spreadEnd / Math.max(1e-12, spreadStart)) * 100),
+            _method: 'forming_pennant',
+          });
+          break; // 1件で十分
+        }
+
+        if ((want.size === 0 || want.has('flag')) && isFlag) {
+          const qPole = Math.min(1, Math.abs(poleChange) / (minPoleChange * 2));
+          const qParallel = Math.min(1, 1 - Math.abs(spreadEnd - spreadStart) / Math.max(1e-12, spreadStart * 0.2));
+          const confidence = Math.round((0.5 + qPole * 0.25 + qParallel * 0.25) * 100) / 100;
+
+          push(patterns, {
+            type: 'flag',
+            confidence,
+            range: { start: isoAt(poleStartIdx), end: isoAt(lastIdx) },
+            status: 'forming',
+            completionPct: 70, // フラッグは完成度の概念が曖昧
+            _method: 'forming_flag',
+          });
+          break; // 1件で十分
         }
       }
     }
@@ -2290,6 +3040,133 @@ export default async function detectPatterns(
       }
     }
 
+    // 6b) 形成中トリプルトップ/ボトム（統合: 2つの確定ピーク/谷 + 3つ目が形成中）
+    if (includeForming && (want.size === 0 || want.has('triple_top') || want.has('triple_bottom'))) {
+      const lastIdx = candles.length - 1;
+      const currentPrice = Number(candles[lastIdx]?.close ?? NaN);
+      const isoAt = (i: number) => (candles[i] as any)?.isoTime || '';
+      const maxFormingDays = 90; // 形成中パターンは3ヶ月以内に制限
+      const daysPerBar = type === '1day' ? 1 : type === '1week' ? 7 : 1;
+      const tripleTolerancePct = tolerancePct * 1.2; // やや緩めの許容範囲
+
+      // 形成中 triple_top: 2つの確定ピーク + 現在価格が同レベルまで上昇中
+      if ((want.size === 0 || want.has('triple_top')) && allPeaks.length >= 2) {
+        const confirmedPeaks = allPeaks.filter((p: any) => p.idx < lastIdx - 2);
+
+        // 直近2つの等高ピークを探す
+        for (let i = confirmedPeaks.length - 1; i >= 1; i--) {
+          const peak2 = confirmedPeaks[i];
+          const peak1 = confirmedPeaks[i - 1];
+
+          // ピーク間の間隔チェック
+          if (peak2.idx - peak1.idx < minDist) continue;
+
+          // 2つのピークが等高か
+          const peakDiff = Math.abs(peak1.price - peak2.price) / Math.max(1, Math.max(peak1.price, peak2.price));
+          if (peakDiff > tripleTolerancePct) continue;
+
+          // 現在価格がピークレベル付近か
+          const avgPeakPrice = (peak1.price + peak2.price) / 2;
+          const currentDiff = Math.abs(currentPrice - avgPeakPrice) / Math.max(1, avgPeakPrice);
+          if (currentDiff > tripleTolerancePct || currentPrice < avgPeakPrice * 0.95) continue;
+
+          // 期間チェック
+          const formationBars = Math.max(0, lastIdx - peak1.idx);
+          const patternDays = Math.round(formationBars * daysPerBar);
+          const minPatternDays = 21;
+          if (patternDays < minPatternDays || patternDays > maxFormingDays) continue;
+
+          // 進捗率
+          const progress = Math.min(1, currentPrice / avgPeakPrice);
+          const completion = Math.min(1, 0.66 + progress * 0.34);
+          const confidence = Math.round((1 - currentDiff / tripleTolerancePct) * 0.8 * 100) / 100;
+
+          if (completion >= 0.4 && confidence >= 0.5) {
+            // ネックライン（谷の平均）
+            const valleysBetween = allValleys.filter((v: any) => v.idx > peak1.idx && v.idx < lastIdx);
+            const avgValley = valleysBetween.length
+              ? valleysBetween.reduce((s: number, v: any) => s + v.price, 0) / valleysBetween.length
+              : Math.min(peak1.price, peak2.price) * 0.95;
+            const neckline = [{ x: peak1.idx, y: avgValley }, { x: lastIdx, y: avgValley }];
+
+            push(patterns, {
+              type: 'triple_top',
+              confidence,
+              range: { start: isoAt(peak1.idx), end: isoAt(lastIdx) },
+              status: 'forming',
+              pivots: [
+                { idx: peak1.idx, price: peak1.price, kind: 'H' as const },
+                { idx: peak2.idx, price: peak2.price, kind: 'H' as const },
+              ],
+              neckline,
+              completionPct: Math.round(completion * 100),
+              _method: 'forming_triple_top',
+            });
+            break; // 1件で十分
+          }
+        }
+      }
+
+      // 形成中 triple_bottom: 2つの確定谷 + 現在価格が同レベルまで下落後反発中
+      if ((want.size === 0 || want.has('triple_bottom')) && allValleys.length >= 2) {
+        const confirmedValleys = allValleys.filter((v: any) => v.idx < lastIdx - 2);
+
+        // 直近2つの等安谷を探す
+        for (let i = confirmedValleys.length - 1; i >= 1; i--) {
+          const valley2 = confirmedValleys[i];
+          const valley1 = confirmedValleys[i - 1];
+
+          // 谷間の間隔チェック
+          if (valley2.idx - valley1.idx < minDist) continue;
+
+          // 2つの谷が等安か
+          const valleyDiff = Math.abs(valley1.price - valley2.price) / Math.max(1, Math.max(valley1.price, valley2.price));
+          if (valleyDiff > tripleTolerancePct) continue;
+
+          // 現在価格が谷レベル付近から反発しているか（谷より上で、かつネックラインに向かっている）
+          const avgValleyPrice = (valley1.price + valley2.price) / 2;
+
+          // ネックライン（ピークの平均）
+          const peaksBetween = allPeaks.filter((p: any) => p.idx > valley1.idx && p.idx < lastIdx);
+          if (peaksBetween.length === 0) continue;
+          const avgPeakPrice = peaksBetween.reduce((s: number, p: any) => s + p.price, 0) / peaksBetween.length;
+
+          // 現在価格が谷とネックラインの間にあるか
+          if (currentPrice < avgValleyPrice * 0.98 || currentPrice > avgPeakPrice * 1.02) continue;
+
+          // 期間チェック
+          const formationBars = Math.max(0, lastIdx - valley1.idx);
+          const patternDays = Math.round(formationBars * daysPerBar);
+          const minPatternDays = 21;
+          if (patternDays < minPatternDays || patternDays > maxFormingDays) continue;
+
+          // 進捗率（ネックラインへの接近度）
+          const progress = (currentPrice - avgValleyPrice) / Math.max(1e-12, avgPeakPrice - avgValleyPrice);
+          const completion = Math.min(1, 0.66 + Math.min(1, progress) * 0.34);
+          const confidence = Math.round((1 - valleyDiff / tripleTolerancePct) * 0.8 * 100) / 100;
+
+          if (completion >= 0.4 && confidence >= 0.5) {
+            const neckline = [{ x: valley1.idx, y: avgPeakPrice }, { x: lastIdx, y: avgPeakPrice }];
+
+            push(patterns, {
+              type: 'triple_bottom',
+              confidence,
+              range: { start: isoAt(valley1.idx), end: isoAt(lastIdx) },
+              status: 'forming',
+              pivots: [
+                { idx: valley1.idx, price: valley1.price, kind: 'L' as const },
+                { idx: valley2.idx, price: valley2.price, kind: 'L' as const },
+              ],
+              neckline,
+              completionPct: Math.round(completion * 100),
+              _method: 'forming_triple_bottom',
+            });
+            break; // 1件で十分
+          }
+        }
+      }
+    }
+
     // Optional filter: only patterns whose end is within N days from now (current relevance)
     {
       const requireCurrent = !!opts.requireCurrentInPattern;
@@ -2461,6 +3338,23 @@ export default async function detectPatterns(
         medianReturn7d: median(v.r7),
       };
     }
+
+    // includeForming / includeCompleted に基づくフィルタリング
+    let filteredPatterns = patterns;
+    if (!includeForming || !includeCompleted) {
+      filteredPatterns = patterns.filter((p: any) => {
+        const isForming = p.status === 'forming' || p.status === 'near_completion';
+        const isCompleted = p.status === 'completed' || p.status === 'invalid' || !p.status;
+        if (includeForming && isForming) return true;
+        if (includeCompleted && isCompleted) return true;
+        return false;
+      });
+    }
+    // includeInvalid に基づくフィルタリング
+    if (!includeInvalid) {
+      filteredPatterns = filteredPatterns.filter((p: any) => p.status !== 'invalid');
+    }
+    patterns = filteredPatterns;
 
     // overlays: パターン範囲をそのまま帯描画できるように提供
     const ranges = patterns.map((p: any) => ({ start: p.range.start, end: p.range.end, label: p.type }));

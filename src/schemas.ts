@@ -675,9 +675,14 @@ export const DetectPatternsInputSchema = z.object({
   tolerancePct: z.number().min(0).max(0.1).optional().default(0.04),
   minBarsBetweenSwings: z.number().int().min(1).max(30).optional().default(5),
   view: z.enum(['summary', 'detailed', 'full', 'debug']).optional().default('detailed'),
-  // New: relevance filter for “current-involved” long-term patterns
+  // New: relevance filter for "current-involved" long-term patterns
   requireCurrentInPattern: z.boolean().optional().default(false),
   currentRelevanceDays: z.number().int().min(1).max(365).optional().default(7),
+
+  // Unified pattern lifecycle options
+  includeForming: z.boolean().optional().default(false).describe('形成中パターンを含める'),
+  includeCompleted: z.boolean().optional().default(true).describe('完成済みパターンを含める'),
+  includeInvalid: z.boolean().optional().default(false).describe('無効化済みパターンを含める'),
 });
 
 export const DetectedPatternSchema = z.object({
@@ -691,8 +696,8 @@ export const DetectedPatternSchema = z.object({
     svg: z.string(),
     artifact: z.object({ identifier: z.string(), title: z.string() }),
   }).optional(),
-  // 統合: パターンのステータス（形成中/完成度近し/完成済み）
-  status: z.enum(['forming', 'near_completion', 'completed']).optional(),
+  // 統合: パターンのステータス（形成中/完成度近し/完成済み/無効化）
+  status: z.enum(['forming', 'near_completion', 'completed', 'invalid']).optional(),
   // 形成中パターン用フィールド
   apexDate: z.string().optional(),           // アペックス（頂点）到達予定日
   daysToApex: z.number().int().optional(),   // アペックスまでの日数
@@ -739,6 +744,15 @@ export const DetectPatternsOutputSchema = z.union([
           annotations: z.array(z.object({ isoTime: z.string(), text: z.string() })).optional(),
         })
         .optional(),
+      warnings: z.array(z.object({ type: z.string(), message: z.string(), suggestedParams: z.record(z.any()).optional() })).optional(),
+      statistics: z.record(z.object({
+        detected: z.number().int(),
+        withAftermath: z.number().int(),
+        successRate: z.number().nullable(),
+        avgReturn7d: z.number().nullable(),
+        avgReturn14d: z.number().nullable(),
+        medianReturn7d: z.number().nullable(),
+      })).optional(),
     }),
     meta: z.object({
       pair: z.string(),
