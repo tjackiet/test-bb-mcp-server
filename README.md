@@ -77,12 +77,15 @@ BTCの今の市場状況を分析して
   - 既定の描画は「ロウソク足のみ」。ボリンジャーバンド等のオーバーレイは明示指定時に追加されます（BBは `--bb-mode=default` 指定時に ±2σ がデフォルト）。
 
 ### パターン検出の新機能
-- detect_patterns:
+- detect_patterns（統合版）:
+  - 完成済み・形成中パターンを一括検出（全13パターン対応）
+  - includeForming（bool, 既定 false）: 形成中パターンを含める
+  - includeCompleted（bool, 既定 true）: 完成済みパターンを含める
+  - includeInvalid（bool, 既定 false）: 無効化パターンを含める
   - requireCurrentInPattern（bool, 既定 false）: パターン終了が直近 N 日以内のものに限定
   - currentRelevanceDays（int, 既定 7）: 直近とみなす日数
-- detect_forming_chart_patterns:
-  - 本文出力を優先度順に整理（🔴形成中 → 🟡長期視点 → 🟢最近完成 → ⚪アーカイブ）
-  - 形成中パターンごとに過去60日の同型完成事例を集計（件数/成功率/平均変動と例示）
+  - 形成中パターンは3ヶ月以内に制限
+- detect_forming_chart_patterns: **非推奨**（detect_patterns に統合済み）
 
 ## 詳細ドキュメント
 - プロンプト集（初心者〜中級者向け）: [docs/prompts-table.md](docs/prompts-table.md)

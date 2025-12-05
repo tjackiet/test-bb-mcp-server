@@ -20,8 +20,8 @@
 ## 詳細分析（深掘り）
 - get_flow_metrics: CVD / アグレッサー比 / スパイク検知でフロー優勢度を把握
 - get_volatility_metrics: RV/ATR などのボラティリティ算出・比較
-- detect_patterns: ダブルトップ等の完成パターン検出（事後の値動き評価）
-- detect_forming_chart_patterns: 形成中パターン検出（初動の兆し）
+- detect_patterns: 完成済み＆形成中パターンを一括検出（全13パターン対応）
+- detect_forming_chart_patterns: **非推奨**（detect_patterns に統合済み）
 - analyze_macd_pattern: MACD 形成状況と過去統計
 - analyze_ichimoku_snapshot: 一目の状態をスナップショット（判定フラグ付）
 - analyze_bb_snapshot: BB の広がりと終値位置（z 値等）
@@ -56,8 +56,8 @@
 | 11 | 分析 | get_orderbook_statistics | 板の厚み・流動性分布・偏り | 安定度評価 |
 | 12 | 分析 | detect_whale_events | 大口取引イベント推定 | 影響把握 |
 | 13 | 分析 | get_orderbook_pressure | 価格帯ごとの買い/売り圧力比 | バランス可視化 |
-| 14 | 分析 | detect_patterns | 完成パターン検出 | 事後の値動き把握 |
-| 15 | 分析 | detect_forming_chart_patterns | 形成中パターン検出（MACD 除く） | 早期兆候 |
+| 14 | 分析 | detect_patterns | 完成＆形成中パターン検出（全13パターン） | includeForming で形成中も |
+| 15 | 分析 | detect_forming_chart_patterns | **非推奨**（detect_patterns に統合） | detect_patterns を使用 |
 | 16 | 分析 | analyze_market_signal | 総合スコア＋寄与度/式 | 強弱判定 |
 | 17 | 分析 | analyze_ichimoku_snapshot | 一目スナップショット | 判定フラグ |
 | 18 | 分析 | analyze_bb_snapshot | BB の状態分析 | ボラ強弱 |
