@@ -7,12 +7,12 @@
 | 1 | 初級 | 🔰 最近のBTCの動きどう？ | get_candles<br>get_flow_metrics | 直近90日の日足から、価格推移と出来高の変化を超初心者向けに解説 | 1. 価格の動き（3期間）<br>2. 取引の活発さ<br>3. 買い/売りの勢い<br>4. 総合的な見立て |
 | 2 | 初級 | 🔰 BTCの値動きを分析して | analyze_market_signal<br>get_indicators | 価格の最近の動きとトレンドを、RSI・移動平均・一目を使って初心者向けに説明 | 1. 現在の状況<br>2. 3つの視点（RSI/移動平均/一目）<br>3. 関係性<br>4. 今後の注目点<br>5. まとめ |
 | 3 | 初級 | 🔰 ビットコインは今後どうなりそう？ | analyze_market_signal<br>get_flow_metrics<br>detect_patterns | 総合スコア＋フロー＋チャートパターンから、今後の見通しを初心者向けに説明 | 1. 結論<br>2. 今の状況<br>3. 根拠（指標/フロー/パターン）<br>4. 短期/中期の見通し<br>5. もし〜なら<br>6. 次の一手<br>7. 注意 |
-| 4 | 初級 | 🔰 今のBTCって買い時？ | analyze_ichimoku_snapshot<br>analyze_sma_snapshot | 一目均衡表と移動平均線（20/50/200）で、今が買い時かを判断 | 1. 今の相場の状態<br>2. 注意点<br>3. 重要な価格ライン<br>4. アドバイスとリスク |
+| 4 | 初級 | 🔰 今のBTCって買い時？ | analyze_ichimoku_snapshot<br>analyze_sma_snapshot<br>analyze_candle_patterns | 一目均衡表・移動平均線・2本足パターンで、今が買い時かを判断 | 1. 今の相場の状態<br>2. 注意点<br>3. 重要な価格ライン<br>4. アドバイスとリスク |
 | 5 | 初級 | 🔰 今注目されているコインある？ | get_tickers_jpy | 出来高と24時間変化率から、注目度の高い通貨ペアをランキング表示 | 1. 24時間上昇率Top3<br>2. 取引量Top3 |
 | 6 | 中級 | 中級：主要指標でBTCを分析して | get_indicators | RSI / MACD / BB / 一目 / SMA を一括取得し、中級者向けに総合分析 | 1. 勢い指標<br>2. トレンド指標<br>3. 重要価格帯<br>4. 指標の総合判断<br>5. RSI/MACDプログレスバー |
 | 7 | 中級 | 中級：BTCのフロー分析をして | get_flow_metrics<br>get_transactions（任意） | CVD・Aggressor Ratio・出来高スパイクから直近のフローと短期モメンタムを分析 | 1. タイムスタンプ<br>2. 結論<br>3. CVD推移<br>4. スパイク<br>5. 価格への影響予測 |
 | 8 | 中級 | 中級：BTCの板の状況を詳しく見て | get_orderbook_statistics<br>get_depth（任意） | 板の厚み・流動性分布・大口注文から短期サポレジと売買圧力を分析 | 1. タイムスタンプ<br>2. 結論<br>3. 重要価格帯<br>4. 大口注文<br>5. 短期トレード示唆 |
-| 9 | 中級 | 中級：BTCのパターン分析をして | detect_patterns | 過去6ヶ月の完成済み＆形成中チャートパターンを統合検出・評価 | 1. 形成中パターン<br>2. 完成済みパターン（影響度順）<br>3. 解釈<br>4. 今後のシナリオ<br>5. 市場状況要約 |
+| 9 | 中級 | 中級：BTCのパターン分析をして | detect_patterns<br>analyze_candle_patterns | 過去6ヶ月の完成済み＆形成中チャートパターン＋2本足パターンを統合検出・評価 | 1. 形成中パターン<br>2. 完成済みパターン（影響度順）<br>3. 2本足パターン<br>4. 解釈<br>5. 今後のシナリオ |
 | 10 | 中級 | 中級：BTCのサポレジを分析して | analyze_support_resistance<br>get_depth<br>get_orderbook_pressure<br>analyze_sma_snapshot（任意） | 過去90日の反応と現在の板・圧力を統合してサポート/レジスタンスの強度を評価 | 1. サポレジツール解釈<br>2. 板・圧力との照合<br>3. 最終強度評価とまとめ |
 
 ## 主な特徴
