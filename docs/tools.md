@@ -23,6 +23,7 @@
 - detect_patterns: 完成済み＆形成中パターンを一括検出（全13パターン対応）
 - detect_forming_chart_patterns: **非推奨**（detect_patterns に統合済み）
 - analyze_macd_pattern: MACD 形成状況と過去統計
+- analyze_candle_patterns: 2本足パターン検出（包み線/はらみ線/毛抜き等）
 - analyze_ichimoku_snapshot: 一目の状態をスナップショット（判定フラグ付）
 - analyze_bb_snapshot: BB の広がりと終値位置（z 値等）
 - analyze_sma_snapshot: SMA 整列/クロス分析（bullish/bearish/mixed）
@@ -65,8 +66,9 @@
 | 20 | 分析 | analyze_support_resistance | サポート・レジスタンス自動検出 | 反発/反落分析 |
 | 21 | 分析 | detect_macd_cross | 直近 MACD クロス検出 | 短期転換 |
 | 22 | 分析 | analyze_macd_pattern | MACD 形成状況・過去統計 | 確度評価 |
-| 23 | 表示 | render_chart_svg | チャート SVG 描画（指標対応） | 一目/SMA/BB/Depth |
-| 24 | 表示 | render_depth_svg | 板の深度を可視化する SVG 描画 | 買い/売り圧力の視覚化 |
+| 23 | 分析 | analyze_candle_patterns | 2本足パターン検出（包み線/はらみ線等） | 短期反転シグナル |
+| 24 | 表示 | render_chart_svg | チャート SVG 描画（指標対応） | 一目/SMA/BB/Depth |
+| 25 | 表示 | render_depth_svg | 板の深度を可視化する SVG 描画 | 買い/売り圧力の視覚化 |
 
 ---
 
