@@ -41,8 +41,8 @@ async function main(): Promise<void> {
     entries = dirents
       .filter((d) => d.isDirectory())
       .map((d) => ({ name: d.name, fullPath: path.join(skillsRoot, d.name) }));
-  } catch (e: any) {
-    if (e && e.code === 'ENOENT') {
+  } catch (e: unknown) {
+    if (e && typeof e === 'object' && 'code' in e && e.code === 'ENOENT') {
       console.error('No skills/ directory found. Nothing to sync.');
       return;
     }
@@ -55,8 +55,8 @@ async function main(): Promise<void> {
     try {
       const stat = await fs.stat(srcSkillMd);
       if (!stat.isFile()) continue;
-    } catch (e: any) {
-      if (e && e.code === 'ENOENT') continue; // skip if no SKILL.md
+    } catch (e: unknown) {
+      if (e && typeof e === 'object' && 'code' in e && e.code === 'ENOENT') continue; // skip if no SKILL.md
       throw e;
     }
 

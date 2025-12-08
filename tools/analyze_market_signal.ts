@@ -4,6 +4,7 @@ import getIndicators from './get_indicators.js';
 import { ensurePair, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
+import { getErrorMessage } from '../lib/error.js';
 import { AnalyzeMarketSignalOutputSchema } from '../src/schemas.js';
 
 type AnalyzeOpts = {
@@ -411,7 +412,7 @@ export default async function analyzeMarketSignal(
 
     const meta = createMeta(chk.pair, { type, windows, bucketMs, flowLimit });
     return AnalyzeMarketSignalOutputSchema.parse(ok(fullText, data as any, meta as any)) as any;
-  } catch (e: any) {
-    return AnalyzeMarketSignalOutputSchema.parse(fail(e?.message || 'internal error', 'internal')) as any;
+  } catch (e: unknown) {
+    return AnalyzeMarketSignalOutputSchema.parse(fail(getErrorMessage(e) || 'internal error', 'internal')) as any;
   }
 }

@@ -2,6 +2,7 @@ import getCandles from './get_candles.js';
 import { ok, fail } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { formatSummary } from '../lib/formatter.js';
+import { getErrorMessage } from '../lib/error.js';
 import { AnalyzeSupportResistanceOutputSchema } from '../src/schemas.js';
 
 export interface AnalyzeSupportResistanceOptions {
@@ -598,9 +599,9 @@ export default async function analyzeSupportResistance(
       meta
     }) as any;
 
-  } catch (err: any) {
+  } catch (err: unknown) {
     return AnalyzeSupportResistanceOutputSchema.parse(
-      fail(err?.message || 'Analysis error', 'internal')
+      fail(getErrorMessage(err) || 'Analysis error', 'internal')
     ) as any;
   }
 }

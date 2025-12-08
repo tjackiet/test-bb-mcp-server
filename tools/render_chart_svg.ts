@@ -12,6 +12,7 @@ import getIndicators from './get_indicators.js';
 import getDepth from './get_depth.js';
 import { ok, fail } from '../lib/result.js';
 import { formatPair } from '../lib/formatter.js';
+import { getErrorMessage } from '../lib/error.js';
 import type { Result, Pair, CandleType, RenderChartSvgOptions, ChartPayload } from '../src/types/domain.d.ts';
 
 type RenderData = { svg?: string; filePath?: string; legend?: Record<string, string> };
@@ -172,8 +173,8 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
         { filePath: outputPath, svg },
         metaOut
       );
-    } catch (e: any) {
-      return fail(e?.message || 'failed to render depth', 'internal');
+    } catch (e: unknown) {
+      return fail(getErrorMessage(e) || 'failed to render depth', 'internal');
     }
   }
 

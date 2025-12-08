@@ -1002,9 +1002,10 @@ export default async function analyzeCandlePatterns(
     };
 
     return AnalyzeCandlePatternsOutputSchema.parse(result);
-  } catch (e: any) {
+  } catch (e: unknown) {
+    const message = e instanceof Error ? e.message : String(e);
     return AnalyzeCandlePatternsOutputSchema.parse(
-      fail(e?.message || 'Unknown error', 'internal')
+      fail(message || 'Unknown error', 'internal')
     );
   }
 }

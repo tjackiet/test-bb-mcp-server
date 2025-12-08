@@ -2,6 +2,7 @@ import { ensurePair, createMeta } from '../lib/validate.js';
 import { fetchJson } from '../lib/http.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
+import { getErrorMessage, isAbortError } from '../lib/error.js';
 import { GetDepthOutputSchema } from '../src/schemas.js';
 
 export interface GetDepthOptions { timeoutMs?: number; maxLevels?: number }
@@ -81,9 +82,9 @@ export default async function getDepth(
 
     const meta = createMeta(chk.pair);
     return GetDepthOutputSchema.parse(ok(text, data as any, meta as any));
-  } catch (err: any) {
-    const isAbort = err?.name === 'AbortError';
-    const message = isAbort ? `タイムアウト (${timeoutMs}ms)` : err?.message || 'ネットワークエラー';
+  } catch (err: unknown) {
+    const isAbort = isAbortError(err);
+    const message = isAbort ? `タイムアウト (${timeoutMs}ms)` : getErrorMessage(err) || 'ネットワークエラー';
     return GetDepthOutputSchema.parse(fail(message, isAbort ? 'timeout' : 'network')) as any;
   }
 }

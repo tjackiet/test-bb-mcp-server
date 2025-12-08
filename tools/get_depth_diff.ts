@@ -2,6 +2,7 @@ import getDepth from './get_depth.js';
 import { ensurePair, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
+import { getErrorMessage } from '../lib/error.js';
 import { GetDepthDiffOutputSchema } from '../src/schemas.js';
 
 type SideLevels = Array<[string, string]>; // [price, size]
@@ -77,8 +78,8 @@ export default async function getDepthDiff(pair: string = 'btc_jpy', delayMs: nu
     };
     const meta = createMeta(chk.pair, { delayMs });
     return GetDepthDiffOutputSchema.parse(ok(summary, data as any, meta as any)) as any;
-  } catch (e: any) {
-    return GetDepthDiffOutputSchema.parse(fail(e?.message || 'internal error', 'internal')) as any;
+  } catch (e: unknown) {
+    return GetDepthDiffOutputSchema.parse(fail(getErrorMessage(e) || 'internal error', 'internal')) as any;
   }
 }
 

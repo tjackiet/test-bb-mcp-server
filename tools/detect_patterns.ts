@@ -1,5 +1,6 @@
 import getIndicators from './get_indicators.js';
 import { ok, fail } from '../lib/result.js';
+import { getErrorMessage } from '../lib/error.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema, PatternTypeEnum } from '../src/schemas.js';
 import { generatePatternDiagram } from '../src/utils/pattern-diagrams.js';
 
@@ -3419,8 +3420,8 @@ export default async function detectPatterns(
       }
     );
     return DetectPatternsOutputSchema.parse(out) as any;
-  } catch (e: any) {
-    return DetectPatternsOutputSchema.parse(fail(e?.message || 'internal error', 'internal')) as any;
+  } catch (e: unknown) {
+    return DetectPatternsOutputSchema.parse(fail(getErrorMessage(e) || 'internal error', 'internal')) as any;
   }
 }
 

@@ -2,6 +2,7 @@ import { ensurePair, validateLimit, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
 import { fetchJson } from '../lib/http.js';
+import { getErrorMessage, isAbortError } from '../lib/error.js';
 import { GetOrderbookOutputSchema } from '../src/schemas.js';
 import type { Result, GetOrderbookData, GetOrderbookMeta, OrderbookLevelWithCum } from '../src/types/domain.d.ts';
 
@@ -98,9 +99,9 @@ export default async function getOrderbook(
     }) as GetOrderbookMeta;
 
     return GetOrderbookOutputSchema.parse(ok(text, data, meta)) as unknown as Result<GetOrderbookData, GetOrderbookMeta>;
-  } catch (err: any) {
-    const isAbort = err?.name === 'AbortError';
-    const message = isAbort ? `タイムアウト (${timeoutMs}ms)` : err?.message || 'ネットワークエラー';
+  } catch (err: unknown) {
+    const isAbort = isAbortError(err);
+    const message = isAbort ? `タイムアウト (${timeoutMs}ms)` : getErrorMessage(err) || 'ネットワークエラー';
     return GetOrderbookOutputSchema.parse(fail(message, isAbort ? 'timeout' : 'network')) as unknown as Result<GetOrderbookData, GetOrderbookMeta>;
   }
 }

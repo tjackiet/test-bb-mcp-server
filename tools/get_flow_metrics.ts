@@ -2,6 +2,7 @@ import getTransactions from './get_transactions.js';
 import { ok, fail } from '../lib/result.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
 import { formatSummary } from '../lib/formatter.js';
+import { getErrorMessage } from '../lib/error.js';
 import { GetFlowMetricsOutputSchema } from '../src/schemas.js';
 
 type Tx = { price: number; amount: number; side: 'buy' | 'sell'; timestampMs: number; isoTime: string };
@@ -133,8 +134,8 @@ export default async function getFlowMetrics(
     const offset = `${offsetMin >= 0 ? '+' : '-'}${String(Math.floor(Math.abs(offsetMin) / 60)).padStart(2, '0')}:${String(Math.abs(offsetMin) % 60).padStart(2, '0')}`;
     const meta = createMeta(chk.pair, { count: totalTrades, bucketMs, timezone: tz, timezoneOffset: offset, serverTime: toIsoWithTz(Date.now(), tz) ?? undefined });
     return GetFlowMetricsOutputSchema.parse(ok(summary, data as any, meta as any)) as any;
-  } catch (e: any) {
-    return GetFlowMetricsOutputSchema.parse(fail(e?.message || 'internal error', 'internal')) as any;
+  } catch (e: unknown) {
+    return GetFlowMetricsOutputSchema.parse(fail(getErrorMessage(e) || 'internal error', 'internal')) as any;
   }
 }
 
