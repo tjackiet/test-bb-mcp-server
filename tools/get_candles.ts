@@ -1,4 +1,4 @@
-import { fetchJson } from '../lib/http.js';
+import { fetchJson, BITBANK_API_BASE } from '../lib/http.js';
 import { ensurePair, validateLimit, validateDate, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { GetCandlesOutputSchema } from '../src/schemas.js';
@@ -47,7 +47,7 @@ export default async function getCandles(
   const limitCheck = validateLimit(limit, 1, 1000);
   if (!limitCheck.ok) return fail(limitCheck.error.message, limitCheck.error.type);
 
-  const url = `https://public.bitbank.cc/${chk.pair}/candlestick/${type}/${dateCheck.value}`;
+  const url = `${BITBANK_API_BASE}/${chk.pair}/candlestick/${type}/${dateCheck.value}`;
 
   try {
     const json: any = await fetchJson(url, { timeoutMs: 5000, retries: 2 });

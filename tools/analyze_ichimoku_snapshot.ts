@@ -3,6 +3,7 @@ import { ok, fail } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { formatSummary } from '../lib/formatter.js';
 import { getErrorMessage } from '../lib/error.js';
+import { avg } from '../lib/math.js';
 import { AnalyzeIchimokuSnapshotOutputSchema } from '../src/schemas.js';
 
 export default async function analyzeIchimokuSnapshot(
@@ -186,7 +187,7 @@ export default async function analyzeIchimokuSnapshot(
       }
     }
     // 簡易トレンド強度: 直近/中期での雲クリアランス平均
-    function avg(arr: number[]) { return arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : 0; }
+    const avgOrZero = (arr: number[]) => avg(arr) ?? 0;
     let shortTerm = 0, mediumTerm = 0;
     if (Array.isArray(candles) && cloudTop != null && cloudBottom != null) {
       const st = candles.slice(-Math.min(lookback, candles.length));
@@ -194,8 +195,8 @@ export default async function analyzeIchimokuSnapshot(
       const clearanceSt = st.map(x => (x.close > (cloudTop as number) ? (x.close - (cloudTop as number)) : (x.close < (cloudBottom as number) ? ((cloudBottom as number) - x.close) * -1 : 0)));
       const clearanceMt = mt.map(x => (x.close > (cloudTop as number) ? (x.close - (cloudTop as number)) : (x.close < (cloudBottom as number) ? ((cloudBottom as number) - x.close) * -1 : 0)));
       const norm = (v: number) => Math.max(-100, Math.min(100, Math.round((v / (close || 1)) * 10000)));
-      shortTerm = norm(avg(clearanceSt));
-      mediumTerm = norm(avg(clearanceMt));
+      shortTerm = norm(avgOrZero(clearanceSt));
+      mediumTerm = norm(avgOrZero(clearanceMt));
     }
     const momentumTrend: 'accelerating' | 'steady' | 'decelerating' = shortTerm > mediumTerm + 10 ? 'accelerating' : shortTerm < mediumTerm - 10 ? 'decelerating' : 'steady';
 

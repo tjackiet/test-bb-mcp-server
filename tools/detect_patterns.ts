@@ -1,6 +1,7 @@
 import getIndicators from './get_indicators.js';
 import { ok, fail } from '../lib/result.js';
 import { getErrorMessage } from '../lib/error.js';
+import { avg as avgRaw, median as medianRaw } from '../lib/math.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema, PatternTypeEnum } from '../src/schemas.js';
 import { generatePatternDiagram } from '../src/utils/pattern-diagrams.js';
 
@@ -3325,8 +3326,8 @@ export default async function detectPatterns(
       }
     }
 
-    function avg(arr: number[]) { return arr.length ? Number((arr.reduce((s, v) => s + v, 0) / arr.length).toFixed(2)) : null; }
-    function median(arr: number[]) { if (!arr.length) return null; const s = [...arr].sort((a, b) => a - b); const m = Math.floor(s.length / 2); return s.length % 2 ? s[m] : Number(((s[m - 1] + s[m]) / 2).toFixed(2)); }
+    const avg = (arr: number[]) => { const v = avgRaw(arr); return v != null ? Number(v.toFixed(2)) : null; };
+    const median = (arr: number[]) => { const v = medianRaw(arr); return v != null ? Number(v.toFixed(2)) : null; };
     // MIN_CONFIDENCE は関数先頭で定義済み
     const statistics: any = {};
     for (const [k, v] of Object.entries(stats)) {

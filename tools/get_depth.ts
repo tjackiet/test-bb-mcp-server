@@ -1,5 +1,5 @@
 import { ensurePair, createMeta } from '../lib/validate.js';
-import { fetchJson } from '../lib/http.js';
+import { fetchJson, BITBANK_API_BASE } from '../lib/http.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
 import { getErrorMessage, isAbortError } from '../lib/error.js';
@@ -14,7 +14,7 @@ export default async function getDepth(
   const chk = ensurePair(pair);
   if (!chk.ok) return fail(chk.error.message, chk.error.type);
 
-  const url = `https://public.bitbank.cc/${chk.pair}/depth`;
+  const url = `${BITBANK_API_BASE}/${chk.pair}/depth`;
   try {
     const json: any = await fetchJson(url, { timeoutMs, retries: 2 });
     const d = json?.data ?? {};

@@ -1,4 +1,4 @@
-import { fetchJson } from '../lib/http.js';
+import { fetchJson, BITBANK_API_BASE } from '../lib/http.js';
 import { ensurePair, validateLimit, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
@@ -36,8 +36,8 @@ export default async function getTransactions(
 
   // latest（直近） or 指定日
   const url = date && /\d{8}/.test(String(date))
-    ? `https://public.bitbank.cc/${chk.pair}/transactions/${date}`
-    : `https://public.bitbank.cc/${chk.pair}/transactions`;
+    ? `${BITBANK_API_BASE}/${chk.pair}/transactions/${date}`
+    : `${BITBANK_API_BASE}/${chk.pair}/transactions`;
 
   try {
     const json: any = await fetchJson(url, { timeoutMs: 4000, retries: 2 });

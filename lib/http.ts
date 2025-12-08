@@ -1,3 +1,6 @@
+/** bitbank Public API ベースURL */
+export const BITBANK_API_BASE = 'https://public.bitbank.cc';
+
 export interface FetchJsonOptions {
   timeoutMs?: number;
   retries?: number;

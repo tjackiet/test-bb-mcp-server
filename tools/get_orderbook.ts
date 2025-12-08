@@ -2,7 +2,7 @@ import { ensurePair, validateLimit, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
 import { toIsoTime } from '../lib/datetime.js';
-import { fetchJson } from '../lib/http.js';
+import { fetchJson, BITBANK_API_BASE } from '../lib/http.js';
 import { getErrorMessage, isAbortError } from '../lib/error.js';
 import { GetOrderbookOutputSchema } from '../src/schemas.js';
 import type { Result, GetOrderbookData, GetOrderbookMeta, OrderbookLevelWithCum } from '../src/types/domain.d.ts';
@@ -36,7 +36,7 @@ export default async function getOrderbook(
   const limitCheck = validateLimit(topN, 1, 200, 'opN');
   if (!limitCheck.ok) return fail(limitCheck.error.message, limitCheck.error.type);
 
-  const url = `https://public.bitbank.cc/${chk.pair}/depth`;
+  const url = `${BITBANK_API_BASE}/${chk.pair}/depth`;
 
   try {
     const json: any = await fetchJson(url, { timeoutMs, retries: 2 });

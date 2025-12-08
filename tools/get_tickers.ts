@@ -1,4 +1,4 @@
-import { fetchJson } from '../lib/http.js';
+import { fetchJson, BITBANK_API_BASE } from '../lib/http.js';
 import getCandles from './get_candles.js';
 import { ALLOWED_PAIRS, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
@@ -15,7 +15,7 @@ const CACHE_TTL_MS = 3000; // 短期キャッシュで負荷軽減
 let cache: { market: Market; fetchedAt: number; items: Array<{ pair: string; last: number | null; buy: number | null; sell: number | null; volume: number | null; timestamp: number | null; isoTime: string | null; change24hPct?: number | null }> } | null = null;
 
 async function fetchTickerForPair(pair: string, timeoutMs = 4000): Promise<{ pair: string; last: number | null; buy: number | null; sell: number | null; volume: number | null; timestamp: number | null; isoTime: string | null; change24hPct?: number | null }> {
-  const url = `https://public.bitbank.cc/${pair}/ticker`;
+  const url = `${BITBANK_API_BASE}/${pair}/ticker`;
   try {
     const json = (await fetchJson(url, { timeoutMs, retries: 2 })) as TickerRaw;
     const d: any = json?.data ?? {};

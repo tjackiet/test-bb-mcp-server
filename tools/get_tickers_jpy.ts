@@ -2,6 +2,7 @@ import { ok, fail } from '../lib/result.js';
 import fs from 'fs';
 import path from 'path';
 import { getErrorMessage } from '../lib/error.js';
+import { BITBANK_API_BASE } from '../lib/http.js';
 import { GetTickersJpyOutputSchema } from '../src/schemas.js';
 
 type Item = { pair: string; sell: string; buy: string; high: string; low: string; open: string; last: string; vol: string; timestamp: number };
@@ -36,7 +37,7 @@ function getPairsMode(): PairsMode {
   return 'strict';
 }
 async function fetchOfficialJpyPairs(timeoutMs: number, retries: number, retryWaitMs: number): Promise<Set<string>> {
-  const officialUrl = 'https://public.bitbank.cc/tickers_jpy';
+  const officialUrl = `${BITBANK_API_BASE}/tickers_jpy`;
   let lastErr: unknown;
   for (let i = 0; i <= retries; i++) {
     const ctrl = new AbortController();
@@ -96,7 +97,7 @@ export default async function getTickersJpy(opts?: { bypassCache?: boolean }) {
     );
   }
 
-  const url = String(process.env.TICKERS_JPY_URL || 'https://public.bitbank.cc/tickers_jpy');
+  const url = String(process.env.TICKERS_JPY_URL || `${BITBANK_API_BASE}/tickers_jpy`);
   const timeoutMs = Number(process.env.TICKERS_JPY_TIMEOUT_MS ?? 2000);
   const retries = Number(process.env.TICKERS_JPY_RETRIES ?? 1);
   const retryWaitMs = Number(process.env.TICKERS_JPY_RETRY_WAIT_MS ?? 500);

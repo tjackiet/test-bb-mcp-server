@@ -1,5 +1,5 @@
 import { ensurePair, createMeta } from '../lib/validate.js';
-import { fetchJson } from '../lib/http.js';
+import { fetchJson, BITBANK_API_BASE } from '../lib/http.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
 import { toIsoTime } from '../lib/datetime.js';
@@ -18,7 +18,7 @@ export default async function getTicker(
   const chk = ensurePair(pair);
   if (!chk.ok) return fail(chk.error.message, chk.error.type);
 
-  const url = `https://public.bitbank.cc/${chk.pair}/ticker`;
+  const url = `${BITBANK_API_BASE}/${chk.pair}/ticker`;
 
   try {
     const json: any = await fetchJson(url, { timeoutMs, retries: 2 });

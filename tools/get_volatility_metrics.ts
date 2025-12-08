@@ -3,6 +3,7 @@ import { ok, fail } from '../lib/result.js';
 import { ensurePair, validateLimit, createMeta } from '../lib/validate.js';
 import { formatSummary } from '../lib/formatter.js';
 import { getErrorMessage } from '../lib/error.js';
+import { stddev } from '../lib/math.js';
 import { GetVolMetricsOutputSchema } from '../src/schemas.js';
 
 type Candle = { open: number; high: number; low: number; close: number; isoTime?: string | null };
@@ -40,13 +41,6 @@ function safeLog(x: number): number {
   return Math.log(Math.max(x, 1e-12));
 }
 
-function stddev(values: number[]): number {
-  const n = values.length;
-  if (n === 0) return 0;
-  const mean = values.reduce((s, v) => s + v, 0) / n;
-  const variance = values.reduce((s, v) => s + (v - mean) * (v - mean), 0) / n;
-  return Math.sqrt(Math.max(0, variance));
-}
 
 function slidingStddev(values: number[], window: number): number[] {
   const out: number[] = [];
