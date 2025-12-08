@@ -15,7 +15,6 @@
     "gen:types": "tsx tools/gen_types.ts",
     "sync:manifest": "tsx tools/sync_manifest.ts",
     "sync:prompts": "tsx tools/sync_prompts.ts",
-    "sync:skills": "tsx tools/sync_skills.ts",
     "postinstall": "mkdir -p assets && cp node_modules/lightweight-charts/dist/lightweight-charts.standalone.production.js assets/lightweight-charts.standalone.js || true"
   },
   "keywords": [],
