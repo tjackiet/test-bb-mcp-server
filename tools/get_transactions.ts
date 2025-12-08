@@ -3,6 +3,7 @@ import { ensurePair, validateLimit, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
 import { toIsoMs } from '../lib/datetime.js';
+import { getErrorMessage } from '../lib/error.js';
 import { GetTransactionsOutputSchema } from '../src/schemas.js';
 
 type TxnRaw = Record<string, unknown>;
@@ -65,8 +66,8 @@ export default async function getTransactions(
     const data = { raw: json, normalized: latest };
     const meta = createMeta(chk.pair, { count: latest.length, source: date ? 'by_date' : 'latest' });
     return GetTransactionsOutputSchema.parse(ok(summary, data as any, meta as any)) as any;
-  } catch (e: any) {
-    return GetTransactionsOutputSchema.parse(fail(e?.message || 'ネットワークエラー', 'network')) as any;
+  } catch (e: unknown) {
+    return GetTransactionsOutputSchema.parse(fail(getErrorMessage(e) || 'ネットワークエラー', 'network')) as any;
   }
 }
 

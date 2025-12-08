@@ -2,6 +2,7 @@ import getDepth from './get_depth.js';
 import getCandles from './get_candles.js';
 import { ok, fail } from '../lib/result.js';
 import { ensurePair, createMeta } from '../lib/validate.js';
+import { getErrorMessage } from '../lib/error.js';
 
 type Lookback = '30min' | '1hour' | '2hour';
 
@@ -132,8 +133,8 @@ export default async function detectWhaleEvents(
     const out = ok(text, data as any, createMeta(chk.pair, { fetchedAt: new Date().toISOString() })) as any;
     cache.set(cacheKey, { ts: Date.now(), data: out });
     return out;
-  } catch (e: any) {
-    return fail(e?.message || 'internal error', 'internal');
+  } catch (e: unknown) {
+    return fail(getErrorMessage(e) || 'internal error', 'internal');
   }
 }
 

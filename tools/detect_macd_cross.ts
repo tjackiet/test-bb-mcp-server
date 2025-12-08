@@ -3,6 +3,7 @@ import getIndicators from './get_indicators.js';
 import { ALLOWED_PAIRS, normalizePair } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
+import { getErrorMessage } from '../lib/error.js';
 // removed unused GetMarketSummaryOutputSchema import
 
 export default async function detectMacdCross(
@@ -184,8 +185,8 @@ export default async function detectMacdCross(
       data.screenedDetailed = filtered;
     }
     return ok(summary, data, { market, lookback, pairs: universe, view, screen: { ...opts, crossType, sortBy, sortOrder: opts.sortOrder || 'desc' } });
-  } catch (e: any) {
-    return fail(e?.message || 'internal error', 'internal');
+  } catch (e: unknown) {
+    return fail(getErrorMessage(e) || 'internal error', 'internal');
   }
 }
 

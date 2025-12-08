@@ -7,6 +7,7 @@
  */
 
 import { ok, fail } from '../lib/result.js';
+import { getErrorMessage } from '../lib/error.js';
 import {
   RenderCandlePatternDiagramInputSchema,
   RenderCandlePatternDiagramOutputSchema,
@@ -289,9 +290,9 @@ export default async function renderCandlePatternDiagram(
     };
 
     return RenderCandlePatternDiagramOutputSchema.parse(result);
-  } catch (e: any) {
+  } catch (e: unknown) {
     return RenderCandlePatternDiagramOutputSchema.parse(
-      fail(e?.message || 'Unknown error', 'internal')
+      fail(getErrorMessage(e) || 'Unknown error', 'internal')
     );
   }
 }

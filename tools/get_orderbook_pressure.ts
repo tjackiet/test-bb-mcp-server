@@ -2,6 +2,7 @@ import getDepth from './get_depth.js';
 import { ensurePair, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
+import { getErrorMessage } from '../lib/error.js';
 import { GetOrderbookPressureOutputSchema } from '../src/schemas.js';
 
 type SideLevels = Array<[string, string]>; // [price, size]
@@ -102,8 +103,8 @@ export default async function getOrderbookPressure(pair: string = 'btc_jpy', _de
     const data = { bands, aggregates: { netDelta: Number(bands.reduce((s: number, b: any) => s + b.netDelta, 0).toFixed(8)), strongestTag } };
     const meta = createMeta(chk.pair, { delayMs: 0 });
     return GetOrderbookPressureOutputSchema.parse(ok(text, data as any, meta as any)) as any;
-  } catch (e: any) {
-    return GetOrderbookPressureOutputSchema.parse(fail(e?.message || 'internal error', 'internal')) as any;
+  } catch (e: unknown) {
+    return GetOrderbookPressureOutputSchema.parse(fail(getErrorMessage(e) || 'internal error', 'internal')) as any;
   }
 }
 

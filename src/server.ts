@@ -206,14 +206,15 @@ function registerToolWithLog<S extends z.ZodTypeAny, R = unknown>(
 			const ms = Date.now() - t0;
 			logToolRun({ tool: name, input, result, ms });
 			return respond(result);
-		} catch (err: any) {
+		} catch (err: unknown) {
 			const ms = Date.now() - t0;
 			logError(name, err, input);
+			const message = err instanceof Error ? err.message : String(err);
 			return {
-				content: [{ type: 'text', text: `internal error: ${err?.message || 'unknown error'}` }],
+				content: [{ type: 'text', text: `internal error: ${message || 'unknown error'}` }],
 				structuredContent: {
 					ok: false,
-					summary: `internal error: ${err?.message || 'unknown error'}`,
+					summary: `internal error: ${message || 'unknown error'}`,
 					meta: { ms, errorType: 'internal' },
 				},
 			};
@@ -2054,8 +2055,10 @@ try {
 			const result = { description: (promptDef as any).description, messages: (promptDef as any).messages };
 			console.error('[prompts/get] Returning result with', (result as any).messages?.length ?? 0, 'messages');
 			return result;
-		} catch (error: any) {
-			console.error('[prompts/get] EXCEPTION:', error?.message, error?.stack);
+		} catch (error: unknown) {
+			const message = error instanceof Error ? error.message : String(error);
+			const stack = error instanceof Error ? error.stack : undefined;
+			console.error('[prompts/get] EXCEPTION:', message, stack);
 			throw error;
 		}
 	});

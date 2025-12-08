@@ -1,6 +1,7 @@
 import getIndicators from '../../tools/get_indicators.js';
 import { ok, fail } from '../../lib/result.js';
 import { formatSummary } from '../../lib/formatter.js';
+import { getErrorMessage } from '../../lib/error.js';
 
 type AnalyzeInput = {
   pair: string;
@@ -178,8 +179,8 @@ export default async function analyzeMacdPattern({
 
     const summary = lines.join('\n');
     return ok(summary, { forming, history, statistics }, { pair, historyDays, performanceWindows, minHistogramForForming });
-  } catch (e: any) {
-    return fail(e?.message || 'internal error', 'internal');
+  } catch (e: unknown) {
+    return fail(getErrorMessage(e) || 'internal error', 'internal');
   }
 }
 

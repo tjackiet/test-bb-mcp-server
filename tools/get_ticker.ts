@@ -3,6 +3,7 @@ import { fetchJson } from '../lib/http.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
 import { toIsoTime } from '../lib/datetime.js';
+import { getErrorMessage, isAbortError } from '../lib/error.js';
 import { GetTickerOutputSchema } from '../src/schemas.js';
 import type { Result, GetTickerData, GetTickerMeta } from '../src/types/domain.d.ts';
 
@@ -43,9 +44,9 @@ export default async function getTicker(
     };
 
     return GetTickerOutputSchema.parse(ok(summary, data, createMeta(chk.pair))) as unknown as Result<GetTickerData, GetTickerMeta>;
-  } catch (err: any) {
-    const isAbort = err?.name === 'AbortError';
-    const message = isAbort ? `タイムアウト (${timeoutMs}ms)` : err?.message || 'ネットワークエラー';
+  } catch (err: unknown) {
+    const isAbort = isAbortError(err);
+    const message = isAbort ? `タイムアウト (${timeoutMs}ms)` : getErrorMessage(err) || 'ネットワークエラー';
     return GetTickerOutputSchema.parse(fail(message, isAbort ? 'timeout' : 'network')) as unknown as Result<GetTickerData, GetTickerMeta>;
   }
 }

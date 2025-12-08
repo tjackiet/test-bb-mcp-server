@@ -4,6 +4,7 @@ import { ALLOWED_PAIRS, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
 import { toIsoTime } from '../lib/datetime.js';
+import { getErrorMessage } from '../lib/error.js';
 import { GetTickersOutputSchema } from '../src/schemas.js';
 
 type Market = 'all' | 'jpy';
@@ -102,8 +103,8 @@ export default async function getTickers(market: Market = 'all') {
         { market, fetchedAt: new Date(fetchedAt).toISOString(), count: itemsWithJpy.length }
       )
     ) as any;
-  } catch (e: any) {
-    return GetTickersOutputSchema.parse(fail(e?.message || 'internal error', 'internal')) as any;
+  } catch (e: unknown) {
+    return GetTickersOutputSchema.parse(fail(getErrorMessage(e) || 'internal error', 'internal')) as any;
   }
 }
 

@@ -2,6 +2,7 @@ import getIndicators from './get_indicators.js';
 import { ok, fail } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { formatSummary } from '../lib/formatter.js';
+import { getErrorMessage } from '../lib/error.js';
 import { AnalyzeBbSnapshotOutputSchema } from '../src/schemas.js';
 
 export default async function analyzeBbSnapshot(
@@ -172,8 +173,8 @@ export default async function analyzeBbSnapshot(
     const data = { mode, price: close ?? null, bb: { middle: mid, bands: bbBands, zScore, bandWidthPct: bandWidthAll }, position_analysis: { current_zone }, extreme_events: { 'touches_3σ_last_30d': null, 'touches_2σ_last_30d': null, band_walk_detected: null, squeeze_percentile: null }, interpretation: { volatility_state: null, extreme_risk: null, mean_reversion_potential: null }, tags } as any;
     const meta = createMeta(chk.pair, { type, count: indRes.data.normalized.length, mode, extra: { timeseries: timeseries ? { last_30_candles: timeseries } : undefined, metadata: { calculation_params: { period: 20, std_dev_multiplier: 2 }, data_quality: 'complete', last_updated: new Date().toISOString() } } });
     return AnalyzeBbSnapshotOutputSchema.parse(ok(summaryBase, data as any, meta as any)) as any;
-  } catch (e: any) {
-    return AnalyzeBbSnapshotOutputSchema.parse(fail(e?.message || 'internal error', 'internal')) as any;
+  } catch (e: unknown) {
+    return AnalyzeBbSnapshotOutputSchema.parse(fail(getErrorMessage(e) || 'internal error', 'internal')) as any;
   }
 }
 

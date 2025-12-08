@@ -4,6 +4,7 @@ import { ok, fail } from '../lib/result.js';
 import { GetCandlesOutputSchema } from '../src/schemas.js';
 import { formatSummary } from '../lib/formatter.js';
 import { toIsoTime } from '../lib/datetime.js';
+import { getErrorMessage } from '../lib/error.js';
 import type { Result, GetCandlesData, GetCandlesMeta, CandleType } from '../src/types/domain.d.ts';
 
 const TYPES: Set<CandleType | string> = new Set([
@@ -160,8 +161,8 @@ export default async function getCandles(
       createMeta(chk.pair, { type, count: normalized.length }) as GetCandlesMeta
     );
     return GetCandlesOutputSchema.parse(result) as unknown as Result<GetCandlesData, GetCandlesMeta>;
-  } catch (e: any) {
-    const rawMsg = String(e?.message || '');
+  } catch (e: unknown) {
+    const rawMsg = getErrorMessage(e);
     const t = String(type);
     if (/404/.test(rawMsg) && ['4hour', '8hour', '12hour'].includes(t)) {
       const hint = `${t} は YYYY 形式（例: 2025）が必要です。なお、現在この時間足がAPIで提供されていない可能性もあります。1hour または 1day での取得もお試しください。`;

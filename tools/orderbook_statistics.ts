@@ -3,6 +3,7 @@ import getDepth from './get_depth.js';
 import { ok, fail } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
+import { getErrorMessage } from '../lib/error.js';
 
 export default async function getOrderbookStatistics(
   pair: string = 'btc_jpy',
@@ -118,8 +119,8 @@ export default async function getOrderbookStatistics(
 
     const summary = formatSummary({ pair: chk.pair, latest: basic.currentPrice ?? undefined, extra: `spread=${basic.spread} (${((basic.spreadPct || 0) * 100).toFixed(4)}%)` });
     return ok(text, data as any, createMeta(chk.pair, { fetchedAt: new Date().toISOString(), summary })) as any;
-  } catch (e: any) {
-    return fail(e?.message || 'internal error', 'internal') as any;
+  } catch (e: unknown) {
+    return fail(getErrorMessage(e) || 'internal error', 'internal') as any;
   }
 }
 

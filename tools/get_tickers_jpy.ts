@@ -1,6 +1,7 @@
 import { ok, fail } from '../lib/result.js';
 import fs from 'fs';
 import path from 'path';
+import { getErrorMessage } from '../lib/error.js';
 import { GetTickersJpyOutputSchema } from '../src/schemas.js';
 
 type Item = { pair: string; sell: string; buy: string; high: string; low: string; open: string; last: string; vol: string; timestamp: number };
@@ -36,7 +37,7 @@ function getPairsMode(): PairsMode {
 }
 async function fetchOfficialJpyPairs(timeoutMs: number, retries: number, retryWaitMs: number): Promise<Set<string>> {
   const officialUrl = 'https://public.bitbank.cc/tickers_jpy';
-  let lastErr: any;
+  let lastErr: unknown;
   for (let i = 0; i <= retries; i++) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -52,13 +53,13 @@ async function fetchOfficialJpyPairs(timeoutMs: number, retries: number, retryWa
         if (p.endsWith('_jpy')) set.add(p);
       }
       return set;
-    } catch (e: any) {
+    } catch (e: unknown) {
       clearTimeout(t);
       lastErr = e;
       if (i < retries) await new Promise((r) => setTimeout(r, retryWaitMs));
     }
   }
-  throw lastErr || new Error('pairs fetch failed');
+  throw lastErr ?? new Error('pairs fetch failed');
 }
 async function getFilterSet(timeoutMs: number, retries: number, retryWaitMs: number): Promise<{ mode: PairsMode; set: Set<string> | null; source: 'dynamic' | 'static' | 'off' }> {
   const mode = getPairsMode();
@@ -140,7 +141,7 @@ export default async function getTickersJpy(opts?: { bypassCache?: boolean }) {
     }
 
     // 固定バックオフでの簡易リトライ
-    let lastErr: any;
+    let lastErr: unknown;
     let raw: any;
     for (let i = 0; i <= retries; i++) {
       const ctrl = new AbortController();
@@ -151,13 +152,13 @@ export default async function getTickersJpy(opts?: { bypassCache?: boolean }) {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         raw = await res.json();
         break;
-      } catch (e: any) {
+      } catch (e: unknown) {
         clearTimeout(t);
         lastErr = e;
         if (i < retries) await new Promise((r) => setTimeout(r, retryWaitMs));
       }
     }
-    if (!raw) throw lastErr || new Error('no response');
+    if (!raw) throw lastErr ?? new Error('no response');
     if (!raw || raw.success !== 1 || !Array.isArray(raw.data)) {
       return GetTickersJpyOutputSchema.parse(fail(`UPSTREAM_ERROR ${JSON.stringify(raw?.data ?? raw)}`, 'upstream'));
     }
@@ -182,8 +183,8 @@ export default async function getTickersJpy(opts?: { bypassCache?: boolean }) {
         { cache: { hit: false, key: 'tickers_jpy' }, ts: new Date().toISOString(), latencyMs: ms, payloadBytes, filtered: true }
       )
     );
-  } catch (e: any) {
-    const msg = e?.message || 'network error';
+  } catch (e: unknown) {
+    const msg = getErrorMessage(e) || 'network error';
     const isTimeout = msg.includes('AbortError') || msg.includes('timeout');
     return GetTickersJpyOutputSchema.parse(fail(isTimeout ? `TIMEOUT_OR_NETWORK` : `UPSTREAM_${msg}`, isTimeout ? 'timeout' : 'upstream'));
   }
