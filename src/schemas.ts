@@ -1220,7 +1220,7 @@ export const AnalyzeCandlePatternsInputSchema = z.object({
   // date: 互換性のため残す（as_of が優先）
   date: z.string().regex(/^\d{8}$/).optional().describe('DEPRECATED: Use as_of instead. YYYYMMDD format.'),
   window_days: z.number().int().min(3).max(10).optional().default(5),
-  focus_last_n: z.number().int().min(2).max(5).optional().default(3),
+  focus_last_n: z.number().int().min(2).max(5).optional().default(5),
   patterns: z.array(CandlePatternTypeEnum).optional().describe('Patterns to detect. If omitted, all patterns are checked.'),
   history_lookback_days: z.number().int().min(30).max(365).optional().default(180),
   history_horizons: z.array(z.number().int().min(1).max(10)).optional().default([1, 3, 5]),

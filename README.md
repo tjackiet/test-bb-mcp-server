@@ -33,27 +33,32 @@ bitbank の公開 API から価格・板情報・約定履歴・ローソク足�
 
 ### 1. インストール
 ```bash
-git clone https://github.com/your-repo/bitbank-mcp-server.git
-cd bitbank-mcp-server
+git clone https://github.com/tjackiet/bitbank-genesis-mcp-server.git
+cd bitbank-genesis-mcp-server
 npm install
 ```
 
 ### 2. Claude Desktop に登録（最短）
-`~/Library/Application Support/Claude/claude_desktop_config.json` に以下を追加（絶対パス推奨）:
+`~/Library/Application Support/Claude/claude_desktop_config.json` に以下を追加:
 ```json
 {
   "mcpServers": {
     "bitbank": {
-      "command": "/ABS/PATH/to/node_modules/.bin/tsx",
-      "args": ["/ABS/PATH/to/src/server.ts"],
+      "command": "/usr/local/bin/node",
+      "args": [
+        "/ABS/PATH/to/node_modules/tsx/dist/cli.mjs",
+        "/ABS/PATH/to/src/server.ts"
+      ],
+      "workingDirectory": "/ABS/PATH/to/project",
       "env": { "LOG_LEVEL": "info", "NO_COLOR": "1" }
     }
   }
 }
 ```
-- 追加後、Claude Desktop を再起動してください
-- Node.js 18+ があれば Docker は不要です
-  - Docker の起動手順は [docs/ops.md の「Docker起動（開発・検証用）」](docs/ops.md#docker起動開発検証用) を参照してください。
+- `/ABS/PATH/to/` を実際のプロジェクトパスに置き換えてください
+- ⚠️ macOS では Desktop フォルダに配置すると権限エラーが発生する場合があります（ホームディレクトリ直下を推奨）
+- 追加後、Claude Desktop を `Cmd+Q` で完全終了して再起動してください
+- Node.js 18+ があれば Docker は不要です（[Docker起動](docs/ops.md#docker起動開発検証用)）
 
 ### 3. 使ってみる
 Claude にそのまま話しかけます:

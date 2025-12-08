@@ -235,9 +235,9 @@ export interface RenderChartSvgOptions {
 	limit?: number;
 	// main series style: candles (default) or line (close-only)
 	style?: ChartStyle;
-	withSMA?: number[]; // default [25,75,200]; empty when ichimoku
-	withBB?: boolean; // default true unless ichimoku
-	bbMode?: BbMode; // default 'light'
+	withSMA?: number[];
+	withBB?: boolean;
+	bbMode?: BbMode;
 	withIchimoku?: boolean; // default false
 	ichimoku?: IchimokuOptions; // default { mode: 'default' }
 	withLegend?: boolean; // default true
