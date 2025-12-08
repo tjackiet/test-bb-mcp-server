@@ -60,6 +60,25 @@ npm install
 - 追加後、Claude Desktop を `Cmd+Q` で完全終了して再起動してください
 - Node.js 18+ があれば Docker は不要です（[Docker起動](docs/ops.md#docker起動開発検証用)）
 
+#### 表示名のカスタマイズ
+
+Claude Desktop の UI に表示される名前は `claude_desktop_config.json` のキー名で決まります：
+```json
+{
+  "mcpServers": {
+    "ビットバンクMCP": {  // ← この名前がUIに表示される
+      "command": "...",
+      "args": ["..."]
+    }
+  }
+}
+```
+日本語名も使用可能です。
+
+設定ファイルの場所：
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
 ### 3. 使ってみる
 Claude にそのまま話しかけます:
 ```
