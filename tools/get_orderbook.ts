@@ -1,17 +1,13 @@
 import { ensurePair, validateLimit, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary, formatTimestampJST } from '../lib/formatter.js';
+import { toIsoTime } from '../lib/datetime.js';
 import { fetchJson } from '../lib/http.js';
 import { GetOrderbookOutputSchema } from '../src/schemas.js';
 import type { Result, GetOrderbookData, GetOrderbookMeta, OrderbookLevelWithCum } from '../src/types/domain.d.ts';
 
 export interface GetOrderbookOptions {
   timeoutMs?: number;
-}
-
-function toIsoTime(ts: unknown): string | null {
-  const d = new Date(Number(ts));
-  return Number.isNaN(d.valueOf()) ? null : d.toISOString();
 }
 
 function toLevels(arr: any[], n: number): OrderbookLevelWithCum[] {

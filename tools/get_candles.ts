@@ -3,6 +3,7 @@ import { ensurePair, validateLimit, validateDate, createMeta } from '../lib/vali
 import { ok, fail } from '../lib/result.js';
 import { GetCandlesOutputSchema } from '../src/schemas.js';
 import { formatSummary } from '../lib/formatter.js';
+import { toIsoTime } from '../lib/datetime.js';
 import type { Result, GetCandlesData, GetCandlesMeta, CandleType } from '../src/types/domain.d.ts';
 
 const TYPES: Set<CandleType | string> = new Set([
@@ -24,12 +25,6 @@ function todayYyyymmdd(): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}${m}${day}`;
-}
-
-function toIso(ms: unknown): string | null {
-  const n = Number(ms);
-  const d = new Date(n);
-  return Number.isNaN(d.valueOf()) ? null : d.toISOString();
 }
 
 export default async function getCandles(
@@ -70,7 +65,7 @@ export default async function getCandles(
       low: Number(l),
       close: Number(c),
       volume: Number(v),
-      isoTime: toIso(ts) ?? undefined,
+      isoTime: toIsoTime(ts) ?? undefined,
     }));
 
     // 期間別のキーポイントを抽出

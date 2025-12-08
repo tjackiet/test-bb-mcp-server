@@ -2,16 +2,12 @@ import { ensurePair, createMeta } from '../lib/validate.js';
 import { fetchJson } from '../lib/http.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
+import { toIsoTime } from '../lib/datetime.js';
 import { GetTickerOutputSchema } from '../src/schemas.js';
 import type { Result, GetTickerData, GetTickerMeta } from '../src/types/domain.d.ts';
 
 export interface GetTickerOptions {
   timeoutMs?: number;
-}
-
-function toIsoTime(ts: unknown): string | null {
-  const d = new Date(Number(ts));
-  return Number.isNaN(d.valueOf()) ? null : d.toISOString();
 }
 
 export default async function getTicker(

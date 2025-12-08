@@ -2,22 +2,10 @@ import getTransactions from './get_transactions.js';
 import { ok, fail } from '../lib/result.js';
 import { createMeta, ensurePair, validateLimit } from '../lib/validate.js';
 import { formatSummary } from '../lib/formatter.js';
+import { toIsoWithTz, toDisplayTime } from '../lib/datetime.js';
 import { GetFlowMetricsOutputSchema } from '../src/schemas.js';
 
 type Tx = { price: number; amount: number; side: 'buy' | 'sell'; timestampMs: number; isoTime: string };
-
-function toIsoWithTz(ts: number, tz: string) {
-  try { return new Date(ts).toLocaleString('sv-SE', { timeZone: tz, hour12: false }).replace(' ', 'T'); } catch { return null; }
-}
-function toDisplayTime(ts: number, tz: string) {
-  try {
-    const d = new Date(ts);
-    const time = d.toLocaleTimeString('ja-JP', { timeZone: tz, hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    const date = d.toLocaleDateString('ja-JP', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' });
-    const tzShort = tz === 'UTC' ? 'UTC' : 'JST';
-    return `${date} ${time} ${tzShort}`;
-  } catch { return null; }
-}
 
 export default async function getFlowMetrics(
   pair: string = 'btc_jpy',

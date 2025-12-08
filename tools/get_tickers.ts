@@ -3,16 +3,12 @@ import getCandles from './get_candles.js';
 import { ALLOWED_PAIRS, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
+import { toIsoTime } from '../lib/datetime.js';
 import { GetTickersOutputSchema } from '../src/schemas.js';
 
 type Market = 'all' | 'jpy';
 
 type TickerRaw = { data?: Record<string, unknown> };
-
-function toIsoTime(ts: unknown): string | null {
-  const d = new Date(Number(ts));
-  return Number.isNaN(d.valueOf()) ? null : d.toISOString();
-}
 
 const CACHE_TTL_MS = 3000; // 短期キャッシュで負荷軽減
 let cache: { market: Market; fetchedAt: number; items: Array<{ pair: string; last: number | null; buy: number | null; sell: number | null; volume: number | null; timestamp: number | null; isoTime: string | null; change24hPct?: number | null }> } | null = null;

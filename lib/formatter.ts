@@ -1,3 +1,5 @@
+import { toDisplayTime } from './datetime.js';
+
 export function formatPair(pair: string): string {
 	return (pair || '').toUpperCase().replace('_', '/');
 }
@@ -9,26 +11,8 @@ export function formatPair(pair: string): string {
  * @returns "2025/11/24 15:32:45 JST" 形式
  */
 export function formatTimestampJST(ts?: number, tz: string = 'Asia/Tokyo'): string {
-	try {
-		const d = new Date(ts ?? Date.now());
-		const time = d.toLocaleTimeString('ja-JP', {
-			timeZone: tz,
-			hour12: false,
-			hour: '2-digit',
-			minute: '2-digit',
-			second: '2-digit'
-		});
-		const date = d.toLocaleDateString('ja-JP', {
-			timeZone: tz,
-			year: 'numeric',
-			month: '2-digit',
-			day: '2-digit'
-		});
-		const tzShort = tz === 'UTC' ? 'UTC' : 'JST';
-		return `${date} ${time} ${tzShort}`;
-	} catch {
-		return new Date(ts ?? Date.now()).toISOString();
-	}
+	const result = toDisplayTime(ts, tz);
+	return result ?? new Date(ts ?? Date.now()).toISOString();
 }
 
 export function formatSummary(args: {

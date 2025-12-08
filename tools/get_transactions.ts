@@ -2,6 +2,7 @@ import { fetchJson } from '../lib/http.js';
 import { ensurePair, validateLimit, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
+import { toIsoMs } from '../lib/datetime.js';
 import { GetTransactionsOutputSchema } from '../src/schemas.js';
 
 type TxnRaw = Record<string, unknown>;
@@ -12,13 +13,6 @@ function toMs(input: unknown): number | null {
   if (!Number.isFinite(n)) return null;
   // 秒とミリ秒の曖昧性に対応
   return n < 1e12 ? Math.floor(n * 1000) : Math.floor(n);
-}
-
-function toIsoMs(ms: number | null): string | null {
-  if (ms == null) return null;
-  const d = new Date(ms);
-  if (Number.isNaN(d.valueOf())) return null;
-  return d.toISOString(); // ISO8601（ミリ秒含む）
 }
 
 function normalizeSide(v: unknown): 'buy' | 'sell' | null {
