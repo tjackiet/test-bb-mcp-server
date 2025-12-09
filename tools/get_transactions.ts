@@ -40,8 +40,9 @@ export default async function getTransactions(
     : `${BITBANK_API_BASE}/${chk.pair}/transactions`;
 
   try {
-    const json: any = await fetchJson(url, { timeoutMs: 4000, retries: 2 });
-    const arr: TxnRaw[] = (json?.data?.transactions ?? []) as TxnRaw[];
+    const json: unknown = await fetchJson(url, { timeoutMs: 4000, retries: 2 });
+    const jsonObj = json as { data?: { transactions?: TxnRaw[] } };
+    const arr: TxnRaw[] = (jsonObj?.data?.transactions ?? []) as TxnRaw[];
 
     const items = arr
       .map((t) => {

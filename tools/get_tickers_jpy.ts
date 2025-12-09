@@ -143,7 +143,7 @@ export default async function getTickersJpy(opts?: { bypassCache?: boolean }) {
 
     // 固定バックオフでの簡易リトライ
     let lastErr: unknown;
-    let raw: any;
+    let raw: { success?: number; data?: Item[] } | undefined;
     for (let i = 0; i <= retries; i++) {
       const ctrl = new AbortController();
       const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -151,7 +151,7 @@ export default async function getTickersJpy(opts?: { bypassCache?: boolean }) {
         const res = await fetch(url, { signal: ctrl.signal });
         clearTimeout(t);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        raw = await res.json();
+        raw = await res.json() as { success?: number; data?: Item[] };
         break;
       } catch (e: unknown) {
         clearTimeout(t);

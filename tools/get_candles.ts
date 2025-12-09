@@ -50,15 +50,16 @@ export default async function getCandles(
   const url = `${BITBANK_API_BASE}/${chk.pair}/candlestick/${type}/${dateCheck.value}`;
 
   try {
-    const json: any = await fetchJson(url, { timeoutMs: 5000, retries: 2 });
-    const cs = json?.data?.candlestick?.[0];
+    const json: unknown = await fetchJson(url, { timeoutMs: 5000, retries: 2 });
+    const jsonObj = json as { data?: { candlestick?: Array<{ ohlcv?: unknown[] }> } };
+    const cs = jsonObj?.data?.candlestick?.[0];
     const ohlcvs: unknown[] = cs?.ohlcv ?? [];
 
     if (ohlcvs.length === 0) {
       return fail(`ローソク足データが見つかりません (${chk.pair} / ${type} / ${dateCheck.value})`, 'user');
     }
 
-    const rows = (ohlcvs as any[]).slice(-limitCheck.value);
+    const rows = ohlcvs.slice(-limitCheck.value) as Array<[unknown, unknown, unknown, unknown, unknown, unknown]>;
 
     const normalized = rows.map(([o, h, l, c, v, ts]) => ({
       open: Number(o),

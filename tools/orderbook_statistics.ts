@@ -14,16 +14,16 @@ export default async function getOrderbookStatistics(
   if (!chk.ok) return fail(chk.error.message, chk.error.type);
 
   try {
-    const [tkr, dep]: any = await Promise.all([getTicker(chk.pair), getDepth(chk.pair, { maxLevels: 200 })]);
-    if (!tkr?.ok) return fail(tkr?.summary || 'ticker failed', (tkr?.meta as any)?.errorType || 'internal');
-    if (!dep?.ok) return fail(dep?.summary || 'depth failed', (dep?.meta as any)?.errorType || 'internal');
+    const [tkr, dep] = await Promise.all([getTicker(chk.pair), getDepth(chk.pair, { maxLevels: 200 })]);
+    if (!tkr?.ok) return fail(tkr?.summary || 'ticker failed', (tkr?.meta as { errorType?: string })?.errorType || 'internal');
+    if (!dep?.ok) return fail(dep?.summary || 'depth failed', (dep?.meta as { errorType?: string })?.errorType || 'internal');
 
     // タイムスタンプを取得
     const timestamp = dep?.data?.timestamp ?? Date.now();
 
     // normalize raw depth from get_depth (bids/asks arrays [price,size])
-    const asks: Array<[number, number]> = Array.isArray(dep?.data?.asks) ? dep.data.asks.map(([p, s]: any) => [Number(p), Number(s)]) : [];
-    const bids: Array<[number, number]> = Array.isArray(dep?.data?.bids) ? dep.data.bids.map(([p, s]: any) => [Number(p), Number(s)]) : [];
+    const asks: Array<[number, number]> = Array.isArray(dep?.data?.asks) ? dep.data.asks.map(([p, s]: [unknown, unknown]) => [Number(p), Number(s)]) : [];
+    const bids: Array<[number, number]> = Array.isArray(dep?.data?.bids) ? dep.data.bids.map(([p, s]: [unknown, unknown]) => [Number(p), Number(s)]) : [];
 
     // derive best bid/ask from depth arrays (fallback: ticker last for mid)
     const bestBid = bids.length ? Math.max(...bids.map(([p]) => p)) : null;
