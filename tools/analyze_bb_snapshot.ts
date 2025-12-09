@@ -14,8 +14,8 @@ export default async function analyzeBbSnapshot(
   const chk = ensurePair(pair);
   if (!chk.ok) return AnalyzeBbSnapshotOutputSchema.parse(fail(chk.error.message, chk.error.type)) as any;
   try {
-    const indRes: any = await getIndicators(chk.pair, type as any, Math.max(60, limit));
-    if (!indRes?.ok) return AnalyzeBbSnapshotOutputSchema.parse(fail(indRes?.summary || 'indicators failed', (indRes?.meta as any)?.errorType || 'internal')) as any;
+    const indRes = await getIndicators(chk.pair, type, Math.max(60, limit));
+    if (!indRes?.ok) return AnalyzeBbSnapshotOutputSchema.parse(fail(indRes?.summary || 'indicators failed', (indRes?.meta as { errorType?: string })?.errorType || 'internal')) as ReturnType<typeof fail>;
 
     const close = indRes.data.normalized.at(-1)?.close ?? null;
     const mid = indRes.data.indicators.BB2_middle ?? indRes.data.indicators.BB_middle ?? null;
@@ -37,7 +37,7 @@ export default async function analyzeBbSnapshot(
     const summaryBase = formatSummary({ pair: chk.pair, latest: close ?? undefined, extra: `z=${zScore?.toFixed(2) ?? 'n/a'} bw=${bandWidthPct?.toFixed(2) ?? 'n/a'}%` });
     // Build helper timeseries (last 30)
     const candles = indRes?.data?.normalized as Array<{ isoTime?: string; close: number }> | undefined;
-    const bbSeries = (indRes?.data?.indicators as any)?.bb2_series as { upper: number[]; middle: number[]; lower: number[] } | undefined;
+    const bbSeries = (indRes?.data?.indicators as { bb2_series?: { upper: number[]; middle: number[]; lower: number[] } })?.bb2_series;
     const timeseries = (() => {
       try {
         if (!candles || !bbSeries) return null;

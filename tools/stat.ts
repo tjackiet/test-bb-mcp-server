@@ -20,7 +20,17 @@ function parseDuration(durationStr: string | null): Date | null {
   return now;
 }
 
-async function processLogFile(filePath: string, stats: any, startTime: Date | null) {
+interface LogStats {
+  total: number;
+  success: number;
+  fail: number;
+  durations: number[];
+  errorTypes: Record<string, number>;
+  cacheHits: number;
+  cacheMisses: number;
+}
+
+async function processLogFile(filePath: string, stats: LogStats, startTime: Date | null) {
   const fileStream = fs.createReadStream(filePath);
   const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
   for await (const line of rl) {
@@ -67,12 +77,12 @@ async function run() {
     process.exit(1);
   }
 
-  const stats: any = {
+  const stats: LogStats = {
     total: 0,
     success: 0,
     fail: 0,
-    durations: [] as number[],
-    errorTypes: {} as Record<string, number>,
+    durations: [],
+    errorTypes: {},
     cacheHits: 0,
     cacheMisses: 0,
   };

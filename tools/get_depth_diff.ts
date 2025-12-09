@@ -42,17 +42,17 @@ export default async function getDepthDiff(pair: string = 'btc_jpy', delayMs: nu
   if (!chk.ok) return GetDepthDiffOutputSchema.parse(fail(chk.error.message, chk.error.type)) as any;
 
   try {
-    const a: any = await getDepth(chk.pair, { maxLevels });
-    if (!a?.ok) return GetDepthDiffOutputSchema.parse(fail(a?.summary || 'failed', (a?.meta as any)?.errorType || 'internal')) as any;
+    const a = await getDepth(chk.pair, { maxLevels });
+    if (!a?.ok) return GetDepthDiffOutputSchema.parse(fail(a?.summary || 'failed', (a?.meta as { errorType?: string })?.errorType || 'internal')) as ReturnType<typeof fail>;
     await new Promise((r) => setTimeout(r, Math.max(100, delayMs)));
-    const b: any = await getDepth(chk.pair, { maxLevels });
-    if (!b?.ok) return GetDepthDiffOutputSchema.parse(fail(b?.summary || 'failed', (b?.meta as any)?.errorType || 'internal')) as any;
+    const b = await getDepth(chk.pair, { maxLevels });
+    if (!b?.ok) return GetDepthDiffOutputSchema.parse(fail(b?.summary || 'failed', (b?.meta as { errorType?: string })?.errorType || 'internal')) as ReturnType<typeof fail>;
 
     // sequenceId/timestamp をメタに残す
     const prevTs = Number(a.data.timestamp);
     const currTs = Number(b.data.timestamp);
-    const prevSeq = (a.data as any).sequenceId ?? null;
-    const currSeq = (b.data as any).sequenceId ?? null;
+    const prevSeq = (a.data as { sequenceId?: number | null }).sequenceId ?? null;
+    const currSeq = (b.data as { sequenceId?: number | null }).sequenceId ?? null;
 
     const prevAsks = toMap(a.data.asks as SideLevels, maxLevels);
     const prevBids = toMap(a.data.bids as SideLevels, maxLevels);

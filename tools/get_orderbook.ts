@@ -11,12 +11,15 @@ export interface GetOrderbookOptions {
   timeoutMs?: number;
 }
 
-function toLevels(arr: any[], n: number): OrderbookLevelWithCum[] {
-  const out = (arr || []).slice(0, n).map(([p, s]: [unknown, unknown]) => ({
-    price: Number(p),
-    size: Number(s),
-    cumSize: 0,
-  }));
+function toLevels(arr: unknown[], n: number): OrderbookLevelWithCum[] {
+  const out = (arr || []).slice(0, n).map((item) => {
+    const [p, s] = item as [unknown, unknown];
+    return {
+      price: Number(p),
+      size: Number(s),
+      cumSize: 0,
+    };
+  });
   let cum = 0;
   for (const lvl of out) {
     cum += Number.isFinite(lvl.size) ? lvl.size : 0;
@@ -39,10 +42,11 @@ export default async function getOrderbook(
   const url = `${BITBANK_API_BASE}/${chk.pair}/depth`;
 
   try {
-    const json: any = await fetchJson(url, { timeoutMs, retries: 2 });
-    const d = json?.data ?? {};
-    const asks = toLevels(d.asks, limitCheck.value);
-    const bids = toLevels(d.bids, limitCheck.value);
+    const json: unknown = await fetchJson(url, { timeoutMs, retries: 2 });
+    const jsonObj = json as { data?: { asks?: unknown[]; bids?: unknown[]; timestamp?: number } };
+    const d = jsonObj?.data ?? {};
+    const asks = toLevels(d.asks ?? [], limitCheck.value);
+    const bids = toLevels(d.bids ?? [], limitCheck.value);
 
     const bestAsk = asks[0]?.price ?? null;
     const bestBid = bids[0]?.price ?? null;

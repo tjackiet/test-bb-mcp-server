@@ -99,7 +99,7 @@ export default async function analyzeMarketSignal(
     // Recent cross detection for 25/75 using normalized closes (fallback if indicator series not available)
     function simpleSMA(values: number[], window: number): number[] {
       const out: number[] = [];
-      if (!Number.isFinite(window as any) || window <= 1) return out;
+      if (!Number.isFinite(window) || window <= 1) return out;
       let sum = 0;
       for (let i = 0; i < values.length; i++) {
         sum += values[i];

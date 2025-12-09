@@ -21,7 +21,7 @@ export default async function getFlowMetrics(
   if (!lim.ok) return GetFlowMetricsOutputSchema.parse(fail(lim.error.message, lim.error.type)) as any;
 
   try {
-    const txRes: any = await getTransactions(chk.pair, lim.value, date);
+    const txRes = await getTransactions(chk.pair, lim.value, date);
     if (!txRes?.ok) return GetFlowMetricsOutputSchema.parse(fail(txRes?.summary || 'failed', (txRes?.meta as any)?.errorType || 'internal')) as any;
     const txs: Tx[] = txRes.data.normalized as Tx[];
     if (!Array.isArray(txs) || txs.length === 0) {

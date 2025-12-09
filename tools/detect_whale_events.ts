@@ -6,7 +6,7 @@ import { getErrorMessage } from '../lib/error.js';
 
 type Lookback = '30min' | '1hour' | '2hour';
 
-const cache = new Map<string, { ts: number; data: any }>();
+const cache = new Map<string, { ts: number; data: unknown }>();
 
 function extractLargeOrders(levels: Array<[number, number]>, minSize: number) {
   return (levels || [])
@@ -39,8 +39,8 @@ export default async function detectWhaleEvents(
   if (hit && Date.now() - hit.ts < 60_000) return hit.data;
 
   try {
-    const dep: any = await getDepth(chk.pair, { maxLevels: 200 });
-    if (!dep?.ok) return fail(dep?.summary || 'depth failed', (dep?.meta as any)?.errorType || 'internal');
+    const dep = await getDepth(chk.pair, { maxLevels: 200 });
+    if (!dep?.ok) return fail(dep?.summary || 'depth failed', (dep?.meta as { errorType?: string })?.errorType || 'internal');
     const asks: Array<[number, number]> = dep?.data?.asks || [];
     const bids: Array<[number, number]> = dep?.data?.bids || [];
     const bestBid = bids.length ? Math.max(...bids.map(([p]) => Number(p))) : null;
@@ -53,8 +53,8 @@ export default async function detectWhaleEvents(
       '2hour': { type: '5min', limit: 24 },
     };
     const lb = lbMap[lookback] || lbMap['1hour'];
-    const candlesRes: any = await getCandles(chk.pair, lb.type as any, undefined as any, lb.limit);
-    if (!candlesRes?.ok) return fail(candlesRes?.summary || 'candles failed', (candlesRes?.meta as any)?.errorType || 'internal');
+    const candlesRes = await getCandles(chk.pair, lb.type, undefined, lb.limit);
+    if (!candlesRes?.ok) return fail(candlesRes?.summary || 'candles failed', (candlesRes?.meta as { errorType?: string })?.errorType || 'internal');
     const candles: Array<{ close: number }> = candlesRes?.data?.normalized || [];
     const priceChange = candles.length >= 2 ? (candles[candles.length - 1].close - candles[0].close) / candles[0].close : 0;
 

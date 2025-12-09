@@ -16,8 +16,8 @@ export default async function analyzeIchimokuSnapshot(
   if (!chk.ok) return AnalyzeIchimokuSnapshotOutputSchema.parse(fail(chk.error.message, chk.error.type)) as any;
 
   try {
-    const indRes: any = await getIndicators(chk.pair, type as any, Math.max(100, limit));
-    if (!indRes?.ok) return AnalyzeIchimokuSnapshotOutputSchema.parse(fail(indRes?.summary || 'indicators failed', (indRes?.meta as any)?.errorType || 'internal')) as any;
+    const indRes = await getIndicators(chk.pair, type, Math.max(100, limit));
+    if (!indRes?.ok) return AnalyzeIchimokuSnapshotOutputSchema.parse(fail(indRes?.summary || 'indicators failed', (indRes?.meta as { errorType?: string })?.errorType || 'internal')) as ReturnType<typeof fail>;
 
     const latest = indRes.data.indicators;
     const close = indRes.data.normalized.at(-1)?.close ?? null;

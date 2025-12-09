@@ -46,9 +46,9 @@ export default async function detectMacdCross(
     }> = [];
     await Promise.all(universe.map(async (pair) => {
       try {
-        const ind: any = await getIndicators(pair, '1day', 120);
+        const ind = await getIndicators(pair, '1day', 120);
         if (!ind?.ok) return;
-        const macdSeries = ind.data?.indicators?.macd_series;
+        const macdSeries = (ind.data?.indicators as { macd_series?: { line: number[]; signal: number[] } })?.macd_series;
         const line = macdSeries?.line || [];
         const signal = macdSeries?.signal || [];
         const candles = (ind.data?.normalized || []) as Array<{ isoTime?: string | null; close?: number | null }>;
@@ -146,8 +146,8 @@ export default async function detectMacdCross(
     // sort
     const sortBy = opts.sortBy || 'date';
     const order = (opts.sortOrder || 'desc') === 'desc' ? -1 : 1;
-    const safeNum = (v: any, def = 0) => (v == null || Number.isNaN(v) ? def : Number(v));
-    const projReturn = (v: any) => (v == null ? Number.NEGATIVE_INFINITY : Number(v));
+    const safeNum = (v: unknown, def = 0) => (v == null || Number.isNaN(Number(v)) ? def : Number(v));
+    const projReturn = (v: unknown) => (v == null ? Number.NEGATIVE_INFINITY : Number(v));
     filtered.sort((a, b) => {
       if (sortBy === 'histogram') {
         const aa = Math.abs(safeNum(a.histogramDelta));
@@ -179,7 +179,7 @@ export default async function detectMacdCross(
     if (opts.limit != null) conds.push(`top${opts.limit}`);
     const condStr = conds.length ? ` (全${totalFound}件中, 条件: ${conds.join(', ')})` : '';
     const summary = formatSummary({ pair: 'multi', latest: undefined, extra: `crosses=${resultsScreened.length}${condStr}${brief ? ' [' + brief + ']' : ''}` });
-    const data: any = { results: resultsScreened };
+    const data: Record<string, unknown> = { results: resultsScreened };
     if (view === 'detailed') {
       data.resultsDetailed = resultsDetailed;
       data.screenedDetailed = filtered;

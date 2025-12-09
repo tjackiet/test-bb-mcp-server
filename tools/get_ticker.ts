@@ -21,9 +21,10 @@ export default async function getTicker(
   const url = `${BITBANK_API_BASE}/${chk.pair}/ticker`;
 
   try {
-    const json: any = await fetchJson(url, { timeoutMs, retries: 2 });
+    const json: unknown = await fetchJson(url, { timeoutMs, retries: 2 });
+    const jsonObj = json as { data?: Record<string, unknown> };
 
-    const d = json?.data ?? {};
+    const d = jsonObj?.data ?? {};
     const summary = formatSummary({
       pair: chk.pair,
       latest: d.last != null ? Number(d.last) : undefined,

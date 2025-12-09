@@ -16,8 +16,9 @@ export default async function getDepth(
 
   const url = `${BITBANK_API_BASE}/${chk.pair}/depth`;
   try {
-    const json: any = await fetchJson(url, { timeoutMs, retries: 2 });
-    const d = json?.data ?? {};
+    const json: unknown = await fetchJson(url, { timeoutMs, retries: 2 });
+    const jsonObj = json as { data?: Record<string, unknown> };
+    const d = jsonObj?.data ?? {};
     const asks = Array.isArray(d.asks) ? d.asks.slice(0, maxLevels) : [];
     const bids = Array.isArray(d.bids) ? d.bids.slice(0, maxLevels) : [];
 
