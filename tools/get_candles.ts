@@ -21,11 +21,50 @@ const TYPES: Set<CandleType | string> = new Set([
   '1month',
 ]);
 
+// 年単位でリクエストする時間足（YYYY形式）
+const YEARLY_TYPES: Set<string> = new Set([
+  '4hour',
+  '8hour',
+  '12hour',
+  '1day',
+  '1week',
+  '1month',
+]);
+
+// 時間足ごとの年間本数（複数年取得時の計算用）
+const BARS_PER_YEAR: Record<string, number> = {
+  '1month': 12,
+  '1week': 52,
+  '1day': 365,
+  '12hour': 730,
+  '8hour': 1095,
+  '4hour': 2190,
+};
+
 function todayYyyymmdd(): string {
   const d = new Date();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${d.getFullYear()}${m}${day}`;
+}
+
+// 単一年のデータを取得する内部関数
+async function fetchSingleYear(
+  pair: string,
+  type: string,
+  year: number
+): Promise<Array<[unknown, unknown, unknown, unknown, unknown, unknown]>> {
+  const url = `${BITBANK_API_BASE}/${pair}/candlestick/${type}/${year}`;
+  try {
+    const json: unknown = await fetchJson(url, { timeoutMs: 8000, retries: 2 });
+    const jsonObj = json as { data?: { candlestick?: Array<{ ohlcv?: unknown[] }> } };
+    const cs = jsonObj?.data?.candlestick?.[0];
+    const ohlcvs = cs?.ohlcv ?? [];
+    return ohlcvs as Array<[unknown, unknown, unknown, unknown, unknown, unknown]>;
+  } catch {
+    // 存在しない年や取得失敗は空配列を返す
+    return [];
+  }
 }
 
 export default async function getCandles(
@@ -44,16 +83,53 @@ export default async function getCandles(
   const dateCheck = validateDate(date, String(type));
   if (!dateCheck.ok) return fail(dateCheck.error.message, dateCheck.error.type);
 
-  const limitCheck = validateLimit(limit, 1, 1000);
+  // 複数年取得が必要かどうかを判定
+  const isYearlyType = YEARLY_TYPES.has(type);
+  const barsPerYear = BARS_PER_YEAR[type] || 365;
+  const yearsNeeded = isYearlyType ? Math.ceil(limit / barsPerYear) : 1;
+  const needsMultiYear = isYearlyType && yearsNeeded > 1;
+
+  // 複数年取得の場合は上限を緩和（最大10年分 = 約3650本）
+  const maxLimit = needsMultiYear ? 5000 : 1000;
+  const limitCheck = validateLimit(limit, 1, maxLimit);
   if (!limitCheck.ok) return fail(limitCheck.error.message, limitCheck.error.type);
 
-  const url = `${BITBANK_API_BASE}/${chk.pair}/candlestick/${type}/${dateCheck.value}`;
+  let ohlcvs: unknown[] = [];
+  let json: unknown = null;
 
   try {
-    const json: unknown = await fetchJson(url, { timeoutMs: 5000, retries: 2 });
-    const jsonObj = json as { data?: { candlestick?: Array<{ ohlcv?: unknown[] }> } };
-    const cs = jsonObj?.data?.candlestick?.[0];
-    const ohlcvs: unknown[] = cs?.ohlcv ?? [];
+    if (needsMultiYear) {
+      // 複数年の並列取得
+      const currentYear = new Date().getFullYear();
+      const years = Array.from({ length: yearsNeeded }, (_, i) => currentYear - i);
+
+      const results = await Promise.all(
+        years.map(year => fetchSingleYear(chk.pair, type, year))
+      );
+
+      // 古い年順にマージ（時系列順）
+      const allOhlcvs: Array<[unknown, unknown, unknown, unknown, unknown, unknown]> = [];
+      for (let i = results.length - 1; i >= 0; i--) {
+        allOhlcvs.push(...results[i]);
+      }
+
+      // タイムスタンプでソート（念のため）
+      allOhlcvs.sort((a, b) => {
+        const tsA = Number(a[5]) || 0;
+        const tsB = Number(b[5]) || 0;
+        return tsA - tsB;
+      });
+
+      ohlcvs = allOhlcvs;
+      json = { data: { candlestick: [{ ohlcv: ohlcvs }] }, _multiYear: { years, totalFetched: ohlcvs.length } };
+    } else {
+      // 従来の単一リクエスト
+      const url = `${BITBANK_API_BASE}/${chk.pair}/candlestick/${type}/${dateCheck.value}`;
+      json = await fetchJson(url, { timeoutMs: 5000, retries: 2 });
+      const jsonObj = json as { data?: { candlestick?: Array<{ ohlcv?: unknown[] }> } };
+      const cs = jsonObj?.data?.candlestick?.[0];
+      ohlcvs = cs?.ohlcv ?? [];
+    }
 
     if (ohlcvs.length === 0) {
       return fail(`ローソク足データが見つかりません (${chk.pair} / ${type} / ${dateCheck.value})`, 'user');
@@ -156,10 +232,19 @@ export default async function getCandles(
       volumeStats,
     });
 
+    const metaExtra: Record<string, unknown> = { type, count: normalized.length };
+    if (needsMultiYear) {
+      metaExtra.multiYear = {
+        yearsRequested: yearsNeeded,
+        totalFetched: ohlcvs.length,
+        limitApplied: limitCheck.value,
+      };
+    }
+
     const result = ok<GetCandlesData, GetCandlesMeta>(
       summary,
       { raw: json, normalized, keyPoints, volumeStats } as GetCandlesData,
-      createMeta(chk.pair, { type, count: normalized.length }) as GetCandlesMeta
+      createMeta(chk.pair, metaExtra) as GetCandlesMeta
     );
     return GetCandlesOutputSchema.parse(result) as unknown as Result<GetCandlesData, GetCandlesMeta>;
   } catch (e: unknown) {
