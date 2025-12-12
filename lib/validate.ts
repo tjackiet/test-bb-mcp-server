@@ -1,11 +1,54 @@
 import type { Pair } from '../src/types/domain.d.ts';
 
+// bitbank 公式ペアリスト（アクティブなもののみ）
+// 参考: https://github.com/bitbankinc/bitbank-api-docs/blob/master/pairs.md
 export const ALLOWED_PAIRS: Set<Pair> = new Set([
+	// 主要ペア
 	'btc_jpy',
 	'eth_jpy',
 	'xrp_jpy',
 	'ltc_jpy',
 	'bcc_jpy',
+	// アルトコイン
+	'mona_jpy',
+	'xlm_jpy',
+	'qtum_jpy',
+	'bat_jpy',
+	'omg_jpy',
+	'xym_jpy',
+	'link_jpy',
+	'boba_jpy',
+	'enj_jpy',
+	'dot_jpy',
+	'doge_jpy',
+	'astr_jpy',
+	'ada_jpy',
+	'avax_jpy',
+	'axs_jpy',
+	'flr_jpy',
+	'sand_jpy',
+	'gala_jpy',
+	'ape_jpy',
+	'chz_jpy',
+	'oas_jpy',
+	'mana_jpy',
+	'grt_jpy',
+	'bnb_jpy',
+	'dai_jpy',
+	'op_jpy',
+	'arb_jpy',
+	'klay_jpy',
+	'imx_jpy',
+	'mask_jpy',
+	'pol_jpy',      // 旧 matic_jpy
+	'sol_jpy',
+	'cyber_jpy',
+	'render_jpy',   // 旧 rndr_jpy
+	'trx_jpy',
+	'lpt_jpy',
+	'atom_jpy',
+	'sui_jpy',
+	'sky_jpy',
 ]);
 
 export function normalizePair(raw: unknown): Pair | null {
