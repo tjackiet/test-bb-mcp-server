@@ -30,7 +30,7 @@
 - get_orderbook_statistics: 板の厚み・流動性分布・偏りの統計
 - get_orderbook_pressure: 価格帯ごとの買い/売り圧力比
 
-## 視覚化（最終提示）
+## 視覚化
 - render_chart_svg: ローソク/折れ線/一目/BB/SMA/Depth を SVG で描画
   - 返却 `data.svg` を `image/svg+xml` としてそのまま表示（自前描画は不可）
   - Claude で LLM がうまくアーティファクトを出力できない場合は、以下のプロンプトを加えるのがおすすめです。
