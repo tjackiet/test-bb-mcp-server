@@ -4,21 +4,38 @@ import { getErrorMessage } from '../lib/error.js';
 import { avg as avgRaw, median as medianRaw } from '../lib/math.js';
 import { DetectPatternsInputSchema, DetectPatternsOutputSchema, PatternTypeEnum } from '../src/schemas.js';
 import { generatePatternDiagram } from '../src/utils/pattern-diagrams.js';
+import {
+  MIN_CONFIDENCE,
+  resolveParams,
+  getConvergenceFactorForTf,
+  getTriangleCoeffForTf,
+  getMinFitForTf,
+  getTriangleWindowSize,
+} from './patterns/config.js';
+import { detectSwingPoints, filterPeaks, filterValleys, type Candle, type Pivot } from './patterns/swing.js';
+import {
+  linearRegression,
+  trendlineFit,
+  linearRegressionWithR2,
+  near as nearFn,
+  pct as pctFn,
+  clamp01,
+  relDev,
+  marginFromRelDev,
+} from './patterns/regression.js';
 
 /**
- * detect_patterns - 過去の統計分析・バックテスト向けパターン検出
- * 
+ * detect_patterns - チャートパターン検出（完成済み＋形成中）
+ *
  * 設計思想:
  * - 目的: 完成したパターンを厳密に検出し、統計的に信頼性の高いデータを提供
  * - 特徴: swingDepth パラメータによる厳密なスイング検出でパターン品質を重視
  * - ブレイク検出: ATR * 0.5 バッファ、最初の明確なブレイクで終点を確定
  * - 用途: 「過去の成功率は？」「典型的な期間は？」「aftermath は？」
- * 
- * 注意: detect_forming_patterns との違い
- * - 本ツールはより厳密なスイング検出を使用するため、回帰線の傾きが異なる
- * - detect_forming_patterns はシンプルなピボット検出（前後1本比較）を使用
- * - 結果として、ブレイク日が数日ずれる場合があるが、これは設計上の意図的な違い
- * - patterns: 統計的信頼性に有利 / forming: 早期警告に有利
+ *
+ * オプション:
+ * - includeForming: true で形成中パターンも検出（デフォルト: false）
+ * - includeCompleted: true で完成パターンを検出（デフォルト: true）
  */
 
 type DetectIn = typeof DetectPatternsInputSchema extends { _type: infer T } ? T : any;
@@ -43,95 +60,13 @@ export default async function detectPatterns(
   }> = {}
 ) {
   try {
-    // パターンごとの最小整合度（閾値）
-    const MIN_CONFIDENCE: Record<string, number> = {
-      triple_top: 0.7,
-      triple_bottom: 0.7,
-      double_top: 0.6,
-      double_bottom: 0.6,
-      head_and_shoulders: 0.7,
-      inverse_head_and_shoulders: 0.7,
-    };
-    // --- 時間軸に応じた自動スケーリング（ユーザー指定があればそちらを優先） ---
-    const defaultParamsForTf = (tf: string): { swingDepth: number; minBarsBetweenSwings: number } => {
-      const t = String(tf);
-      // 期待動作（例）の目安に基づくデフォルト
-      if (t === '1hour') return { swingDepth: 3, minBarsBetweenSwings: 2 };
-      if (t === '4hour') return { swingDepth: 5, minBarsBetweenSwings: 3 };
-      if (t === '8hour') return { swingDepth: 5, minBarsBetweenSwings: 3 };
-      if (t === '12hour') return { swingDepth: 5, minBarsBetweenSwings: 3 };
-      if (t === '1day') return { swingDepth: 6, minBarsBetweenSwings: 4 };
-      if (t === '1week') return { swingDepth: 7, minBarsBetweenSwings: 5 };
-      if (t === '1month') return { swingDepth: 8, minBarsBetweenSwings: 6 };
-      // 分足はやや緩め（ノイズ多めのため最小幅は確保）
-      if (t === '30min') return { swingDepth: 3, minBarsBetweenSwings: 2 };
-      if (t === '15min') return { swingDepth: 3, minBarsBetweenSwings: 2 };
-      if (t === '5min') return { swingDepth: 2, minBarsBetweenSwings: 1 };
-      if (t === '1min') return { swingDepth: 2, minBarsBetweenSwings: 1 };
-      // フォールバック（日足相当）
-      return { swingDepth: 6, minBarsBetweenSwings: 4 };
-    };
-    const defaultToleranceForTf = (tf: string): number => {
-      const t = String(tf);
-      if (t === '1hour' || t === '4hour') return 0.05; // 5%
-      if (t === '8hour' || t === '12hour') return 0.045; // 4.5%
-      if (t === '15min' || t === '30min') return 0.06; // 6%
-      if (t === '1week') return 0.035; // 3.5%
-      if (t === '1month') return 0.03; // 3.0%
-      return 0.04; // 1day 他
-    };
-    const auto = defaultParamsForTf(type);
-    // 入力スキーマの既定値（サーバ側でデフォルト埋めされるため、ここで「ユーザー指定か」を推定する）
-    const SCHEMA_DEFAULTS = { swingDepth: 7, minBarsBetweenSwings: 5, tolerancePct: 0.04 };
-    // swingDepth: スキーマ既定値(7)が来た場合は時間軸オートに置換（明示指定で7の場合は影響あるが、時間軸適応を優先）
-    const swingDepth = Number.isFinite(opts.swingDepth as any)
-      ? ((opts.swingDepth as number) === SCHEMA_DEFAULTS.swingDepth ? auto.swingDepth : (opts.swingDepth as number))
-      : auto.swingDepth;
-    // tolerancePct: スキーマ既定値(0.04)が来た場合は時間軸オートを採用。ユーザーが0.04を意図した場合は明示指定を推奨
-    const tolAuto = defaultToleranceForTf(type);
-    const tolerancePct = (typeof opts.tolerancePct === 'number' && !Number.isNaN(opts.tolerancePct))
-      ? ((opts.tolerancePct as number) === SCHEMA_DEFAULTS.tolerancePct ? tolAuto : (opts.tolerancePct as number))
-      : tolAuto;
-    // minBarsBetweenSwings: 同様に既定値(5)なら時間軸オートに置換
-    const minDist = Number.isFinite(opts.minBarsBetweenSwings as any)
-      ? ((opts.minBarsBetweenSwings as number) === SCHEMA_DEFAULTS.minBarsBetweenSwings ? auto.minBarsBetweenSwings : (opts.minBarsBetweenSwings as number))
-      : auto.minBarsBetweenSwings;
+    // --- パラメータ解決（patterns/config.ts から） ---
+    const { swingDepth, tolerancePct, minBarsBetweenSwings: minDist, autoScaled } = resolveParams(type, opts);
     const strictPivots = (opts as any)?.strictPivots !== false; // 既定: 厳格
     // 統合オプション
     const includeForming = opts.includeForming ?? false;
     const includeCompleted = opts.includeCompleted ?? true;
     const includeInvalid = opts.includeInvalid ?? false;
-    const convergenceFactorForTf = (tf: string): number => {
-      const t = String(tf);
-      if (t === '1hour' || t === '4hour' || t === '15min' || t === '30min') return 0.6;
-      return 0.8; // default
-    };
-    const triangleCoeffForTf = (tf: string): { flat: number; move: number } => {
-      const t = String(tf);
-      if (t === '1hour' || t === '4hour') return { flat: 1.2, move: 0.8 };
-      return { flat: 0.8, move: 1.2 };
-    };
-    const minFitForTf = (tf: string): number => {
-      const t = String(tf);
-      if (t === '1hour' || t === '4hour') return 0.60;
-      if (t === '1day') return 0.70;
-      return 0.75;
-    };
-    const getTriangleWindowSize = (tf: string): number => {
-      const t = String(tf);
-      // 長期: 大きなパターン
-      if (t === '1month') return 30;
-      if (t === '1week') return 40;
-      // 中期
-      if (t === '1day') return 50;
-      // 短期
-      if (t === '4hour') return 30;
-      if (t === '1hour') return 40;
-      if (t === '30min') return 30;
-      if (t === '15min') return 30;
-      return 20;
-    };
-    // (legacy wedge window helper removed)
     const want = new Set(opts.patterns || []);
     // 'triangle' が指定された場合は3種を含む互換挙動
     if (want.has('triangle')) {
@@ -148,89 +83,14 @@ export default async function detectPatterns(
       return DetectPatternsOutputSchema.parse(ok('insufficient data', { patterns: [] }, { pair, type, count: 0 })) as any;
     }
 
-    // 1) Swing points (simple local extrema) — use High/Low based pivots
-    const highs = candles.map(c => c.high);
-    const lows = candles.map(c => c.low);
-    const pivots: Array<{ idx: number; price: number; kind: 'H' | 'L' }> = [];
-    for (let i = swingDepth; i < candles.length - swingDepth; i++) {
-      let isHigh = true, isLow = true;
-      if (strictPivots) {
-        for (let k = 1; k <= swingDepth; k++) {
-          if (!(highs[i] > highs[i - k] && highs[i] > highs[i + k])) isHigh = false;
-          if (!(lows[i] < lows[i - k] && lows[i] < lows[i + k])) isLow = false;
-          if (!isHigh && !isLow) break;
-        }
-      } else {
-        let votesHigh = 0, votesLow = 0;
-        for (let k = 1; k <= swingDepth; k++) {
-          votesHigh += (highs[i] > highs[i - k] && highs[i] > highs[i + k]) ? 1 : 0;
-          votesLow += (lows[i] < lows[i - k] && lows[i] < lows[i + k]) ? 1 : 0;
-        }
-        const need = Math.ceil(swingDepth * 0.6);
-        isHigh = votesHigh >= need;
-        isLow = votesLow >= need;
-      }
-      // 判定は high/low、格納価格は close（ヒゲ影響を回避）
-      if (isHigh) pivots.push({ idx: i, price: candles[i].close, kind: 'H' });
-      else if (isLow) pivots.push({ idx: i, price: candles[i].close, kind: 'L' });
-    }
+    // 1) Swing points（patterns/swing.ts から）
+    const pivots = detectSwingPoints(candles as Candle[], { swingDepth, strictPivots });
 
-    // helper
-    const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(a, b) * tolerancePct;
-    const pct = (a: number, b: number) => (b - a) / (a === 0 ? 1 : a);
-    const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
-    const relDev = (a: number, b: number) => Math.abs(a - b) / Math.max(1, Math.max(a, b));
-    const marginFromRelDev = (rd: number, tol: number) => clamp01(1 - rd / Math.max(1e-12, tol));
-    // --- 回帰ベースのトレンドライン推定（三角保ち合い向け） ---
-    function linearRegression(points: Array<{ idx: number; price: number }>): { slope: number; intercept: number } {
-      const n = points.length;
-      if (!n) return { slope: 0, intercept: 0 };
-      let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-      for (const p of points) {
-        sumX += p.idx;
-        sumY += p.price;
-        sumXY += p.idx * p.price;
-        sumX2 += p.idx * p.idx;
-      }
-      const denom = n * sumX2 - sumX * sumX || 1;
-      const slope = (n * sumXY - sumX * sumY) / denom;
-      const intercept = (sumY - slope * sumX) / n;
-      return { slope, intercept };
-    }
-    function trendlineFit(points: Array<{ idx: number; price: number }>, line: { slope: number; intercept: number }): number {
-      if (!points.length) return 0;
-      let sumDev = 0;
-      for (const p of points) {
-        const expected = line.slope * p.idx + line.intercept;
-        const dev = Math.abs(p.price - expected) / Math.max(1e-12, p.price);
-        sumDev += dev;
-      }
-      const avgDev = sumDev / points.length;
-      return Math.max(0, Math.min(1, 1 - avgDev));
-    }
-    // --- Wedge helpers (revamped) ---
-    function lrWithR2(points: Array<{ x: number; y: number }>) {
-      const n = points.length;
-      if (n < 2) return { slope: 0, intercept: 0, r2: 0, valueAt: (x: number) => 0 };
-      let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0, sumY2 = 0;
-      for (const p of points) {
-        sumX += p.x; sumY += p.y; sumXY += p.x * p.y; sumX2 += p.x * p.x; sumY2 += p.y * p.y;
-      }
-      const denom = n * sumX2 - sumX * sumX || 1;
-      const slope = (n * sumXY - sumX * sumY) / denom;
-      const intercept = (sumY - slope * sumX) / n;
-      // R^2
-      const meanY = sumY / n;
-      let ssTot = 0, ssRes = 0;
-      for (const p of points) {
-        const yHat = slope * p.x + intercept;
-        ssTot += (p.y - meanY) * (p.y - meanY);
-        ssRes += (p.y - yHat) * (p.y - yHat);
-      }
-      const r2 = ssTot <= 0 ? 0 : Math.max(0, Math.min(1, 1 - (ssRes / ssTot)));
-      const valueAt = (x: number) => slope * x + intercept;
-      return { slope, intercept, r2, valueAt };
-    }
+    // helper（patterns/regression.ts から）
+    const near = (a: number, b: number) => nearFn(a, b, tolerancePct);
+    const pct = pctFn;
+    // lrWithR2 は linearRegressionWithR2 のエイリアス
+    const lrWithR2 = linearRegressionWithR2;
     // ATR計算（ブレイク検出用）
     function calcATR(from: number, to: number, period: number = 14): number {
       const start = Math.max(1, from);
@@ -449,9 +309,9 @@ export default async function detectPatterns(
 
     let patterns: any[] = [];
 
-    // convenience lists for relaxed passes
-    const allPeaks: Array<{ idx: number; price: number; kind: 'H' | 'L' }> = pivots.filter(p => p.kind === 'H');
-    const allValleys: Array<{ idx: number; price: number; kind: 'H' | 'L' }> = pivots.filter(p => p.kind === 'L');
+    // convenience lists for relaxed passes（patterns/swing.ts から）
+    const allPeaks = filterPeaks(pivots);
+    const allValleys = filterValleys(pivots);
 
     // 2) Double top/bottom
     let foundDoubleTop = false, foundDoubleBottom = false;
@@ -1372,14 +1232,14 @@ export default async function detectPatterns(
           const hwin = highs.slice(offset, offset + WIN);
           const lwin = lows.slice(offset, offset + WIN);
           if (hwin.length < 3 || lwin.length < 3) continue;
-          const coef = triangleCoeffForTf(type);
+          const coef = getTriangleCoeffForTf(type);
           const firstH = hwin[0], lastH = hwin[hwin.length - 1];
           const firstL = lwin[0], lastL = lwin[lwin.length - 1];
           const dH = pct(firstH.price, lastH.price);
           const dL = pct(firstL.price, lastL.price);
           const spreadStart = firstH.price - firstL.price;
           const spreadEnd = lastH.price - lastL.price;
-          const convF = convergenceFactorForTf(type);
+          const convF = getConvergenceFactorForTf(type);
           const converging = spreadEnd < spreadStart * (1 - tolerancePct * convF);
           const startIdx = Math.min(firstH.idx, firstL.idx);
           const endIdx = Math.max(lastH.idx, lastL.idx);
@@ -1416,7 +1276,7 @@ export default async function detectPatterns(
               continue;
             }
             // フィット品質しきい値（時間軸別+段階フォールバック）
-            const baseFit = minFitForTf(type);
+            const baseFit = getMinFitForTf(type);
             const fitThresholds = Array.from(new Set([baseFit, 0.70, 0.60])).sort((a, b) => b - a);
             let placedAsc = false, placedDesc = false, placedSym = false;
             for (const minFit of fitThresholds) {
@@ -2641,7 +2501,7 @@ export default async function detectPatterns(
       const spreadStart = firstH - firstL;
       const spreadEnd = lastH - lastL;
       // 収束条件を時間軸で緩和（B）
-      const convF = convergenceFactorForTf(type);
+      const convF = getConvergenceFactorForTf(type);
       const converging = spreadEnd < spreadStart * (1 - tolerancePct * convF);
 
       if (havePole) {
@@ -3415,7 +3275,7 @@ export default async function detectPatterns(
         pair,
         type,
         count: patterns.length,
-        effective_params: { swingDepth, minBarsBetweenSwings: minDist, tolerancePct, autoScaled: !(Number.isFinite(opts.swingDepth as any) || Number.isFinite(opts.minBarsBetweenSwings as any)) },
+        effective_params: { swingDepth, minBarsBetweenSwings: minDist, tolerancePct, autoScaled },
         visualization_hints: { preferred_style: 'line', highlight_patterns: patterns.map((p: any) => p.type).slice(0, 3) },
         debug: debugTrimmed
       }
