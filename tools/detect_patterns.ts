@@ -6,19 +6,17 @@ import { DetectPatternsInputSchema, DetectPatternsOutputSchema, PatternTypeEnum 
 import { generatePatternDiagram } from '../src/utils/pattern-diagrams.js';
 
 /**
- * detect_patterns - 過去の統計分析・バックテスト向けパターン検出
+ * detect_patterns - パターン検出（完成済み + 形成中）
  * 
  * 設計思想:
- * - 目的: 完成したパターンを厳密に検出し、統計的に信頼性の高いデータを提供
+ * - 目的: チャートパターンを検出し、統計的に信頼性の高いデータを提供
  * - 特徴: swingDepth パラメータによる厳密なスイング検出でパターン品質を重視
  * - ブレイク検出: ATR * 0.5 バッファ、最初の明確なブレイクで終点を確定
  * - 用途: 「過去の成功率は？」「典型的な期間は？」「aftermath は？」
  * 
- * 注意: detect_forming_patterns との違い
- * - 本ツールはより厳密なスイング検出を使用するため、回帰線の傾きが異なる
- * - detect_forming_patterns はシンプルなピボット検出（前後1本比較）を使用
- * - 結果として、ブレイク日が数日ずれる場合があるが、これは設計上の意図的な違い
- * - patterns: 統計的信頼性に有利 / forming: 早期警告に有利
+ * オプション:
+ * - includeCompleted: true (デフォルト) → 完成済みパターンを検出
+ * - includeForming: true → 形成中パターンも検出（早期警告向け）
  */
 
 type DetectIn = typeof DetectPatternsInputSchema extends { _type: infer T } ? T : any;
@@ -789,7 +787,7 @@ export default async function detectPatterns(
       patterns = deduplicatePatterns(patterns);
     }
 
-    // 2b) 形成中ダブルトップ/ボトム（統合: detect_forming_patterns のロジックを追加）
+    // 2b) 形成中ダブルトップ/ボトム
     if (includeForming && (want.size === 0 || want.has('double_top') || want.has('double_bottom'))) {
       const lastIdx = candles.length - 1;
       const currentPrice = Number(candles[lastIdx]?.close ?? NaN);
@@ -1162,7 +1160,7 @@ export default async function detectPatterns(
       }
     }
 
-    // 3c) 形成中 Head & Shoulders（統合: detect_forming_patterns のロジックを追加）
+    // 3c) 形成中 Head & Shoulders
     if (includeForming && (want.size === 0 || want.has('head_and_shoulders'))) {
       const lastIdx = candles.length - 1;
       const currentPrice = Number(candles[lastIdx]?.close ?? NaN);
@@ -1258,7 +1256,7 @@ export default async function detectPatterns(
       }
     }
 
-    // 3d) 形成中 Inverse Head & Shoulders（統合: detect_forming_patterns のロジックを追加）
+    // 3d) 形成中 Inverse Head & Shoulders
     if (includeForming && (want.size === 0 || want.has('inverse_head_and_shoulders'))) {
       const lastIdx = candles.length - 1;
       const currentPrice = Number(candles[lastIdx]?.close ?? NaN);
@@ -2371,7 +2369,7 @@ export default async function detectPatterns(
 
     // 最終整合性フィルタは撤回（ウェッジの定義は収束・傾き関係で十分とする）
 
-    // 4d) 形成中ウェッジ検出（統合: detect_forming_patterns のロジックを追加）
+    // 4d) 形成中ウェッジ検出
     // 既存の 4c は完成済み向け（厳格）、4d は形成中向け（緩い）
     {
       const formingWedgeDebug: any[] = [];
