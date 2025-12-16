@@ -1,68 +1,116 @@
 import { fetchJson, BITBANK_API_BASE } from '../lib/http.js';
-import getCandles from './get_candles.js';
-import { ALLOWED_PAIRS, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
-import { formatSummary } from '../lib/formatter.js';
+import { formatPair } from '../lib/formatter.js';
 import { toIsoTime } from '../lib/datetime.js';
 import { getErrorMessage } from '../lib/error.js';
 import { GetTickersOutputSchema } from '../src/schemas.js';
 
 type Market = 'all' | 'jpy';
 
-type TickerRaw = { data?: Record<string, unknown> };
+interface TickerItem {
+  pair: string;
+  last: number | null;
+  buy: number | null;
+  sell: number | null;
+  open: number | null;
+  high: number | null;
+  low: number | null;
+  volume: number | null;
+  timestamp: number | null;
+  isoTime: string | null;
+  change24hPct: number | null;
+  vol24hJpy: number | null;
+}
 
-const CACHE_TTL_MS = 3000; // 短期キャッシュで負荷軽減
-let cache: { market: Market; fetchedAt: number; items: Array<{ pair: string; last: number | null; buy: number | null; sell: number | null; volume: number | null; timestamp: number | null; isoTime: string | null; change24hPct?: number | null }> } | null = null;
+const CACHE_TTL_MS = 3000;
+let cache: { market: Market; fetchedAt: number; items: TickerItem[] } | null = null;
 
-async function fetchTickerForPair(pair: string, timeoutMs = 4000): Promise<{ pair: string; last: number | null; buy: number | null; sell: number | null; volume: number | null; timestamp: number | null; isoTime: string | null; change24hPct?: number | null }> {
-  const url = `${BITBANK_API_BASE}/${pair}/ticker`;
-  try {
-    const json = (await fetchJson(url, { timeoutMs, retries: 2 })) as TickerRaw;
-    const d: any = json?.data ?? {};
+/**
+ * /tickers API から全ペアを一括取得してパース
+ */
+async function fetchAllTickers(timeoutMs = 5000): Promise<TickerItem[]> {
+  const url = `${BITBANK_API_BASE}/tickers`;
+  const json = (await fetchJson(url, { timeoutMs, retries: 2 })) as { data?: Array<Record<string, unknown>> };
+  const data = json?.data ?? [];
+
+  return data.map((d) => {
+    const pair = String(d.pair ?? '');
     const last = d.last != null ? Number(d.last) : null;
     const open = d.open != null ? Number(d.open) : null;
-    const change24hPct = (open != null && open > 0 && last != null) ? Number((((last - open) / open) * 100).toFixed(2)) : null;
+    const high = d.high != null ? Number(d.high) : null;
+    const low = d.low != null ? Number(d.low) : null;
+    const buy = d.buy != null ? Number(d.buy) : null;
+    const sell = d.sell != null ? Number(d.sell) : null;
+    const volume = d.vol != null ? Number(d.vol) : null;
+    const timestamp = d.timestamp != null ? Number(d.timestamp) : null;
+
+    // 24h変動率
+    const change24hPct =
+      open != null && open > 0 && last != null
+        ? Number((((last - open) / open) * 100).toFixed(2))
+        : null;
+
+    // 24h出来高(円換算) - JPYペアのみ意味がある
+    const vol24hJpy =
+      last != null && volume != null ? Math.round(last * volume) : null;
+
     return {
       pair,
       last,
-      buy: d.buy != null ? Number(d.buy) : null,
-      sell: d.sell != null ? Number(d.sell) : null,
-      volume: d.vol != null ? Number(d.vol) : null,
-      timestamp: d.timestamp != null ? Number(d.timestamp) : null,
-      isoTime: toIsoTime(d.timestamp),
-      // 24h変化率（open: 24時間前始値, last: 最新約定）
+      buy,
+      sell,
+      open,
+      high,
+      low,
+      volume,
+      timestamp,
+      isoTime: toIsoTime(timestamp),
       change24hPct,
+      vol24hJpy,
     };
-  } catch {
-    return { pair, last: null, buy: null, sell: null, volume: null, timestamp: null, isoTime: null, change24hPct: null };
+  });
+}
+
+/**
+ * 複数ペアのサマリを生成
+ */
+function formatTickersSummary(items: TickerItem[], market: Market): string {
+  const lines: string[] = [];
+  const validItems = items.filter((x) => x.last != null);
+
+  lines.push(`全${items.length}ペア取得 (有効: ${validItems.length})`);
+  lines.push('');
+
+  // 上位5件を表示
+  const top5 = items.slice(0, 5);
+  for (const item of top5) {
+    const pairDisplay = formatPair(item.pair);
+    const isJpy = item.pair.includes('jpy');
+    const priceStr = item.last != null
+      ? (isJpy ? `¥${item.last.toLocaleString('ja-JP')}` : item.last.toLocaleString('ja-JP'))
+      : 'N/A';
+    const changeStr = item.change24hPct != null
+      ? `${item.change24hPct >= 0 ? '+' : ''}${item.change24hPct}%`
+      : 'n/a';
+    const volStr = item.vol24hJpy != null && isJpy
+      ? ` 出来高¥${item.vol24hJpy.toLocaleString('ja-JP')}`
+      : '';
+    lines.push(`${pairDisplay}: ${priceStr} (${changeStr})${volStr}`);
   }
-}
 
-function pickPairs(market: Market): string[] {
-  const all = Array.from(ALLOWED_PAIRS.values());
-  if (market === 'jpy') return all.filter((p) => p.endsWith('_jpy'));
-  return all;
-}
+  if (items.length > 5) {
+    lines.push(`... 他${items.length - 5}ペア`);
+  }
 
-async function withConcurrency<T>(items: string[], worker: (p: string) => Promise<T>, concurrency = 4): Promise<T[]> {
-  const results: T[] = [];
-  let idx = 0;
-  const run = async () => {
-    while (idx < items.length) {
-      const i = idx++;
-      results[i] = await worker(items[i]);
-    }
-  };
-  const workers = Array.from({ length: Math.min(concurrency, Math.max(1, items.length)) }, run);
-  await Promise.all(workers);
-  return results;
+  return lines.join('\n');
 }
 
 export default async function getTickers(market: Market = 'all') {
-  // 短期キャッシュ
   const now = Date.now();
+
+  // キャッシュチェック
   if (cache && cache.market === market && now - cache.fetchedAt <= CACHE_TTL_MS) {
-    const summary = formatSummary({ pair: 'multi', latest: undefined, extra: `count=${cache.items.length} (cached)` });
+    const summary = formatTickersSummary(cache.items, market) + ' (cached)';
     return GetTickersOutputSchema.parse(
       ok(
         summary,
@@ -73,34 +121,22 @@ export default async function getTickers(market: Market = 'all') {
   }
 
   try {
-    const pairs = pickPairs(market);
-    const items = await withConcurrency(pairs, (p) => fetchTickerForPair(p));
+    let items = await fetchAllTickers();
 
-    // 24h変化率は /ticker の open/last から計算済み
-    const itemsWithChange = items;
+    // market フィルタ
+    if (market === 'jpy') {
+      items = items.filter((x) => x.pair.endsWith('_jpy'));
+    }
 
-    // 24h出来高(円)を推定: last * volume（いずれかがnullならnull）
-    const itemsWithJpy = itemsWithChange.map((it) => {
-      const volJpy = it.last != null && it.volume != null ? Number((it.last * it.volume).toFixed(0)) : null;
-      return { ...it, vol24hJpy: volJpy } as typeof it & { vol24hJpy: number | null };
-    });
-
-    // summary: 上位数銘柄を示唆
-    const nonNull = itemsWithJpy.filter((x) => x.last != null) as Array<typeof itemsWithJpy[number]>;
-    // 先頭5件を要約に含める（pair: price (±chg%)）
-    const head = itemsWithJpy.slice(0, 5).map((x) => {
-      const chg = x.change24hPct == null ? 'n/a' : `${x.change24hPct > 0 ? '+' : ''}${x.change24hPct}%`;
-      const vj = x.vol24hJpy == null ? '' : ` 24h出来高¥${x.vol24hJpy}`;
-      return `${x.pair}:${x.last ?? 'n/a'}(${chg})${vj}`;
-    }).join(', ');
-    const summary = formatSummary({ pair: 'multi', latest: undefined, extra: `count=${itemsWithJpy.length} ok=${nonNull.length} [${head}]` });
+    const summary = formatTickersSummary(items, market);
     const fetchedAt = Date.now();
-    cache = { market, fetchedAt, items: itemsWithJpy };
+    cache = { market, fetchedAt, items };
+
     return GetTickersOutputSchema.parse(
       ok(
         summary,
-        { items: itemsWithJpy },
-        { market, fetchedAt: new Date(fetchedAt).toISOString(), count: itemsWithJpy.length }
+        { items },
+        { market, fetchedAt: new Date(fetchedAt).toISOString(), count: items.length }
       )
     ) as any;
   } catch (e: unknown) {
