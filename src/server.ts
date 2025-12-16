@@ -1836,43 +1836,53 @@ registerToolWithLog(
 registerToolWithLog(
 	'get_tickers_jpy',
 	{
-		description: 'Public REST /tickers_jpy。ランキング用途向けに view=ranked, sortBy=change24h|volume|name, order=asc|desc, limit=5 をサポート。contentにランキング/サマリを表示し、structuredContent.data.items/ranked に配列を含めます。注意: view=items はソート不可（生データ）。view=ranked で sortBy/order/limit が有効。キャッシュTTL=10s。',
+		description: 'Public REST /tickers_jpy。全JPYペアのティッカー情報を取得。view=ranked でランキング表示（sortBy=change24h|volume|name, order=asc|desc, limit）。view=items で全データ一覧。キャッシュTTL=10s。',
 		inputSchema: z.object({
-			view: z.enum(['items', 'ranked']).optional().default('items'),
+			view: z.enum(['items', 'ranked']).optional().default('ranked'),
 			sortBy: z.enum(['change24h', 'volume', 'name']).optional().default('change24h'),
 			order: z.enum(['asc', 'desc']).optional().default('desc'),
 			limit: z.number().int().min(1).max(50).optional().default(5),
 		}) as any
 	},
 	async (args: any) => {
-		const view = (args?.view ?? 'items') as 'items' | 'ranked';
+		const view = (args?.view ?? 'ranked') as 'items' | 'ranked';
 		const sortBy = (args?.sortBy ?? 'change24h') as 'change24h' | 'volume' | 'name';
 		const order = (args?.order ?? 'desc') as 'asc' | 'desc';
 		const limit = Number(args?.limit ?? 5);
-		// Option3: view=items でソート指定はエラー（誤用防止）
-		if (view === 'items' && (Object.prototype.hasOwnProperty.call(args ?? {}, 'sortBy') || Object.prototype.hasOwnProperty.call(args ?? {}, 'order') || Object.prototype.hasOwnProperty.call(args ?? {}, 'limit'))) {
-			const msg = 'view=items ではソートできません。ランキングは view=ranked と sortBy/order/limit を使用してください。';
-			return {
-				content: [{ type: 'text', text: msg }],
-				structuredContent: { ok: false, summary: msg, meta: { errorType: 'user', hint: 'use view=ranked' } } as Record<string, unknown>,
-			};
-		}
 		const res: any = await getTickersJpy();
 		if (!res?.ok) return res;
 		const items: any[] = Array.isArray(res?.data) ? res.data : [];
-		// normalize numeric fields
+
+		// フォーマット関数
+		const formatVolume = (volumeInJPY: number | null | undefined) => {
+			if (volumeInJPY == null || !Number.isFinite(volumeInJPY)) return 'n/a';
+			if (volumeInJPY >= 100_000_000) {
+				return `${(volumeInJPY / 100_000_000).toFixed(1)}億円`;
+			}
+			return `${Math.round(volumeInJPY / 10_000)}万円`;
+		};
+		const formatPrice = (price: number | null | undefined) => {
+			if (price == null || !Number.isFinite(price)) return 'N/A';
+			return `¥${Number(price).toLocaleString('ja-JP')}`;
+		};
+
+		// normalize numeric fields（open/high/low 追加）
 		const norm = items.map((it: any) => {
 			const lastN = it?.last != null ? Number(it.last) : null;
 			const openN = it?.open != null ? Number(it.open) : null;
+			const highN = it?.high != null ? Number(it.high) : null;
+			const lowN = it?.low != null ? Number(it.low) : null;
+			const buyN = it?.buy != null ? Number(it.buy) : null;
+			const sellN = it?.sell != null ? Number(it.sell) : null;
 			const change = (it?.change24h ?? it?.change24hPct);
 			const changeN = change != null ? Number(change) : (openN != null && openN > 0 && lastN != null ? Number((((lastN - openN) / openN) * 100).toFixed(2)) : null);
 			const volN = it?.vol != null ? Number(it.vol) : null;
-			// 取引量を円建てに変換（枚数 × 現在価格）
 			const volumeInJPY = (volN != null && lastN != null && Number.isFinite(volN) && Number.isFinite(lastN))
 				? volN * lastN
 				: null;
-			return { ...it, lastN, openN, changeN, volN, volumeInJPY };
+			return { ...it, lastN, openN, highN, lowN, buyN, sellN, changeN, volN, volumeInJPY };
 		});
+
 		// ranking logic
 		const cmpNum = (a?: number | null, b?: number | null) => {
 			const aa = (a == null || Number.isNaN(a)) ? -Infinity : a;
@@ -1884,38 +1894,23 @@ registerToolWithLog(
 				return String(a.pair).localeCompare(String(b.pair));
 			}
 			if (sortBy === 'volume') {
-				// 円建て取引量でソート
 				return cmpNum(a.volumeInJPY, b.volumeInJPY);
 			}
-			// change24h
 			return cmpNum(a.changeN, b.changeN);
 		});
 		if ((order || 'desc') === 'desc') sorted.reverse();
 		const ranked = sorted.slice(0, Number(limit || 5));
-		// content
+
 		if (view === 'ranked') {
-			// フォーマット関数: 円建て取引量を初心者向けに表示
-			const formatVolume = (volumeInJPY: number | null | undefined) => {
-				if (volumeInJPY == null || !Number.isFinite(volumeInJPY)) return 'n/a';
-				if (volumeInJPY >= 100_000_000) {
-					return `${(volumeInJPY / 100_000_000).toFixed(1)}億円`;
-				}
-				return `${Math.round(volumeInJPY / 10_000)}万円`;
-			};
-			// フォーマット関数: 価格を初心者向けに表示
-			const formatPrice = (price: number | null | undefined) => {
-				if (price == null || !Number.isFinite(price)) return 'n/a';
-				return `${Number(price).toLocaleString('ja-JP')}円`;
-			};
 			const lines = ranked.map((r, i) => {
 				const chg = r.changeN == null ? 'n/a' : `${r.changeN > 0 ? '+' : ''}${r.changeN.toFixed(2)}%`;
 				const px = formatPrice(r.lastN);
 				const volTxt = formatVolume(r.volumeInJPY);
-				return `${i + 1}. ${String(r.pair).toUpperCase()} ${chg}（現在価格: ${px}、24h取引量: ${volTxt}）`;
+				return `${i + 1}. ${String(r.pair).toUpperCase().replace('_', '/')} ${chg}（${px}、出来高${volTxt}）`;
 			});
 			const text = [
-				`${items.length} JPYペア取得（sortBy=${sortBy}, order=${order}, limit=${limit}）`,
-				'【ランキング】',
+				`全${items.length}ペア取得（sortBy=${sortBy}, ${order}, top${limit}）`,
+				'',
 				lines.join('\n'),
 			].join('\n');
 			return {
@@ -1923,17 +1918,34 @@ registerToolWithLog(
 				structuredContent: {
 					ok: true,
 					summary: `ranked ${ranked.length}/${items.length}`,
-					data: { items, ranked },
+					data: { items: norm, ranked },
 					meta: res?.meta ?? {},
 				} as Record<string, unknown>,
 			};
 		}
-		// default: items preview
-		const top = norm.slice(0, 3)
-			.map((it) => `${String(it.pair).toUpperCase()}: ¥${it.lastN ?? it.last}${it.vol ? ` (24h出来高 ${it.vol})` : ''}`)
-			.join('\n');
-		const text = `${items.length} JPYペア取得:\n${top}${items.length > 3 ? `\n…(他${items.length - 3}ペア)` : ''}`;
-		return { content: [{ type: 'text', text }], structuredContent: { ...res, data: items } as Record<string, unknown> };
+
+		// view=items: 全データ一覧（上位5件をサマリ表示）
+		const top5 = norm.slice(0, 5);
+		const lines: string[] = [];
+		lines.push(`全${norm.length}ペア取得`);
+		lines.push('');
+		for (const it of top5) {
+			const pairDisplay = String(it.pair).toUpperCase().replace('_', '/');
+			const priceStr = formatPrice(it.lastN);
+			const changeStr = it.changeN != null
+				? `${it.changeN >= 0 ? '+' : ''}${it.changeN.toFixed(2)}%`
+				: 'n/a';
+			const volStr = formatVolume(it.volumeInJPY);
+			lines.push(`${pairDisplay}: ${priceStr} (${changeStr}) 出来高${volStr}`);
+		}
+		if (norm.length > 5) {
+			lines.push(`... 他${norm.length - 5}ペア`);
+		}
+		const text = lines.join('\n');
+		return {
+			content: [{ type: 'text', text }],
+			structuredContent: { ...res, data: { items: norm } } as Record<string, unknown>,
+		};
 	}
 );
 
