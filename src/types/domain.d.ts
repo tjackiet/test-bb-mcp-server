@@ -26,6 +26,9 @@ export interface TickerNormalized {
 	last: number | null;
 	buy: number | null;
 	sell: number | null;
+	open: number | null;
+	high: number | null;
+	low: number | null;
 	volume: number | null;
 	timestamp: number | null;
 	isoTime: string | null;
