@@ -3,24 +3,13 @@ import fs from 'fs';
 import path from 'path';
 import { getErrorMessage } from '../lib/error.js';
 import { BITBANK_API_BASE } from '../lib/http.js';
+import { ALLOWED_PAIRS } from '../lib/validate.js';
 import { GetTickersJpyOutputSchema } from '../src/schemas.js';
 
 type Item = { pair: string; sell: string; buy: string; high: string; low: string; open: string; last: string; vol: string; timestamp: number };
 
 const CACHE_TTL_MS = 10_000;
 let cache: { ts: number; data: Item[] } | null = null;
-
-// Bitbank公式のJPY建て取扱想定ペア（不足/変更があれば適宜追加）
-// 目的: 外部集約APIやモックから流入した非対応銘柄（例: FLOKI/JPY, APT/JPY など）を除去するためのフィルタ
-const BITBANK_JPY_PAIRS = new Set<string>([
-  'btc_jpy', 'xrp_jpy', 'eth_jpy', 'sol_jpy', 'dot_jpy', 'doge_jpy', 'ltc_jpy', 'bcc_jpy',
-  'mona_jpy', 'xlm_jpy', 'qtum_jpy', 'bat_jpy', 'omg_jpy', 'xym_jpy', 'link_jpy', 'mkr_jpy',
-  'boba_jpy', 'enj_jpy', 'astr_jpy', 'ada_jpy', 'avax_jpy', 'axs_jpy', 'flr_jpy', 'sand_jpy',
-  'gala_jpy', 'chz_jpy', 'ape_jpy', 'oas_jpy', 'mana_jpy', 'grt_jpy', 'rndr_jpy',
-  'bnb_jpy', 'dai_jpy', 'op_jpy', 'arb_jpy', 'klay_jpy', 'imx_jpy', 'mask_jpy', 'pol_jpy',
-  'cyber_jpy', 'trx_jpy', 'lpt_jpy', 'atom_jpy', 'sui_jpy', 'sky_jpy', 'matic_jpy',
-  // 'render_jpy' はシンボル重複の可能性があるため除外（RNDRが正）
-]);
 
 // === Auto mode (official pairs sync) ===
 let dynamicPairs: Set<string> | null = null;
@@ -65,7 +54,7 @@ async function fetchOfficialJpyPairs(timeoutMs: number, retries: number, retryWa
 async function getFilterSet(timeoutMs: number, retries: number, retryWaitMs: number): Promise<{ mode: PairsMode; set: Set<string> | null; source: 'dynamic' | 'static' | 'off' }> {
   const mode = getPairsMode();
   if (mode === 'off') return { mode, set: null, source: 'off' };
-  if (mode === 'strict') return { mode, set: BITBANK_JPY_PAIRS, source: 'static' };
+  if (mode === 'strict') return { mode, set: ALLOWED_PAIRS as Set<string>, source: 'static' };
   // auto
   const now = Date.now();
   const stillFresh = dynamicPairs && (now - dynamicPairsFetchedAt) < PAIRS_TTL_MS;
@@ -76,7 +65,7 @@ async function getFilterSet(timeoutMs: number, retries: number, retryWaitMs: num
     } catch {
       // keep previous dynamic or fall back to static
       if (!dynamicPairs || dynamicPairs.size === 0) {
-        return { mode, set: BITBANK_JPY_PAIRS, source: 'static' };
+        return { mode, set: ALLOWED_PAIRS as Set<string>, source: 'static' };
       }
     }
   }

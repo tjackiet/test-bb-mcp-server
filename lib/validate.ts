@@ -33,6 +33,7 @@ export const ALLOWED_PAIRS: Set<Pair> = new Set([
 	'oas_jpy',
 	'mana_jpy',
 	'grt_jpy',
+	'mkr_jpy',
 	'bnb_jpy',
 	'dai_jpy',
 	'op_jpy',
