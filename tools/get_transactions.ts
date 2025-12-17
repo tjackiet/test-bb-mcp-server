@@ -56,8 +56,10 @@ function formatTransactionsSummary(
     // 買い/売り比率
     const total = buys + sells;
     const buyRatio = total > 0 ? Math.round((buys / total) * 100) : 0;
+    const sellRatio = 100 - buyRatio;
     const dominant = buyRatio >= 60 ? '買い優勢' : buyRatio <= 40 ? '売り優勢' : '拮抗';
-    lines.push(`買い: ${buys}件 / 売り: ${sells}件（${dominant} ${buyRatio}%）`);
+    const dominantRatio = buyRatio >= 60 ? buyRatio : buyRatio <= 40 ? sellRatio : buyRatio;
+    lines.push(`買い: ${buys}件 / 売り: ${sells}件（${dominant} ${dominantRatio}%）`);
 
     // 出来高合計
     const totalVolume = transactions.reduce((sum, t) => sum + t.amount, 0);
