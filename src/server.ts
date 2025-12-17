@@ -855,7 +855,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_orderbook_pressure',
-	{ description: '板のセンチメント（買い/売り偏り）を静的スナップショットから評価します。bandsPct で帯域（%）を指定。本文に各帯域の詳細と総合判定を表示します。', inputSchema: GetOrderbookPressureInputSchema },
+	{ description: '板の買い/売り圧力バランスを評価（/depth APIベース）。bandsPct で帯域（±0.1%/0.5%/1%等）を指定。センチメント判定付き。', inputSchema: GetOrderbookPressureInputSchema },
 	async ({ pair, delayMs, bandsPct, normalize, weightScheme }: any) => {
 		const res: any = await getOrderbookPressure(pair, delayMs, bandsPct);
 		if (!res?.ok) return res;
@@ -965,7 +965,7 @@ registerToolWithLog(
 // New: orderbook statistics (swing/long-term investors)
 registerToolWithLog(
 	'get_orderbook_statistics',
-	{ description: '板の厚み/流動性分布/大口/総合評価を返すスナップショット統計。ranges(%)とpriceZones(分割数)で範囲指定。用途: 市場構造の定量把握。', inputSchema: z.object({ pair: z.string().default('btc_jpy'), ranges: z.array(z.number()).optional().default([0.5, 1.0, 2.0]), priceZones: z.number().int().min(2).max(50).optional().default(10) }) as any },
+	{ description: '板の厚み・流動性分布・大口注文の統計分析（/depth APIベース）。ranges(%)とpriceZones(分割数)で範囲指定。市場構造の定量把握用。', inputSchema: z.object({ pair: z.string().default('btc_jpy'), ranges: z.array(z.number()).optional().default([0.5, 1.0, 2.0]), priceZones: z.number().int().min(2).max(50).optional().default(10) }) as any },
 	async ({ pair, ranges, priceZones }: any) => getOrderbookStatistics(pair, ranges, priceZones)
 );
 
