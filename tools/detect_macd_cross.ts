@@ -1,4 +1,3 @@
-import getTickers from './get_tickers.js';
 import getIndicators from './get_indicators.js';
 import { ALLOWED_PAIRS, normalizePair } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';

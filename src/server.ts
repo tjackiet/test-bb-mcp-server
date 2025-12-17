@@ -18,14 +18,14 @@ import { RenderChartSvgInputSchema, RenderChartSvgOutputSchema, GetTickerInputSc
 import { GetDepthInputSchema } from './schemas.js';
 import { GetVolMetricsInputSchema, GetVolMetricsOutputSchema } from './schemas.js';
 // removed GetMarketSummary schemas
-import { GetTickersInputSchema } from './schemas.js';
+// GetTickersInputSchema removed (get_tickers deprecated)
 import { GetTransactionsInputSchema } from './schemas.js';
 import { GetOrderbookPressureInputSchema } from './schemas.js';
 import { GetCircuitBreakInfoInputSchema } from './schemas.js';
 import getTransactions from '../tools/get_transactions.js';
 import getFlowMetrics from '../tools/get_flow_metrics.js';
-import getTickers from '../tools/get_tickers.js';
 // get_depth_diff removed in favor of get_orderbook_statistics
+// get_tickers removed in favor of get_tickers_jpy
 import getOrderbookPressure from '../tools/get_orderbook_pressure.js';
 import getOrderbookStatistics from '../tools/orderbook_statistics.js';
 import getVolatilityMetrics from '../tools/get_volatility_metrics.js';
@@ -227,19 +227,7 @@ registerToolWithLog(
 	async ({ pair }) => getTicker(pair)
 );
 
-registerToolWithLog(
-	'get_tickers',
-	{ description: 'Get snapshot of tickers across pairs. market=all or jpy. view=items でアイテム一覧をテキスト表示。', inputSchema: GetTickersInputSchema },
-	async ({ market, view }: any) => {
-		const result: any = await getTickers(market);
-		if (view === 'items') {
-			const items = result?.data?.items ?? [];
-			const text = JSON.stringify(items, null, 2);
-			return { content: [{ type: 'text', text }], structuredContent: { items } as Record<string, unknown> };
-		}
-		return result;
-	}
-);
+// get_tickers removed in favor of get_tickers_jpy
 
 registerToolWithLog(
 	'get_orderbook',

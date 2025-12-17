@@ -325,17 +325,7 @@ export const GetTickerOutputSchema = z.union([
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);
 
-// Tickers (snapshot of many pairs)
-export const TickerExtendedSchema = TickerNormalizedSchema.extend({
-  change24hPct: z.number().nullable().optional(),
-  vol24hJpy: z.number().nullable().optional(),
-});
-export const GetTickersDataSchemaOut = z.object({ items: z.array(TickerExtendedSchema) });
-export const GetTickersMetaSchemaOut = z.object({ market: z.enum(['all', 'jpy']), fetchedAt: z.string(), count: z.number().int() });
-export const GetTickersOutputSchema = z.union([
-  z.object({ ok: z.literal(true), summary: z.string(), data: GetTickersDataSchemaOut, meta: GetTickersMetaSchemaOut }),
-  z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
-]);
+// Tickers (get_tickers) removed in favor of get_tickers_jpy
 
 // Orderbook
 export const OrderbookLevelSchema = z.object({ price: z.number(), size: z.number() });
@@ -577,10 +567,7 @@ export const GetFlowMetricsInputSchema = z.object({
   tz: z.string().optional().default('Asia/Tokyo'),
 });
 
-export const GetTickersInputSchema = z.object({
-  market: z.enum(['all', 'jpy']).optional().default('all'),
-  view: z.enum(['items']).optional(),
-});
+// GetTickersInputSchema removed (get_tickers deprecated)
 
 // === /tickers_jpy (public REST) ===
 export const TickerJpyItemSchema = z.object({
