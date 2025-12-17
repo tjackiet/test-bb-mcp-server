@@ -227,7 +227,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_orderbook',
-	{ description: 'Get orderbook opN(1-200) for a pair. view=summary|detailed|full。detailed以上でトップNの板明細と統計を本文に出します。', inputSchema: GetOrderbookInputSchema },
+	{ description: '板情報の取得（/depth APIのラッパー）。上位N層を正規化・累計サイズ計算して返す。生データが必要な場合は get_depth を使用。opN=1-200。view=summary|detailed|full。', inputSchema: GetOrderbookInputSchema },
 	async ({ pair, opN, view }: any) => {
 		const res: any = await getOrderbook(pair, opN);
 		if (!res?.ok) return res;
@@ -604,7 +604,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_depth',
-	{ description: 'Get raw orderbook depth. view=summary|sample|full. sample/full outputs top levels into content for LLM analysis; full may be long. Use sampleN to control count (default 10). sample shows totals and bestBid/bestAsk spread.', inputSchema: GetDepthInputSchema },
+	{ description: '板の生データ取得（/depth API直接）。チャート描画・差分計算・壁検出用。正規化データが必要な場合は get_orderbook を使用。view=summary|sample|full。sampleNで表示件数指定。', inputSchema: GetDepthInputSchema },
 	async ({ pair, view, sampleN }: any) => {
 		const res: any = await getDepth(pair);
 		if (!res?.ok) return res;
