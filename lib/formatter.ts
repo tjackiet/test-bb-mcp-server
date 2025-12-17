@@ -31,10 +31,11 @@ export function formatSummary(args: {
 	const currency = isJpy ? '円' : '';
 
 	// 基本情報
-	let summary = `${p}${tf} ローソク足${totalItems || 0}本取得`;
+	let summary = p;
 
-	// 配列の並び順の警告
-	if (totalItems && totalItems > 0) {
+	// ローソク足取得の場合（totalItemsが明示的に指定されている場合）
+	if (typeof totalItems === 'number' && totalItems > 0) {
+		summary += `${tf} ローソク足${totalItems}本取得`;
 		summary += `\n⚠️ 配列は古い順: data[0]=最古、data[${totalItems - 1}]=最新`;
 	}
 
@@ -85,8 +86,8 @@ export function formatSummary(args: {
 
 		summary += '\n\n※ 全データは structuredContent.data に含まれます';
 	} else if (typeof latest === 'number') {
-		// keyPointsがない場合は従来の表示
-		summary += ` close=${latest.toLocaleString('ja-JP')}${currency}`;
+		// keyPointsがない場合（板情報など）は中値を表示
+		summary += ` 中値=${latest.toLocaleString('ja-JP')}${currency}`;
 	}
 
 	const tail = extra ? ` ${extra}` : '';
