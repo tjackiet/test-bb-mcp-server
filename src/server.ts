@@ -655,22 +655,22 @@ registerToolWithLog(
 		const res: any = await getTransactions(pair, limit, date);
 		if (!res?.ok) return res;
 		// filter on normalized
+		const hasFilter = minAmount != null || maxAmount != null || minPrice != null || maxPrice != null;
 		const items = (res?.data?.normalized ?? []).filter((t: any) => (
 			(minAmount == null || t.amount >= minAmount) &&
 			(maxAmount == null || t.amount <= maxAmount) &&
 			(minPrice == null || t.price >= minPrice) &&
 			(maxPrice == null || t.price <= maxPrice)
 		));
-		// recompute summary based on filtered items
-		const latestPrice = items.at(-1)?.price;
-		const buys = items.filter((t: any) => t.side === 'buy').length;
-		const sells = items.filter((t: any) => t.side === 'sell').length;
-		const newSummary = `${String(pair).toUpperCase()} close=${latestPrice ?? 'n/a'} trades=${items.length} buy=${buys} sell=${sells}`;
+		// フィルタ適用時のみサマリを再計算（フィルタなしの場合はget_transactionsのsummaryをそのまま使用）
+		const summary = hasFilter
+			? `${String(pair).toUpperCase().replace('_', '/')} フィルタ後 ${items.length}件 (buy=${items.filter((t: any) => t.side === 'buy').length} sell=${items.filter((t: any) => t.side === 'sell').length})`
+			: res.summary;
 		if (view === 'items') {
 			const text = JSON.stringify(items, null, 2);
-			return { content: [{ type: 'text', text }], structuredContent: { ...res, summary: newSummary, data: { ...res.data, normalized: items } } as Record<string, unknown> };
+			return { content: [{ type: 'text', text }], structuredContent: { ...res, summary, data: { ...res.data, normalized: items } } as Record<string, unknown> };
 		}
-		return { ...res, summary: newSummary, data: { ...res.data, normalized: items } };
+		return { ...res, summary, data: { ...res.data, normalized: items } };
 	}
 );
 
