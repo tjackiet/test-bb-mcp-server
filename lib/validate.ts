@@ -48,7 +48,7 @@ export const ALLOWED_PAIRS: Set<Pair> = new Set([
 	'lpt_jpy',
 	'atom_jpy',
 	'sui_jpy',
-	'sky_jpy',
+	'sky_jpy',      // 旧 mkr_jpy
 ]);
 
 export function normalizePair(raw: unknown): Pair | null {
