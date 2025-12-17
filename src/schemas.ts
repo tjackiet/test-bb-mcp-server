@@ -325,8 +325,6 @@ export const GetTickerOutputSchema = z.union([
   z.object({ ok: z.literal(false), summary: z.string(), data: z.object({}).passthrough(), meta: z.object({ errorType: z.string() }).passthrough() }),
 ]);
 
-// Tickers (get_tickers) removed in favor of get_tickers_jpy
-
 // Orderbook
 export const OrderbookLevelSchema = z.object({ price: z.number(), size: z.number() });
 export const OrderbookLevelWithCumSchema = OrderbookLevelSchema.extend({ cumSize: z.number() });
@@ -566,8 +564,6 @@ export const GetFlowMetricsInputSchema = z.object({
   bucketsN: z.number().int().min(1).max(100).optional().default(10),
   tz: z.string().optional().default('Asia/Tokyo'),
 });
-
-// GetTickersInputSchema removed (get_tickers deprecated)
 
 // === /tickers_jpy (public REST) ===
 export const TickerJpyItemSchema = z.object({
