@@ -4,10 +4,6 @@
 
 注: 本サーバは固定銘柄リストではなく、bitbank 公開APIが返す全銘柄に自動追随します（追加/廃止も自動反映）。参考: [bitbank 公開API仕様](https://github.com/bitbankinc/bitbank-api-docs/blob/master/public-api.md)
 
-## 相場の全体像分析
-- analyze_market_signal: 市場の総合スコア（-100〜+100）で強弱を即判定（寄与度・式付き）
-- detect_macd_cross: 直近の MACD クロス銘柄をスクリーニング（短期転換の把握）
-
 ## データ取得（生データ）
 - get_ticker: 単一ペアの最新価格・出来高（ティッカー）
 - get_tickers_jpy: JPYペアの一括取得（価格・出来高・変化率、ホワイトリストフィルタ済み）
@@ -22,8 +18,10 @@
 - get_flow_metrics: CVD / アグレッサー比 / スパイク検知でフロー優勢度を把握
 - get_volatility_metrics: RV/ATR などのボラティリティ算出・比較
 
-## 詳細分析（深掘り）
+## 分析
+- analyze_market_signal: 市場の総合スコア（-100〜+100）で強弱を即判定（寄与度・式付き）
 - analyze_indicators: テクニカル指標を用いて値動きを分析（SMA/RSI/BB/一目/MACD）
+- detect_macd_cross: 直近の MACD クロス銘柄をスクリーニング（短期転換の把握）
 - detect_patterns: 完成済み＆形成中パターンを一括検出（全13パターン対応）
 - detect_whale_events: 大口投資家の動向を簡易検出（板×ローソク足）
 - analyze_macd_pattern: MACD 形成状況と過去統計
