@@ -8,17 +8,21 @@
 - analyze_market_signal: 市場の総合スコア（-100〜+100）で強弱を即判定（寄与度・式付き）
 - detect_macd_cross: 直近の MACD クロス銘柄をスクリーニング（短期転換の把握）
 
-## データ取得（I/O レイヤ）
+## データ取得（生データ）
 - get_ticker: 単一ペアの最新価格・出来高（ティッカー）
 - get_tickers_jpy: JPYペアの一括取得（価格・出来高・変化率、ホワイトリストフィルタ済み）
 - get_candles: ローソク足（OHLCV; 任意本数）
-- get_orderbook: 板（上位 N）。詳細モードで統計付き
 - get_transactions: 約定履歴（サイド/アグレッサー）
 - get_depth: 板の生データ（全層）— 差分・圧力の元
 
-## 詳細分析（深掘り）
+## データ取得（加工）
+- get_orderbook: 板（上位 N 層）正規化・累計計算。詳細モードで統計付き
+- get_orderbook_pressure: 価格帯ごとの買い/売り圧力比
+- get_orderbook_statistics: 板の厚み・流動性分布・偏りの統計
 - get_flow_metrics: CVD / アグレッサー比 / スパイク検知でフロー優勢度を把握
 - get_volatility_metrics: RV/ATR などのボラティリティ算出・比較
+
+## 詳細分析（深掘り）
 - detect_patterns: 完成済み＆形成中パターンを一括検出（全13パターン対応）
 - analyze_macd_pattern: MACD 形成状況と過去統計
 - analyze_candle_patterns: 2本足パターン検出（包み線/はらみ線/毛抜き等）
@@ -26,8 +30,6 @@
 - analyze_bb_snapshot: BB の広がりと終値位置（z 値等）
 - analyze_sma_snapshot: SMA 整列/クロス分析（bullish/bearish/mixed）
 - analyze_support_resistance: サポート・レジスタンス自動検出（反発/反落ポイント分析）
-- get_orderbook_statistics: 板の厚み・流動性分布・偏りの統計
-- get_orderbook_pressure: 価格帯ごとの買い/売り圧力比
 
 ## 視覚化
 - render_chart_svg: ローソク/折れ線/一目/BB/SMA/Depth を SVG で描画
@@ -42,29 +44,29 @@
 
 | # | カテゴリ | ツール | 概要 | 備考 |
 |---|---|---|---|---|
-| 1 | 取得 | get_ticker | 単一ペアの最新価格・出来高 | 単発確認 |
-| 2 | 取得 | get_tickers_jpy | JPYペアの一括取得（価格・出来高・変化率） | 比較・ランキング |
-| 4 | 取得 | get_orderbook | 板（上位 N）と統計（詳細モード） | 板の詳細把握 |
-| 5 | 取得 | get_transactions | 約定履歴（サイド/アグレッサー） | CVD 素材 |
-| 6 | 取得 | get_candles | ローソク足（OHLCV; 最新 N 本） | 時間軸/本数指定 |
-| 7 | 取得 | get_depth | 板の生データ（全層） | 差分・圧力の元 |
-| 8 | 分析 | analyze_indicators | 指標: SMA/RSI/BB/一目/MACD | 値動き分析 |
-| 9 | 分析 | get_flow_metrics | CVD/アグレッサー比/スパイク | 流れ把握 |
-| 10 | 分析 | get_volatility_metrics | RV/ATR など | 銘柄比較 |
-| 11 | 分析 | get_orderbook_statistics | 板の厚み・流動性分布・偏り | 安定度評価 |
-| 12 | 分析 | detect_whale_events | 大口取引イベント推定 | 影響把握 |
-| 13 | 分析 | get_orderbook_pressure | 価格帯ごとの買い/売り圧力比 | バランス可視化 |
-| 14 | 分析 | detect_patterns | 完成＆形成中パターン検出（全13パターン） | includeForming で形成中も |
-| 15 | 分析 | analyze_market_signal | 総合スコア＋寄与度/式 | 強弱判定 |
-| 16 | 分析 | analyze_ichimoku_snapshot | 一目スナップショット | 判定フラグ |
-| 17 | 分析 | analyze_bb_snapshot | BB の状態分析 | ボラ強弱 |
-| 18 | 分析 | analyze_sma_snapshot | SMA 整列/クロス分析 | 方向判定 |
-| 19 | 分析 | analyze_support_resistance | サポート・レジスタンス自動検出 | 反発/反落分析 |
-| 20 | 分析 | detect_macd_cross | 直近 MACD クロス検出 | 短期転換 |
-| 21 | 分析 | analyze_macd_pattern | MACD 形成状況・過去統計 | 確度評価 |
-| 22 | 分析 | analyze_candle_patterns | 2本足パターン検出（包み線/はらみ線等） | 短期反転シグナル |
-| 23 | 表示 | render_chart_svg | チャート SVG 描画（指標対応） | 一目/SMA/BB/Depth |
-| 24 | 表示 | render_depth_svg | 板の深度を可視化する SVG 描画 | 買い/売り圧力の視覚化 |
+| 1 | 生データ | get_ticker | 単一ペアの最新価格・出来高 | 単発確認 |
+| 2 | 生データ | get_tickers_jpy | JPYペアの一括取得（価格・出来高・変化率） | 比較・ランキング |
+| 3 | 生データ | get_candles | ローソク足（OHLCV; 最新 N 本） | 時間軸/本数指定 |
+| 4 | 生データ | get_transactions | 約定履歴（サイド/アグレッサー） | CVD 素材 |
+| 5 | 生データ | get_depth | 板の生データ（全層） | 差分・圧力の元 |
+| 6 | 加工 | get_orderbook | 板（上位 N 層）正規化・累計 | 板の詳細把握 |
+| 7 | 加工 | get_orderbook_pressure | 価格帯ごとの買い/売り圧力比 | バランス可視化 |
+| 8 | 加工 | get_orderbook_statistics | 板の厚み・流動性分布・偏り | 安定度評価 |
+| 9 | 加工 | get_flow_metrics | CVD/アグレッサー比/スパイク | 流れ把握 |
+| 10 | 加工 | get_volatility_metrics | RV/ATR など | 銘柄比較 |
+| 11 | 分析 | analyze_indicators | 指標: SMA/RSI/BB/一目/MACD | 値動き分析 |
+| 12 | 分析 | analyze_market_signal | 総合スコア＋寄与度/式 | 強弱判定 |
+| 13 | 分析 | detect_patterns | 完成＆形成中パターン検出（全13パターン） | includeForming で形成中も |
+| 14 | 分析 | detect_macd_cross | 直近 MACD クロス検出 | 短期転換 |
+| 15 | 分析 | analyze_macd_pattern | MACD 形成状況・過去統計 | 確度評価 |
+| 16 | 分析 | analyze_candle_patterns | 2本足パターン検出（包み線/はらみ線等） | 短期反転シグナル |
+| 17 | 分析 | analyze_ichimoku_snapshot | 一目スナップショット | 判定フラグ |
+| 18 | 分析 | analyze_bb_snapshot | BB の状態分析 | ボラ強弱 |
+| 19 | 分析 | analyze_sma_snapshot | SMA 整列/クロス分析 | 方向判定 |
+| 20 | 分析 | analyze_support_resistance | サポート・レジスタンス自動検出 | 反発/反落分析 |
+| 21 | 分析 | detect_whale_events | 大口取引イベント推定 | 影響把握 |
+| 22 | 表示 | render_chart_svg | チャート SVG 描画（指標対応） | 一目/SMA/BB/Depth |
+| 23 | 表示 | render_depth_svg | 板の深度を可視化する SVG 描画 | 買い/売り圧力の視覚化 |
 
 ---
 
