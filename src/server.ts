@@ -221,7 +221,7 @@ function registerToolWithLog<S extends z.ZodTypeAny, R = unknown>(
 
 registerToolWithLog(
 	'get_ticker',
-	{ description: 'Get ticker for a pair (e.g., btc_jpy)', inputSchema: GetTickerInputSchema },
+	{ description: '単一ペアのティッカーを取得（/ticker）。価格・出来高・24h高安。', inputSchema: GetTickerInputSchema },
 	async ({ pair }) => getTicker(pair)
 );
 
@@ -253,7 +253,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_candles',
-	{ description: "Get candles. date: '1month' → YYYY, others → YYYYMMDD. view=full (default) includes first 5 items sample in text (full array in structuredContent.data.normalized). Date is inclusive: fetch {limit} most recent candles up to and including the specified date. Example item: { isoTime, open, high, low, close, volume }. Error handling: Returns errorType='user' for invalid pair/type/date/limit, errorType='network' for network errors.", inputSchema: GetCandlesInputSchema },
+	{ description: 'ローソク足を取得（/candlestick）。OHLCVデータ。date: 1min〜1hour→YYYYMMDD, 4hour以上→YYYY。limit で本数指定。', inputSchema: GetCandlesInputSchema },
 	async ({ pair, type, date, limit, view }) => {
 		const result: any = await getCandles(pair, type, date, limit);
 		if (view === 'items') {
@@ -279,7 +279,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_indicators',
-	{ description: 'Get technical indicators (SMA/RSI/BB/Ichimoku/MACD). content には主要指標の要点サマリーを表示します（詳細は structuredContent.data.indicators / chart に含まれます）。分析には十分な `limit` を指定してください（例: 日足は200本）。', inputSchema: GetIndicatorsInputSchema },
+	{ description: '/candlestick をベースにテクニカル指標を算出。SMA/RSI/BB/一目/MACD。分析には十分な limit を指定（例: 日足200本）。', inputSchema: GetIndicatorsInputSchema },
 	async ({ pair, type, limit }) => {
 		const res: any = await getIndicators(pair, type, limit);
 		if (!res?.ok) return res;
@@ -634,7 +634,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_transactions',
-	{ description: 'Get recent transactions (trades). view=summary|items。minAmount/minPrice等でフィルタ、itemsで配列本文出力。', inputSchema: GetTransactionsInputSchema },
+	{ description: '約定履歴を取得（/transactions）。直近60件 or 日付指定。view=summary|items。minAmount/minPrice等でフィルタ可。', inputSchema: GetTransactionsInputSchema },
 	async ({ pair, limit, date, minAmount, maxAmount, minPrice, maxPrice, view }: any) => {
 		const res: any = await getTransactions(pair, limit, date);
 		if (!res?.ok) return res;
@@ -660,7 +660,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_flow_metrics',
-	{ description: 'Compute flow metrics (CVD, aggressor ratio, volume spikes) from recent transactions. Returns aggregated buy/sell flow analysis with spike detection. content shows summary stats; detailed data in structuredContent.data. Use for: short-term flow dominance, event detection, momentum shifts. For comprehensive multi-factor analysis, prefer analyze_market_signal. bucketMs: time bucket in ms (default 60000). Recommended: 15000-60000 for spike detection, 60000-300000 for trend analysis. limit: 100-2000 (default 100). view=summary|buckets|full (full prints all buckets and may be long); bucketsN controls how many recent buckets to print (default 10). Outputs zscore and spike flags per bucket. tz sets display timezone (default Asia/Tokyo).', inputSchema: (await import('./schemas.js')).GetFlowMetricsInputSchema as any },
+	{ description: '/transactions をベースにフロー分析。CVD・アグレッサー比・スパイク検出。bucketMs で時間バケット指定。view=summary|buckets|full。', inputSchema: (await import('./schemas.js')).GetFlowMetricsInputSchema as any },
 	async ({ pair, limit, date, bucketMs, view, bucketsN, tz }: any) => {
 		const res: any = await getFlowMetrics(pair, Number(limit), date, Number(bucketMs), tz);
 		if (!res?.ok) return res;
@@ -971,7 +971,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_volatility_metrics',
-	{ description: 'Compute deterministic volatility metrics (RV/ATR/Parkinson/GK/RS) over candles. content shows key aggregates and rolling trends (summary/detailed/full via view). Tags always printed. Use with analyze_market_signal for integrated judgment.', inputSchema: GetVolMetricsInputSchema },
+	{ description: '/candlestick をベースにボラティリティを算出。RV/ATR/Parkinson/GK/RS。view=summary|detailed|full。', inputSchema: GetVolMetricsInputSchema },
 	async ({ pair, type, limit, windows, useLogReturns, annualize, view }: any) => {
 		const res: any = await getVolatilityMetrics(pair, type, limit, windows, { useLogReturns, annualize });
 		if (!res?.ok) return res;
@@ -1820,7 +1820,7 @@ registerToolWithLog(
 registerToolWithLog(
 	'get_tickers_jpy',
 	{
-		description: 'Public REST /tickers_jpy。全JPYペアのティッカー情報を取得。view=ranked でランキング表示（sortBy=change24h|volume|name, order=asc|desc, limit）。view=items で全データ一覧。キャッシュTTL=10s。',
+		description: '全JPYペアのティッカーを取得（/tickers_jpy）。view=ranked でランキング表示、view=items で全データ。キャッシュ10秒。',
 		inputSchema: z.object({
 			view: z.enum(['items', 'ranked']).optional().default('ranked'),
 			sortBy: z.enum(['change24h', 'volume', 'name']).optional().default('change24h'),
