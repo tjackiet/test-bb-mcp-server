@@ -604,7 +604,7 @@ registerToolWithLog(
 
 registerToolWithLog(
 	'get_depth',
-	{ description: '板の生データ取得（/depth API直接）。チャート描画・差分計算・壁検出用。正規化データが必要な場合は get_orderbook を使用。view=summary|sample|full。sampleNで表示件数指定。', inputSchema: GetDepthInputSchema },
+	{ description: '板の生データ取得（/depth API直接）。差分計算・壁検出・圧力分析の元データ。正規化データが必要な場合は get_orderbook を使用。view=summary|sample|full。sampleNで表示件数指定。', inputSchema: GetDepthInputSchema },
 	async ({ pair, view, sampleN }: any) => {
 		const res: any = await getDepth(pair);
 		if (!res?.ok) return res;
