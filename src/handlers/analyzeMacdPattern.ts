@@ -1,4 +1,4 @@
-import getIndicators from '../../tools/get_indicators.js';
+import analyzeIndicators from '../../tools/analyze_indicators.js';
 import { ok, fail } from '../../lib/result.js';
 import { formatSummary } from '../../lib/formatter.js';
 import { getErrorMessage } from '../../lib/error.js';
@@ -20,7 +20,7 @@ export default async function analyzeMacdPattern({
 }: AnalyzeInput) {
   try {
     const limit = Math.max(120, historyDays + 40);
-    const ind: any = await getIndicators(pair, '1day', limit);
+    const ind: any = await analyzeIndicators(pair, '1day', limit);
     if (!ind?.ok) return fail(ind?.summary || 'indicators failed', (ind?.meta as any)?.errorType || 'internal');
 
     const macd = ind?.data?.indicators?.macd_series?.line || [];

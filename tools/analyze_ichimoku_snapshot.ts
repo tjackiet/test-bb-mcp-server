@@ -1,4 +1,4 @@
-import getIndicators from './get_indicators.js';
+import analyzeIndicators from './analyze_indicators.js';
 import { ok, fail } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { formatSummary } from '../lib/formatter.js';
@@ -16,7 +16,7 @@ export default async function analyzeIchimokuSnapshot(
   if (!chk.ok) return AnalyzeIchimokuSnapshotOutputSchema.parse(fail(chk.error.message, chk.error.type)) as any;
 
   try {
-    const indRes = await getIndicators(chk.pair, type, Math.max(100, limit));
+    const indRes = await analyzeIndicators(chk.pair, type, Math.max(100, limit));
     if (!indRes?.ok) return AnalyzeIchimokuSnapshotOutputSchema.parse(fail(indRes?.summary || 'indicators failed', (indRes?.meta as { errorType?: string })?.errorType || 'internal')) as ReturnType<typeof fail>;
 
     const latest = indRes.data.indicators;

@@ -48,7 +48,7 @@
 | 5 | 取得 | get_transactions | 約定履歴（サイド/アグレッサー） | CVD 素材 |
 | 6 | 取得 | get_candles | ローソク足（OHLCV; 最新 N 本） | 時間軸/本数指定 |
 | 7 | 取得 | get_depth | 板の生データ（全層） | 差分・圧力の元 |
-| 8 | 分析 | get_indicators | 指標: SMA/RSI/BB/一目 | まとめ計算 |
+| 8 | 分析 | analyze_indicators | 指標: SMA/RSI/BB/一目/MACD | 値動き分析 |
 | 9 | 分析 | get_flow_metrics | CVD/アグレッサー比/スパイク | 流れ把握 |
 | 10 | 分析 | get_volatility_metrics | RV/ATR など | 銘柄比較 |
 | 11 | 分析 | get_orderbook_statistics | 板の厚み・流動性分布・偏り | 安定度評価 |

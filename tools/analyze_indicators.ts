@@ -289,7 +289,7 @@ function analyzeTrend(indicators: any, currentPrice: number | null | undefined) 
   return 'sideways';
 }
 
-export default async function getIndicators(
+export default async function analyzeIndicators(
   pair: string = 'btc_jpy',
   type: CandleType | string = '1day',
   limit: number | null = null

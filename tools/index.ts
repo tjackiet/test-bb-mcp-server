@@ -1,7 +1,7 @@
 import getTicker from './get_ticker.js';
 import getOrderbook from './get_orderbook.js';
 import getCandles from './get_candles.js';
-import getIndicators from './get_indicators.js';
+import analyzeIndicators from './analyze_indicators.js';
 import renderChartSvg from './render_chart_svg.js';
 import getDepth from './get_depth.js';
 import getTransactions from './get_transactions.js';
@@ -18,7 +18,7 @@ export {
   getTicker,
   getOrderbook,
   getCandles,
-  getIndicators,
+  analyzeIndicators,
   renderChartSvg,
   getDepth,
   getTransactions,

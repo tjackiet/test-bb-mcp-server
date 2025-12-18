@@ -1,5 +1,5 @@
 import detectPatterns from './detect_patterns.js';
-import getIndicators from './get_indicators.js';
+import analyzeIndicators from './analyze_indicators.js';
 
 async function test() {
   // 11/2 開始のパターンを確認
@@ -20,7 +20,7 @@ async function test() {
   }
   
   // 11/26 と 11/27 の価格を確認
-  const ind = await getIndicators('btc_jpy', '1day', 180);
+  const ind = await analyzeIndicators('btc_jpy', '1day', 180);
   if (!ind.ok) return;
   
   const candles = ind.data.chart?.candles;

@@ -1,4 +1,4 @@
-import getIndicators from './get_indicators.js';
+import analyzeIndicators from './analyze_indicators.js';
 import { ok, fail } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { formatSummary } from '../lib/formatter.js';
@@ -14,7 +14,7 @@ export default async function analyzeBbSnapshot(
   const chk = ensurePair(pair);
   if (!chk.ok) return AnalyzeBbSnapshotOutputSchema.parse(fail(chk.error.message, chk.error.type)) as any;
   try {
-    const indRes = await getIndicators(chk.pair, type, Math.max(60, limit));
+    const indRes = await analyzeIndicators(chk.pair, type, Math.max(60, limit));
     if (!indRes?.ok) return AnalyzeBbSnapshotOutputSchema.parse(fail(indRes?.summary || 'indicators failed', (indRes?.meta as { errorType?: string })?.errorType || 'internal')) as ReturnType<typeof fail>;
 
     const close = indRes.data.normalized.at(-1)?.close ?? null;

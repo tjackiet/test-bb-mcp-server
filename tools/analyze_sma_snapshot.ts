@@ -1,4 +1,4 @@
-import getIndicators from './get_indicators.js';
+import analyzeIndicators from './analyze_indicators.js';
 import { ok, fail } from '../lib/result.js';
 import { createMeta, ensurePair } from '../lib/validate.js';
 import { formatSummary } from '../lib/formatter.js';
@@ -14,7 +14,7 @@ export default async function analyzeSmaSnapshot(
   const chk = ensurePair(pair);
   if (!chk.ok) return AnalyzeSmaSnapshotOutputSchema.parse(fail(chk.error.message, chk.error.type)) as any;
   try {
-    const indRes: any = await getIndicators(chk.pair, type as any, Math.max(Math.max(...periods, 200), limit));
+    const indRes: any = await analyzeIndicators(chk.pair, type as any, Math.max(Math.max(...periods, 200), limit));
     if (!indRes?.ok) return AnalyzeSmaSnapshotOutputSchema.parse(fail(indRes?.summary || 'indicators failed', (indRes?.meta as any)?.errorType || 'internal')) as any;
 
     const close = indRes.data.normalized.at(-1)?.close ?? null;

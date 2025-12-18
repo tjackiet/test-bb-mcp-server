@@ -7,7 +7,7 @@ import { randomUUID } from 'node:crypto';
 import getTicker from '../tools/get_ticker.js';
 import getOrderbook from '../tools/get_orderbook.js';
 import getCandles from '../tools/get_candles.js';
-import getIndicators from '../tools/get_indicators.js';
+import analyzeIndicators from '../tools/analyze_indicators.js';
 import renderChartSvg from '../tools/render_chart_svg.js';
 import renderDepthSvg from '../tools/render_depth_svg.js';
 import detectPatterns from '../tools/detect_patterns.js';
@@ -278,10 +278,10 @@ registerToolWithLog(
 );
 
 registerToolWithLog(
-	'get_indicators',
-	{ description: '/candlestick をベースにテクニカル指標を算出。SMA/RSI/BB/一目/MACD。分析には十分な limit を指定（例: 日足200本）。', inputSchema: GetIndicatorsInputSchema },
+	'analyze_indicators',
+	{ description: 'テクニカル指標を用いて値動きを分析（ローソク足 /candlestick を入力）。SMA/RSI/BB/一目/MACD。分析には十分な limit を指定（例: 日足200本）。', inputSchema: GetIndicatorsInputSchema },
 	async ({ pair, type, limit }) => {
-		const res: any = await getIndicators(pair, type, limit);
+		const res: any = await analyzeIndicators(pair, type, limit);
 		if (!res?.ok) return res;
 		const ind: any = res?.data?.indicators ?? {};
 		const candles: any[] = Array.isArray(res?.data?.normalized) ? res.data.normalized : [];

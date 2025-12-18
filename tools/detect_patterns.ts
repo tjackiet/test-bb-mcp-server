@@ -1,4 +1,4 @@
-import getIndicators from './get_indicators.js';
+import analyzeIndicators from './analyze_indicators.js';
 import { ok, fail } from '../lib/result.js';
 import { getErrorMessage } from '../lib/error.js';
 import { avg as avgRaw, median as medianRaw } from '../lib/math.js';
@@ -75,7 +75,7 @@ export default async function detectPatterns(
       want.add('triangle_symmetrical' as any);
     }
 
-    const res = await getIndicators(pair, type as any, limit);
+    const res = await analyzeIndicators(pair, type as any, limit);
     if (!res?.ok) return DetectPatternsOutputSchema.parse(fail(res.summary || 'failed', 'internal')) as any;
 
     const candles = res.data.chart.candles as Array<{ open: number; close: number; high: number; low: number; isoTime?: string }>;

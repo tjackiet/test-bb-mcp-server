@@ -334,7 +334,7 @@ const promptsAll: PromptDef[] = [
 【分析の流れ（ツールは2つ）】
 1) analyze_market_signal(pair="btc_jpy", type="1day")
    → 総合スコア、SMA詳細、補足指標（RSI・一目・MACD）を取得
-2) get_indicators(pair="btc_jpy", type="1day", limit=50)
+2) analyze_indicators(pair="btc_jpy", type="1day", limit=50)
    → RSI推移（直近7日間）を取得して視覚化
 
 【出力形式】
@@ -367,7 +367,7 @@ const promptsAll: PromptDef[] = [
 ↑ [状態の説明]（例：売られすぎに近い、30以下で反発期待）
 
 **📊 直近7日間の推移**：
-[get_indicators の本文から「RSI推移（直近7日）」を引用]
+[analyze_indicators の本文から「RSI推移（直近7日）」を引用]
 └─ [推移の解釈] [📈上昇中/📉下降中/→横ばい] [一言コメント]
 
 **注意点**：
@@ -834,7 +834,7 @@ const promptsAll: PromptDef[] = [
           text: `代表的な指標を使ってBTCを分析して
 
 【使用ツール】
-get_indicators (pair=btc_jpy, type=1day, limit=200)
+analyze_indicators (pair=btc_jpy, type=1day, limit=200)
 
 【分析方針】
 1. 総合判定から全体像を把握
@@ -866,7 +866,7 @@ RSIとは: 0-100で「買われすぎ/売られすぎ」を測る指標
 
 【RSI推移（直近n日）】
 
-[get_indicators の本文から引用した数値を1行で]
+[analyze_indicators の本文から引用した数値を1行で]
 
 ↑/↓ [推移を見て1行で分析コメント（例: 一週間前に24台まで下落後、回復基調に転じています）]
 

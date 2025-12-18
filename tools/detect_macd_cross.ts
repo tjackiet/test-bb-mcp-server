@@ -1,4 +1,4 @@
-import getIndicators from './get_indicators.js';
+import analyzeIndicators from './analyze_indicators.js';
 import { ALLOWED_PAIRS, normalizePair } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
@@ -45,7 +45,7 @@ export default async function detectMacdCross(
     }> = [];
     await Promise.all(universe.map(async (pair) => {
       try {
-        const ind = await getIndicators(pair, '1day', 120);
+        const ind = await analyzeIndicators(pair, '1day', 120);
         if (!ind?.ok) return;
         const macdSeries = (ind.data?.indicators as { macd_series?: { line: number[]; signal: number[] } })?.macd_series;
         const line = macdSeries?.line || [];

@@ -40,7 +40,7 @@ async function main() {
     get_ticker: { description: 'Get ticker for a pair (e.g., btc_jpy)', input: zodToSimpleJson(GetTickerInputSchema) },
     get_orderbook: { description: 'Get orderbook topN for a pair', input: zodToSimpleJson(GetOrderbookInputSchema) },
     get_candles: { description: 'Get candles. date: 1month→YYYY, others→YYYYMMDD', input: zodToSimpleJson(GetCandlesInputSchema) },
-    get_indicators: { description: 'Compute indicators (SMA/RSI/BB/Ichimoku). Use sufficient limit.', input: zodToSimpleJson(GetIndicatorsInputSchema) },
+    analyze_indicators: { description: 'Analyze price action using technical indicators (SMA/RSI/BB/Ichimoku/MACD). Use sufficient limit.', input: zodToSimpleJson(GetIndicatorsInputSchema) },
     render_chart_svg: { description: 'Render candlestick chart as SVG. Do NOT self-render; display returned SVG only.', input: zodToSimpleJson(RenderChartSvgInputSchema) },
     detect_patterns: { description: 'Detect classic chart patterns from recent candles.', input: zodToSimpleJson((await import('../src/schemas.js')).DetectPatternsInputSchema) },
     get_transactions: { description: 'Get recent transactions (trades).', input: zodToSimpleJson((await import('../src/schemas.js')).GetTransactionsInputSchema) },

@@ -8,7 +8,7 @@
  */
 import fs from 'fs/promises';
 import path from 'path';
-import getIndicators from './get_indicators.js';
+import analyzeIndicators from './analyze_indicators.js';
 import getDepth from './get_depth.js';
 import { ok, fail } from '../lib/result.js';
 import { formatPair } from '../lib/formatter.js';
@@ -198,7 +198,7 @@ export default async function renderChartSvg(args: RenderChartSvgOptions = {}): 
 
   // ★ データ取得はバッファ計算をgetIndicatorsに任せる
   const internalLimit = withIchimoku ? limit + 26 : limit;
-  const res = await getIndicators(pair, type as any, internalLimit);
+  const res = await analyzeIndicators(pair, type as any, internalLimit);
   if (!res?.ok) {
     return fail(res?.summary?.replace?.(/^Error: /, '') || 'failed to fetch indicators', (res as any)?.meta?.errorType || 'internal');
   }

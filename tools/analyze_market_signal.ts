@@ -1,6 +1,6 @@
 import getFlowMetrics from './get_flow_metrics.js';
 import getVolatilityMetrics from './get_volatility_metrics.js';
-import getIndicators from './get_indicators.js';
+import analyzeIndicators from './analyze_indicators.js';
 import { ensurePair, createMeta } from '../lib/validate.js';
 import { ok, fail } from '../lib/result.js';
 import { formatSummary } from '../lib/formatter.js';
@@ -35,7 +35,7 @@ export default async function analyzeMarketSignal(
       getFlowMetrics(chk.pair, flowLimit, undefined as any, bucketMs) as any,
       getVolatilityMetrics(chk.pair, type, 200, windows, { annualize: true }) as any,
       // SMA25/75/200 を扱うため十分な本数を取得（最低200+バッファ）
-      getIndicators(chk.pair, type, 220) as any,
+      analyzeIndicators(chk.pair, type, 220) as any,
     ]);
 
     if (!flowRes?.ok) return AnalyzeMarketSignalOutputSchema.parse(fail(flowRes?.summary || 'flow failed', (flowRes?.meta as any)?.errorType || 'internal')) as any;

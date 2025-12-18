@@ -1,4 +1,4 @@
-import getIndicators from './get_indicators.js';
+import analyzeIndicators from './analyze_indicators.js';
 
 async function main() {
   const [pair, type, limitStr] = process.argv.slice(2);
@@ -11,7 +11,7 @@ async function main() {
   }
 
   try {
-    const result = await getIndicators(pair, (type as any) || '1day', limitStr ? parseInt(limitStr, 10) : undefined);
+    const result = await analyzeIndicators(pair, (type as any) || '1day', limitStr ? parseInt(limitStr, 10) : undefined);
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error('Error fetching indicators:', error);
