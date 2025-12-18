@@ -23,7 +23,9 @@
 - get_volatility_metrics: RV/ATR などのボラティリティ算出・比較
 
 ## 詳細分析（深掘り）
+- analyze_indicators: テクニカル指標を用いて値動きを分析（SMA/RSI/BB/一目/MACD）
 - detect_patterns: 完成済み＆形成中パターンを一括検出（全13パターン対応）
+- detect_whale_events: 大口投資家の動向を簡易検出（板×ローソク足）
 - analyze_macd_pattern: MACD 形成状況と過去統計
 - analyze_candle_patterns: 2本足パターン検出（包み線/はらみ線/毛抜き等）
 - analyze_ichimoku_snapshot: 一目の状態をスナップショット（判定フラグ付）
